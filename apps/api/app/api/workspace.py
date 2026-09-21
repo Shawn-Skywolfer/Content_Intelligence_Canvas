@@ -212,7 +212,7 @@ def export_project(project_id: str, format: str = "markdown") -> Response:
         "",
         project["brief"] or "（未填写）",
         "",
-        "## Canvas 节点",
+        "## 白板节点",
         "",
     ]
     for node in canvas["nodes"]:
@@ -243,7 +243,7 @@ def export_asset(asset_id: str) -> Response:
         f"- `{item.get('path', '')}`｜{' › '.join(item.get('heading', []))}"
         for item in asset["evidence"]
     )
-    body = f"# {asset['title']}\n\n{asset['body']}\n\n## Evidence\n\n{evidence or '（暂无）'}\n"
+    body = f"# {asset['title']}\n\n{asset['body']}\n\n## 证据\n\n{evidence or '（暂无）'}\n"
     return Response(
         body,
         media_type="text/markdown; charset=utf-8",
