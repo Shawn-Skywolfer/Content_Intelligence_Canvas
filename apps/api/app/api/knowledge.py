@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from app.container import get_container
 from app.schemas.knowledge import (
+    ChunkDetailResponse,
+    ContextChunkResponse,
     CreateKnowledgeSourceRequest,
     KnowledgeSourceResponse,
     SearchHitResponse,
@@ -64,7 +66,16 @@ async def refresh_source(source_id: str) -> dict:
 def search(request: SearchRequest) -> SearchResponse:
     if not get_container().manifest.get_source(request.source_id):
         raise HTTPException(404, "Knowledge source not found")
-    hits = get_container().retrieval.search(request.source_id, request.query, request.top_k)
+    hits = get_container().retrieval.search(
+        request.source_id,
+        request.query,
+        request.top_k,
+        lexical_weight=request.lexical_weight,
+        semantic_weight=request.semantic_weight,
+        wikilink_enabled=request.wikilink_enabled,
+        wikilink_weight=request.wikilink_weight,
+        max_per_document=request.max_per_document,
+    )
     return SearchResponse(
         query=request.query,
         hits=[SearchHitResponse(**{
@@ -84,3 +95,34 @@ def search(request: SearchRequest) -> SearchResponse:
         }) for hit in hits],
     )
 
+
+@router.get("/knowledge/chunks/{chunk_id}", response_model=ChunkDetailResponse)
+def chunk_detail(chunk_id: str) -> ChunkDetailResponse:
+    store = get_container().chunk_store
+    row = store.get_chunk(chunk_id)
+    if not row:
+        raise HTTPException(404, "Knowledge chunk not found")
+    context = store.adjacent_chunks(row["document_id"], int(row["chunk_index"]), radius=1)
+    return ChunkDetailResponse(
+        chunk_id=row["chunk_id"],
+        document_id=row["document_id"],
+        title=row["title"],
+        document_type=row["document_type"],
+        heading_path=list(row["heading_path"]),
+        full_text=row["text"],
+        source_path=row["source_path"],
+        start_line=int(row["start_line"]),
+        end_line=int(row["end_line"]),
+        original_references=list(row["references"]),
+        context=[
+            ContextChunkResponse(
+                chunk_id=item["chunk_id"],
+                heading_path=list(item["heading_path"]),
+                text=item["text"],
+                start_line=int(item["start_line"]),
+                end_line=int(item["end_line"]),
+                is_current=item["chunk_id"] == row["chunk_id"],
+            )
+            for item in context
+        ],
+    )

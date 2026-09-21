@@ -37,7 +37,18 @@ class HybridRetrievalService:
         self.embeddings = embeddings
         self.config = config
 
-    def search(self, source_id: str, query: str, top_k: int | None = None) -> list[KnowledgeHit]:
+    def search(
+        self,
+        source_id: str,
+        query: str,
+        top_k: int | None = None,
+        *,
+        lexical_weight: float = 1.0,
+        semantic_weight: float = 1.0,
+        wikilink_enabled: bool = True,
+        wikilink_weight: float | None = None,
+        max_per_document: int = 2,
+    ) -> list[KnowledgeHit]:
         rows = self.store.all_for_source(source_id)
         if not rows:
             return []
@@ -53,9 +64,12 @@ class HybridRetrievalService:
         fused: dict[int, float] = defaultdict(float)
         reasons: dict[int, set[str]] = defaultdict(set)
         ranks: dict[int, dict[str, int]] = defaultdict(dict)
-        for label, ranking in (("fts", lexical_ranked), ("semantic", vector_ranked)):
+        for label, ranking, weight in (
+            ("fts", lexical_ranked, lexical_weight),
+            ("semantic", vector_ranked, semantic_weight),
+        ):
             for rank, row_index in enumerate(ranking, start=1):
-                fused[row_index] += 1.0 / (self.config.rrf_k + rank)
+                fused[row_index] += weight / (self.config.rrf_k + rank)
                 reasons[row_index].add(label)
                 ranks[row_index][label] = rank
 
@@ -82,23 +96,25 @@ class HybridRetrievalService:
                 reasons[index].add("reference_section_penalty")
 
         candidate_indices = sorted(fused, key=fused.get, reverse=True)[: self.config.fusion_candidates]
-        self._expand_wikilinks(
-            query,
-            rows,
-            lexical_scores,
-            vector_scores,
-            candidate_indices,
-            fused,
-            reasons,
-            ranks,
-        )
+        if wikilink_enabled:
+            self._expand_wikilinks(
+                query,
+                rows,
+                lexical_scores,
+                vector_scores,
+                candidate_indices,
+                fused,
+                reasons,
+                ranks,
+                wikilink_weight,
+            )
 
         limit = top_k or self.config.output_top_k
         final_indices: list[int] = []
         per_document: dict[str, int] = defaultdict(int)
         for index in sorted(fused, key=fused.get, reverse=True):
             document_id = rows[index]["document_id"]
-            if per_document[document_id] >= 2:
+            if per_document[document_id] >= max_per_document:
                 continue
             final_indices.append(index)
             per_document[document_id] += 1
@@ -143,6 +159,7 @@ class HybridRetrievalService:
         fused: dict[int, float],
         reasons: dict[int, set[str]],
         ranks: dict[int, dict[str, Any]],
+        wikilink_weight: float | None = None,
     ) -> None:
         documents = self.manifest.documents_for_source(rows[0]["source_id"])
         target_to_doc: dict[str, str] = {}
@@ -187,7 +204,8 @@ class HybridRetrievalService:
                 # Anchor graph expansion to the seed's fused relevance. This makes a
                 # genuinely related page visible even when it shares little query text.
                 link_score = (
-                    self.config.link_score_weight * seed_score / seed_rank
+                    (wikilink_weight if wikilink_weight is not None else self.config.link_score_weight)
+                    * seed_score / seed_rank
                     + 0.004 * relevance / seed_rank
                 )
                 fused[best] = max(fused.get(best, 0.0), link_score)

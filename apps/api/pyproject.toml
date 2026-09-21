@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "content-intelligence-canvas-api"
-version = "0.1.0"
-description = "Local-first retrieval skeleton for Content Intelligence Canvas"
+version = "0.2.0"
+description = "Local-first knowledge, canvas and content workspace"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",

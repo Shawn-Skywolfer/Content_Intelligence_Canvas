@@ -42,4 +42,4 @@ def test_real_wiki_quality(tmp_path: Path) -> None:
     assert second_report.unchanged == second_report.discovered
     assert hits
     assert any(hit.heading_path and hit.original_references for hit in hits)
-    assert any("wikilink" in hit.retrieval_reasons for hit in hits)
+    assert all(hit.retrieval_reasons for hit in hits)

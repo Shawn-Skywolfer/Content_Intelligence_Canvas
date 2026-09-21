@@ -68,6 +68,29 @@ class LanceChunkStore:
         ).limit(100_000).to_arrow()
         return [self._from_row(row) for row in arrow.to_pylist()]
 
+    def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
+        if self.TABLE_NAME not in self.db.list_tables().tables:
+            return None
+        safe_id = chunk_id.replace("'", "''")
+        arrow = self.db.open_table(self.TABLE_NAME).search().where(
+            f"chunk_id = '{safe_id}'", prefilter=True
+        ).limit(1).to_arrow()
+        rows = arrow.to_pylist()
+        return self._from_row(rows[0]) if rows else None
+
+    def adjacent_chunks(self, document_id: str, chunk_index: int, radius: int = 1) -> list[dict[str, Any]]:
+        if self.TABLE_NAME not in self.db.list_tables().tables:
+            return []
+        safe_id = document_id.replace("'", "''")
+        lower = max(0, chunk_index - radius)
+        upper = chunk_index + radius
+        arrow = self.db.open_table(self.TABLE_NAME).search().where(
+            f"document_id = '{safe_id}' AND chunk_index >= {lower} AND chunk_index <= {upper}",
+            prefilter=True,
+        ).limit(radius * 2 + 1).to_arrow()
+        rows = [self._from_row(row) for row in arrow.to_pylist()]
+        return sorted(rows, key=lambda item: item["chunk_index"])
+
     @staticmethod
     def _to_row(chunk: WikiChunk, vector: list[float]) -> dict[str, Any]:
         return {

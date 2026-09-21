@@ -22,6 +22,11 @@ class SearchRequest(BaseModel):
     source_id: str
     query: str = Field(min_length=2, max_length=500)
     top_k: int = Field(default=10, ge=1, le=30)
+    lexical_weight: float = Field(default=1.0, ge=0, le=3)
+    semantic_weight: float = Field(default=1.0, ge=0, le=3)
+    wikilink_enabled: bool = True
+    wikilink_weight: float = Field(default=0.75, ge=0, le=2)
+    max_per_document: int = Field(default=2, ge=1, le=5)
 
     @field_validator("query")
     @classmethod
@@ -49,3 +54,25 @@ class SearchResponse(BaseModel):
     query: str
     hits: list[SearchHitResponse]
 
+
+class ContextChunkResponse(BaseModel):
+    chunk_id: str
+    heading_path: list[str]
+    text: str
+    start_line: int
+    end_line: int
+    is_current: bool
+
+
+class ChunkDetailResponse(BaseModel):
+    chunk_id: str
+    document_id: str
+    title: str
+    document_type: str
+    heading_path: list[str]
+    full_text: str
+    source_path: str
+    start_line: int
+    end_line: int
+    original_references: list[str]
+    context: list[ContextChunkResponse]
