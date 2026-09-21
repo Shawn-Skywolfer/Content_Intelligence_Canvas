@@ -113,6 +113,26 @@ https://example.com/beta
     )
     assert magic.status_code == 200
     insight_id = magic.json()["nodes"][0]["id"]
+    challenge = client.post(
+        f"/api/projects/{project_id}/magic",
+        json={
+            "node_ids": finding_ids[:2],
+            "instruction": "挑战这些观点并指出证据缺口",
+            "output_type": "challenge",
+        },
+    )
+    assert challenge.status_code == 200
+    assert challenge.json()["nodes"][0]["type"] == "challenge"
+    pattern = client.post(
+        f"/api/projects/{project_id}/magic",
+        json={
+            "node_ids": finding_ids[:2],
+            "instruction": "保存为可复用的创意模式",
+            "output_type": "creative_pattern",
+        },
+    )
+    assert pattern.status_code == 200
+    assert pattern.json()["nodes"][0]["type"] == "creative_pattern"
 
     concept = client.post(
         f"/api/projects/{project_id}/concept",

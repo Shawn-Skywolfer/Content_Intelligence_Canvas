@@ -232,7 +232,7 @@ function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, on
   project: Project | null; canvas: CanvasData | null; selectedIds: string[]; setSelectedIds: (ids: string[]) => void;
   onChange: (canvas: CanvasData) => void; onRefresh: () => Promise<void>; setStatus: (value: string) => void;
 }) {
-  const [zoom, setZoom] = useState(0.82); const [magic, setMagic] = useState(""); const [busy, setBusy] = useState(false);
+  const [zoom, setZoom] = useState(0.82); const [magic, setMagic] = useState(""); const [magicType, setMagicType] = useState("insight"); const [busy, setBusy] = useState(false);
   const drag = useRef<{ id: string; startX: number; startY: number; x: number; y: number } | null>(null);
   const selected = canvas?.nodes.filter((node) => selectedIds.includes(node.id)) ?? [];
   const primary = selected.length === 1 ? selected[0] : null;
@@ -250,7 +250,7 @@ function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, on
   async function addNote() { try { await api.createNode(activeProject.id, { type: "note", title: "新笔记", body: "双击或在右侧检查器中编辑。", x: 280, y: 180 }); await onRefresh(); } catch (error) { setStatus(errorText(error)); } }
   function connectSelected() { if (selected.length !== 2) return; const edge: CanvasEdge = { id: `edg_${crypto.randomUUID()}`, source_node_id: selected[0].id, target_node_id: selected[1].id, relation: "context", metadata: {} }; onChange({ ...board, edges: [...board.edges, edge] }); setStatus("已创建节点关系，正在自动保存"); }
   async function createGroup() { if (selected.length < 2) return; const x = Math.min(...selected.map((n) => n.x)) - 40; const y = Math.min(...selected.map((n) => n.y)) - 70; const width = Math.max(...selected.map((n) => n.x + n.width)) - x + 40; const height = Math.max(...selected.map((n) => n.y + n.height)) - y + 40; try { await api.createNode(activeProject.id, { type: "frame", title: "内容分组", body: "", x, y, width, height, metadata: { member_ids: selectedIds } }); await onRefresh(); } catch (error) { setStatus(errorText(error)); } }
-  async function runMagic() { if (!magic.trim() || !selectedIds.length) return; setBusy(true); try { const result = await api.magic(activeProject.id, selectedIds, magic); setStatus(result.message); setMagic(""); await onRefresh(); setSelectedIds(result.nodes.map((node) => node.id)); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
+  async function runMagic() { if (!magic.trim() || !selectedIds.length) return; setBusy(true); try { const result = await api.magic(activeProject.id, selectedIds, magic, magicType); setStatus(result.message); setMagic(""); await onRefresh(); setSelectedIds(result.nodes.map((node) => node.id)); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function concept() { if (!selectedIds.length) return; setBusy(true); try { const result = await api.createConcept(activeProject.id, selectedIds); setStatus(result.message); await onRefresh(); setSelectedIds(result.nodes.map((node) => node.id)); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function removeNode() { if (!primary) return; try { await api.deleteNode(activeProject.id, primary.id); setSelectedIds([]); await onRefresh(); setStatus("节点已删除"); } catch (error) { setStatus(errorText(error)); } }
   const byId = new Map(board.nodes.map((node) => [node.id, node]));
@@ -266,7 +266,7 @@ function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, on
         {!!primary.metadata.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以连接、分组、生成内容概念或用智能加工栏处理。" : "在白板中选择节点，可编辑、锁定并查看证据。"}</p></div>}</aside>
     </div>
-    {!!selectedIds.length && <div className="magic-bar"><span>已选择 {selectedIds.length} 项</span><input value={magic} onChange={(e) => setMagic(e.target.value)} placeholder="例如：找出这些信息里的矛盾，并形成一个核心判断" onKeyDown={(e) => { if (e.key === "Enter") runMagic(); }} /><button className="secondary" disabled={busy} onClick={concept}>形成内容概念</button><button className="primary" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "处理中…" : "用大模型加工"}</button></div>}
+    {!!selectedIds.length && <div className="magic-bar"><span>已选择 {selectedIds.length} 项</span><select value={magicType} onChange={(e) => setMagicType(e.target.value)}><option value="insight">生成洞察</option><option value="challenge">保存质疑</option><option value="creative_pattern">保存创意模式</option><option value="note">生成笔记</option></select><input value={magic} onChange={(e) => setMagic(e.target.value)} placeholder="例如：找出这些信息里的矛盾，并形成一个核心判断" onKeyDown={(e) => { if (e.key === "Enter") runMagic(); }} /><button className="secondary" disabled={busy} onClick={concept}>形成内容概念</button><button className="primary" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "处理中…" : "用大模型加工"}</button></div>}
   </div>;
 }
 
