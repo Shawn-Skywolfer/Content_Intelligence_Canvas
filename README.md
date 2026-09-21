@@ -26,7 +26,8 @@ python -m venv .venv
 # Index your local Wiki and run the retrieval quality suite
 .venv/bin/python -m app.cli evaluate \
   --vault /absolute/path/to/wiki \
-  --data-dir ../../../data
+  --data-dir ../../../data \
+  --cases /absolute/path/to/evaluation-cases.json
 
 # Start the API
 CIC_DATA_DIR=../../../data .venv/bin/uvicorn app.main:app --reload --port 8000
@@ -42,7 +43,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Configure the Wiki path, refresh the index, then inspect hybrid search results and their retrieval reasons. The supplied Wiki is intentionally not committed to this public repository; use the local `wiki.zip` extracted folder as the `--vault` path.
+Open `http://localhost:5173`. Configure the Wiki path, refresh the index, then inspect hybrid search results and their retrieval reasons. The supplied Wiki and evaluation cases are intentionally not committed to this public repository; use local paths for both.
 
 ## API flow
 
@@ -55,10 +56,9 @@ curl -X POST http://localhost:8000/api/knowledge-sources/<source-id>/refresh
 
 curl -X POST http://localhost:8000/api/knowledge/search \
   -H 'Content-Type: application/json' \
-  -d '{"source_id":"<source-id>","query":"AI Data Center 的电力问题","top_k":10}'
+  -d '{"source_id":"<source-id>","query":"your topic","top_k":10}'
 ```
 
 ## Current boundary
 
 This is Sprint A/B scaffolding, not the full P0 Canvas. Project CRUD, LLM health checks, Findings synthesis, Canvas nodes, locking/versioning, Content Concept, output generation and export remain later vertical-slice work.
-
