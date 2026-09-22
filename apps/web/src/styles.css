@@ -116,6 +116,25 @@ summary { cursor: pointer; font-weight: 750; }
 .research-notes p { margin: 0; color: var(--muted); line-height: 1.55; }
 .canvas-page .page-header { max-width: none; }
 .canvas-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 330px; height: calc(100vh - 205px); min-height: 620px; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: white; box-shadow: 0 16px 42px rgba(30,40,55,.08); }
+.canvas-shortcuts { display: flex; flex-wrap: wrap; gap: 7px; margin: -12px 0 10px; }
+.canvas-shortcuts span { padding: 5px 9px; border: 1px solid #dfe3e9; border-radius: 999px; background: rgba(255,255,255,.8); color: #6e7887; font-size: 10px; }
+.flow-workspace { height: calc(100vh - 245px); min-height: 600px; }
+.flow-workspace .board-wrap { position: relative; display: block; }
+.flow-workspace .react-flow { background: #f7f8fa; }
+.react-flow__node-canvas { border-radius: 13px; }
+.flow-card { position: relative; width: 100%; min-height: inherit; padding: 15px 15px 38px; border: 1px solid #d9dee6; border-radius: 13px; background: rgba(255,255,255,.98); box-shadow: 0 10px 24px rgba(36,47,65,.1); cursor: grab; user-select: none; }
+.flow-card:active { cursor: grabbing; }
+.flow-card.selected { border-color: var(--red); box-shadow: 0 0 0 3px rgba(199,0,11,.13), 0 14px 30px rgba(36,47,65,.14); }
+.flow-card.locked { border-left: 4px solid #656f80; }
+.flow-card h3 { margin: 9px 0 8px; font-size: 16px; }
+.flow-card > p { margin: 0; color: #536073; line-height: 1.55; font-size: 12px; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; overflow: hidden; }
+.flow-card.node-frame { height: 100%; min-height: 100%; border: 2px dashed #aeb7c4; background: rgba(225,230,237,.22); box-shadow: none; }
+.connection-handle { width: 12px !important; height: 12px !important; border: 2px solid white !important; background: #c7000b !important; opacity: .2; transition: opacity .15s, transform .15s; }
+.flow-card:hover .connection-handle, .connection-handle:hover { opacity: 1; transform: scale(1.15); }
+.react-flow__edge-path { stroke: #8f9bab; stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #c7000b; stroke-width: 3; }
+.react-flow__controls { overflow: hidden; border: 1px solid #d8dde5; border-radius: 10px; box-shadow: 0 5px 18px rgba(40,50,65,.12); }
+.react-flow__minimap { border: 1px solid #d8dde5; border-radius: 10px; background: rgba(255,255,255,.92) !important; }
 .board-wrap { min-width: 0; display: flex; flex-direction: column; background: #f7f8fa; }
 .board-toolbar { height: 45px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); background: white; }
 .board-toolbar button { min-height: 28px; padding: 0 10px; background: #f0f2f5; color: #556173; }
@@ -157,4 +176,13 @@ summary { cursor: pointer; font-weight: 750; }
 .node-picker { max-height: 250px; overflow: auto; display: grid; gap: 5px; margin-bottom: 14px; }.node-picker label { display: grid; grid-template-columns: 17px 1fr; gap: 8px; align-items: start; padding: 8px; border-radius: 8px; background: #f6f7f9; }.node-picker input { width: 15px; height: 15px; margin: 3px 0 0; }.node-picker span { color: #3f4a5a; line-height: 1.4; font-size: 12px; }.node-picker b { display: block; color: var(--red); font-size: 9px; }
 .asset-list { min-width: 0; }.asset-card { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: white; }.asset-card.open { border-color: #b9c2ce; }.asset-summary { width: 100%; min-height: 96px; display: flex; justify-content: space-between; padding: 17px; border-radius: 0; background: white; color: var(--ink); text-align: left; }.asset-summary span { color: var(--red); font-size: 10px; font-weight: 800; }.asset-summary h3 { margin: 5px 0; }.asset-summary small { color: var(--muted); }.asset-summary > b { color: var(--muted); font-size: 12px; }.asset-body { padding: 8px 22px 22px; border-top: 1px solid #edf0f3; }.asset-actions { margin-top: 18px; }
 .settings-grid { max-width: 1320px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1.15fr; gap: 18px; align-items: start; }.settings-card { padding: 22px; }.settings-card form label { margin-bottom: 13px; }.source-list { display: grid; gap: 8px; margin-top: 18px; }.source-list > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border-radius: 10px; background: #f5f7f9; }.source-list strong, .source-list small { display: block; }.source-list small { margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }.form-actions { display: flex; gap: 8px; }.security-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 40px; }.security-card h2 { margin: 0 0 7px; }.security-card p { margin: 0; max-width: 760px; color: var(--muted); line-height: 1.6; }.big-switch { display: flex; align-items: center; gap: 9px; white-space: nowrap; }.big-switch input { width: 20px; height: 20px; margin: 0; }
+.provider-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 0 16px; }
+.provider-presets button { min-height: 66px; padding: 10px; border: 1px solid #dce1e8; background: #f7f8fa; color: #263142; text-align: left; }
+.provider-presets button:hover { border-color: #c7000b; background: #fff; }
+.provider-presets strong, .provider-presets small { display: block; }.provider-presets small { margin-top: 5px; color: #7d8795; font-weight: 400; }
+.model-discovery { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.model-discovery label { margin: 0 !important; }.model-discovery button { margin-bottom: 13px; }
+.model-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; margin: -2px 0 15px; padding: 9px; border: 1px solid #e2e6ec; border-radius: 10px; background: #f7f8fa; }
+.model-chips button { min-height: 27px; padding: 4px 8px; border: 1px solid #d9dee5; background: white; color: #586475; font-size: 11px; }
+.model-chips button.active { border-color: #c7000b; background: #fff1f2; color: #a30009; }
 @media (max-width: 1200px) { .workspace { padding-inline: 26px; }.canvas-workspace { grid-template-columns: minmax(0,1fr) 290px; }.magic-bar { grid-template-columns: 120px minmax(260px, 1fr) auto auto; }.magic-bar > span { display: none; }.content-layout { grid-template-columns: 310px 1fr; } }

@@ -8,6 +8,7 @@ from app.container import get_container
 from app.schemas.workspace import (
     ProviderConfigRequest,
     ProviderConfigResponse,
+    ProviderModelDiscoveryRequest,
     SecuritySettingsRequest,
     SecuritySettingsResponse,
 )
@@ -48,6 +49,23 @@ def test_provider(provider_id: str) -> dict[str, Any]:
     if not provider:
         raise HTTPException(404, "模型配置不存在")
     return get_container().ai.health_check(provider)
+
+
+@router.post("/providers/discover-models")
+def discover_models(request: ProviderModelDiscoveryRequest) -> dict[str, Any]:
+    container = get_container()
+    provider = container.workspace.get_provider(request.provider_id) if request.provider_id else None
+    values: dict[str, Any] = {
+        "base_url": request.base_url,
+        "timeout_seconds": request.timeout_seconds,
+        "api_key": request.api_key,
+    }
+    if provider and not request.api_key:
+        values["secret_ref"] = provider.get("secret_ref")
+    try:
+        return container.ai.list_models(values)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/settings/security", response_model=SecuritySettingsResponse)

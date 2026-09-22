@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
 export type Source = { id: string; name: string; connector_type: string; root_path: string; enabled: boolean };
 export type Hit = {
@@ -115,6 +115,10 @@ export const api = {
     method: "POST", body: JSON.stringify(provider),
   }),
   testProvider: (providerId: string) => request<Record<string, unknown>>(`/api/providers/${providerId}/test`, { method: "POST" }),
+  discoverModels: (values: { provider_id?: string; base_url: string; api_key?: string | null; timeout_seconds: number }) =>
+    request<{ models: string[]; count: number; latency_ms: number; message: string }>("/api/providers/discover-models", {
+      method: "POST", body: JSON.stringify(values),
+    }),
   getSecurity: () => request<{ protect_internal_data: boolean }>("/api/settings/security"),
   saveSecurity: (protect_internal_data: boolean) => request<{ protect_internal_data: boolean }>("/api/settings/security", {
     method: "PUT", body: JSON.stringify({ protect_internal_data }),

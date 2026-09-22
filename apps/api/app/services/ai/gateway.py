@@ -29,12 +29,52 @@ class AIProviderGateway:
             return f"{clean}/chat/completions"
         return f"{clean}/v1/chat/completions"
 
+    @staticmethod
+    def _models_url(base_url: str) -> str:
+        clean = base_url.rstrip("/")
+        if clean.endswith("/chat/completions"):
+            clean = clean[: -len("/chat/completions")]
+        if clean.endswith("/models"):
+            return clean
+        if clean.endswith("/v1"):
+            return f"{clean}/models"
+        return f"{clean}/v1/models"
+
     def _headers(self, provider: dict[str, Any]) -> dict[str, str]:
-        key = self.secrets.get(provider.get("secret_ref"))
+        key = provider.get("api_key") or self.secrets.get(provider.get("secret_ref"))
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
+
+    def list_models(self, provider: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            response = httpx.get(
+                self._models_url(provider["base_url"]),
+                headers=self._headers(provider),
+                timeout=provider.get("timeout_seconds", 60),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            raw_models = payload.get("data", payload.get("models", []))
+            models = sorted(
+                {
+                    str(item.get("id") or item.get("name"))
+                    for item in raw_models
+                    if isinstance(item, dict) and (item.get("id") or item.get("name"))
+                }
+            )
+            return {
+                "models": models,
+                "count": len(models),
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "message": f"已获取 {len(models)} 个模型" if models else "接口可达，但没有返回模型列表",
+            }
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"获取模型失败：HTTP {exc.response.status_code}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"获取模型失败：{exc}") from exc
 
     def health_check(self, provider: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()

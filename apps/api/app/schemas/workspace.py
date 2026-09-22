@@ -186,6 +186,21 @@ class ProviderConfigResponse(BaseModel):
     updated_at: str
 
 
+class ProviderModelDiscoveryRequest(BaseModel):
+    provider_id: str | None = None
+    base_url: str = Field(min_length=5, max_length=500)
+    api_key: str | None = Field(default=None, max_length=1000)
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("Base URL 必须以 http:// 或 https:// 开头")
+        return value
+
+
 class SecuritySettingsRequest(BaseModel):
     protect_internal_data: bool
 

@@ -213,6 +213,29 @@ https://example.com/beta
     assert health.status_code == 200
     assert health.json()["capability_test"] is True
     assert health.json()["message"] == "连接成功"
+
+    class MockModelsResponse:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict:
+            return {"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]}
+
+    monkeypatch.setattr("app.services.ai.gateway.httpx.get", lambda *args, **kwargs: MockModelsResponse())
+    models = client.post(
+        "/api/providers/discover-models",
+        json={
+            "provider_id": provider.json()["id"],
+            "base_url": "https://api.deepseek.com",
+            "timeout_seconds": 5,
+        },
+    )
+    assert models.status_code == 200
+    assert models.json()["models"] == ["deepseek-chat", "deepseek-reasoner"]
     with sqlite3.connect(data_dir / "app.db") as db:
         rows = db.execute("SELECT * FROM provider_configs").fetchall()
         assert rows
