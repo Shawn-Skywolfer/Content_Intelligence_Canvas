@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 
-MAGIC = b"CICPACKV032FULL!"
+MAGIC = b"CICPACKV033FULL!"
 
 
 def digest(path: Path, offset: int = 0, size: int | None = None) -> str:

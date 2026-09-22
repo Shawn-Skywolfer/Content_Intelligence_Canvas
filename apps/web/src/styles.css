@@ -182,6 +182,11 @@ summary { cursor: pointer; font-weight: 750; }
 .provider-presets button { min-height: 66px; padding: 10px; border: 1px solid #dce1e8; background: #f7f8fa; color: #263142; text-align: left; }
 .provider-presets button:hover { border-color: #c7000b; background: #fff; }
 .provider-presets strong, .provider-presets small { display: block; }.provider-presets small { margin-top: 5px; color: #7d8795; font-weight: 400; }
+.network-settings { margin: 2px 0 14px; padding: 13px; border: 1px solid #e1e5eb; border-radius: 11px; background: #f8f9fb; }
+.network-settings label:last-of-type { margin-bottom: 8px !important; }
+.network-settings p { margin: -1px 0 0; color: #7a8594; font-size: 11px; line-height: 1.55; }
+.proxy-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.proxy-fields label:first-child { grid-column: 1 / -1; }
 .model-discovery { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
 .model-discovery label { margin: 0 !important; }.model-discovery button { margin-bottom: 13px; }
 .model-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; margin: -2px 0 15px; padding: 9px; border: 1px solid #e2e6ec; border-radius: 10px; background: #f7f8fa; }

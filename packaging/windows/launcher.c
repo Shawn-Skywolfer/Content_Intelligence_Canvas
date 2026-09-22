@@ -4,7 +4,7 @@
 #include <string.h>
 #include <wchar.h>
 
-static const char MAGIC[16] = "CICPACKV032FULL!";
+static const char MAGIC[16] = "CICPACKV033FULL!";
 static DWORD payload_error = ERROR_SUCCESS;
 static int payload_stage = 0;
 
@@ -114,9 +114,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     wchar_t ready[MAX_PATH];
     wchar_t zip_path[MAX_PATH];
     swprintf(app_root, MAX_PATH, L"%ls\\ContentIntelligenceCanvas", local);
-    swprintf(runtime, MAX_PATH, L"%ls\\runtime-v0.3.2", app_root);
+    swprintf(runtime, MAX_PATH, L"%ls\\runtime-v0.3.3", app_root);
     swprintf(ready, MAX_PATH, L"%ls\\.ready", runtime);
-    swprintf(zip_path, MAX_PATH, L"%ls\\payload-v0.3.2.zip", app_root);
+    swprintf(zip_path, MAX_PATH, L"%ls\\payload-v0.3.3.zip", app_root);
     CreateDirectoryW(app_root, NULL);
 
     if (!file_exists(ready)) {

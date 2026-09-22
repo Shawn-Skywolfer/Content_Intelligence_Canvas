@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "content-intelligence-canvas-api"
-version = "0.3.2"
+version = "0.3.3"
 description = "Local-first knowledge, canvas and content workspace"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
   "numpy>=2,<3",
   "httpx>=0.28,<1",
   "psutil>=7,<8",
+  "truststore>=0.10,<1",
 ]
 
 [project.optional-dependencies]

@@ -182,6 +182,7 @@ class ProviderConfigResponse(BaseModel):
     timeout_seconds: int
     extra: dict[str, Any]
     has_api_key: bool
+    has_proxy_password: bool
     created_at: str
     updated_at: str
 
@@ -191,6 +192,10 @@ class ProviderModelDiscoveryRequest(BaseModel):
     base_url: str = Field(min_length=5, max_length=500)
     api_key: str | None = Field(default=None, max_length=1000)
     timeout_seconds: int = Field(default=60, ge=5, le=300)
+    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    proxy_url: str | None = Field(default=None, max_length=500)
+    proxy_username: str | None = Field(default=None, max_length=300)
+    proxy_password: str | None = Field(default=None, max_length=1000)
 
     @field_validator("base_url")
     @classmethod
@@ -198,6 +203,16 @@ class ProviderModelDiscoveryRequest(BaseModel):
         value = value.strip().rstrip("/")
         if not value.startswith(("http://", "https://")):
             raise ValueError("Base URL 必须以 http:// 或 https:// 开头")
+        return value
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("代理地址必须以 http:// 或 https:// 开头")
         return value
 
 

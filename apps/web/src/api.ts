@@ -38,7 +38,7 @@ export type ContentAsset = {
 export type Provider = {
   id: string; name: string; protocol: string; base_url: string; model_name: string; enabled: boolean;
   is_external: boolean; temperature: number; max_tokens: number; timeout_seconds: number;
-  extra: Record<string, unknown>; has_api_key: boolean; created_at: string; updated_at: string;
+  extra: Record<string, unknown>; has_api_key: boolean; has_proxy_password: boolean; created_at: string; updated_at: string;
 };
 export type SearchOptions = {
   top_k: number; lexical_weight: number; semantic_weight: number; wikilink_enabled: boolean;
@@ -115,7 +115,7 @@ export const api = {
     method: "POST", body: JSON.stringify(provider),
   }),
   testProvider: (providerId: string) => request<Record<string, unknown>>(`/api/providers/${providerId}/test`, { method: "POST" }),
-  discoverModels: (values: { provider_id?: string; base_url: string; api_key?: string | null; timeout_seconds: number }) =>
+  discoverModels: (values: { provider_id?: string; base_url: string; api_key?: string | null; timeout_seconds: number; network_mode: string; proxy_url?: string | null; proxy_username?: string | null; proxy_password?: string | null }) =>
     request<{ models: string[]; count: number; latency_ms: number; message: string }>("/api/providers/discover-models", {
       method: "POST", body: JSON.stringify(values),
     }),

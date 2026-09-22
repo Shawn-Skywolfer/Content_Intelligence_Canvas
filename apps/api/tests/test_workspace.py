@@ -177,6 +177,7 @@ https://example.com/beta
     assert len(client.get(f"/api/projects/{project_id}/assets").json()) == 3
 
     secret = "unit-test-secret-value"
+    proxy_secret = "unit-test-proxy-secret"
     provider = client.post(
         "/api/providers",
         json={
@@ -190,12 +191,20 @@ https://example.com/beta
             "temperature": 0.2,
             "max_tokens": 1000,
             "timeout_seconds": 5,
-            "extra": {},
+            "extra": {
+                "network_mode": "custom_proxy",
+                "proxy_url": "http://proxy.company.test:8080",
+                "proxy_username": "corp-user",
+                "proxy_password": proxy_secret,
+            },
         },
     )
     assert provider.status_code == 200
     assert provider.json()["has_api_key"] is True
+    assert provider.json()["has_proxy_password"] is True
     assert "api_key" not in provider.json()
+    assert "proxy_password" not in provider.json()["extra"]
+    assert "proxy_password_ref" not in provider.json()["extra"]
 
     class MockModelResponse:
         status_code = 200
@@ -212,7 +221,7 @@ https://example.com/beta
     health = client.post(f"/api/providers/{provider.json()['id']}/test")
     assert health.status_code == 200
     assert health.json()["capability_test"] is True
-    assert health.json()["message"] == "连接成功"
+    assert health.json()["message"] == "连接成功（自动网络）"
 
     class MockModelsResponse:
         status_code = 200
@@ -240,10 +249,12 @@ https://example.com/beta
         rows = db.execute("SELECT * FROM provider_configs").fetchall()
         assert rows
         assert all(secret not in str(row) for row in rows)
+        assert all(proxy_secret not in str(row) for row in rows)
 
     exported = client.get(f"/api/projects/{project_id}/export?format=json")
     assert exported.status_code == 200
     assert secret not in exported.text
+    assert proxy_secret not in exported.text
     assert "测试内容项目" in exported.text
     assert client.get(f"/api/projects/{project_id}/runs").json()
     get_container.cache_clear()

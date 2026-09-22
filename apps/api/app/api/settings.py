@@ -18,9 +18,15 @@ router = APIRouter(prefix="/api", tags=["settings"])
 
 
 def _provider_response(provider: dict[str, Any]) -> ProviderConfigResponse:
+    safe_provider = dict(provider)
+    safe_extra = dict(provider.get("extra") or {})
+    proxy_password_ref = safe_extra.pop("proxy_password_ref", None)
+    safe_extra.pop("proxy_password", None)
+    safe_provider["extra"] = safe_extra
     return ProviderConfigResponse(
-        **provider,
+        **safe_provider,
         has_api_key=bool(provider.get("secret_ref")),
+        has_proxy_password=bool(proxy_password_ref),
     )
 
 
@@ -39,6 +45,17 @@ def save_provider(request: ProviderConfigRequest) -> ProviderConfigResponse:
             request.api_key,
             existing.get("secret_ref") if existing else None,
         )
+    extra = dict(values.get("extra") or {})
+    proxy_password = str(extra.pop("proxy_password", "") or "")
+    existing_extra = existing.get("extra", {}) if existing else {}
+    if proxy_password:
+        extra["proxy_password_ref"] = container.secrets.set(
+            proxy_password,
+            existing_extra.get("proxy_password_ref"),
+        )
+    elif existing_extra.get("proxy_password_ref"):
+        extra["proxy_password_ref"] = existing_extra["proxy_password_ref"]
+    values["extra"] = extra
     provider = container.workspace.upsert_provider(values)
     return _provider_response(provider)
 
@@ -59,9 +76,19 @@ def discover_models(request: ProviderModelDiscoveryRequest) -> dict[str, Any]:
         "base_url": request.base_url,
         "timeout_seconds": request.timeout_seconds,
         "api_key": request.api_key,
+        "extra": {
+            "network_mode": request.network_mode,
+            "proxy_url": request.proxy_url,
+            "proxy_username": request.proxy_username,
+            "proxy_password": request.proxy_password,
+        },
     }
     if provider and not request.api_key:
         values["secret_ref"] = provider.get("secret_ref")
+    if provider and not request.proxy_password:
+        existing_ref = (provider.get("extra") or {}).get("proxy_password_ref")
+        if existing_ref:
+            values["extra"]["proxy_password_ref"] = existing_ref
     try:
         return container.ai.list_models(values)
     except RuntimeError as exc:
