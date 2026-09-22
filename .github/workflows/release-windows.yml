@@ -54,8 +54,7 @@ jobs:
           Copy-Item -Force apps/api/standalone_entry.py $runtime
           Copy-Item -Recurse -Force apps/web/dist/* (Join-Path $runtime "web_dist")
           @('# GitHub Release public test seed', '# 私有绿色版的数据不会上传到公开仓库。请在设置中添加本地 Wiki 路径。') | Set-Content -LiteralPath (Join-Path $runtime "seed\wiki\README.md") -Encoding utf8
-          $env:PYTHONPATH = Join-Path $runtime "apps\api"
-          & (Join-Path $runtime "python.exe") -c "from pathlib import Path; from app.repositories.workspace import WorkspaceRepository; WorkspaceRepository(Path(r'$runtime\seed\data\app.db'))"
+          & (Join-Path $runtime "python.exe") -c "import sys; sys.path.insert(0, r'$runtime\apps\api'); from pathlib import Path; from app.repositories.workspace import WorkspaceRepository; WorkspaceRepository(Path(r'$runtime\seed\data\app.db'))"
 
       - name: 编译原生启动器
         shell: pwsh
