@@ -26,6 +26,14 @@ WAIT_OBJECT_0 = 0
 WAIT_ABANDONED = 0x80
 
 
+def _ensure_headless_streams() -> None:
+    """pythonw.exe has no console streams; logging libraries still expect file objects."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
 def _message(title: str, message: str) -> None:
     ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
 
@@ -169,6 +177,7 @@ def _open_when_ready(url: str) -> None:
 
 
 def run() -> None:
+    _ensure_headless_streams()
     runtime_root = _runtime_root()
     user_root = _user_root()
     mutex, pid_file = _acquire_single_instance(_control_root())
@@ -200,7 +209,14 @@ def run() -> None:
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
     threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+        log_config=None,
+    )
 
 
 if __name__ == "__main__":
