@@ -25,9 +25,7 @@ class AIProviderGateway:
         clean = base_url.rstrip("/")
         if clean.endswith("/chat/completions"):
             return clean
-        if clean.endswith("/v1"):
-            return f"{clean}/chat/completions"
-        return f"{clean}/v1/chat/completions"
+        return f"{clean}/chat/completions"
 
     @staticmethod
     def _models_url(base_url: str) -> str:
@@ -36,9 +34,36 @@ class AIProviderGateway:
             clean = clean[: -len("/chat/completions")]
         if clean.endswith("/models"):
             return clean
-        if clean.endswith("/v1"):
-            return f"{clean}/models"
-        return f"{clean}/v1/models"
+        return f"{clean}/models"
+
+    @staticmethod
+    def _request(
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        timeout: int | float,
+        json_payload: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        with httpx.Client(trust_env=False, timeout=timeout, follow_redirects=True) as client:
+            return client.request(method, url, headers=headers, json=json_payload)
+
+    @staticmethod
+    def _http_error_message(prefix: str, response: httpx.Response) -> str:
+        detail = ""
+        try:
+            payload = response.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                detail = str(error.get("message") or error.get("code") or "")
+            elif error:
+                detail = str(error)
+            elif isinstance(payload, dict):
+                detail = str(payload.get("message") or payload.get("detail") or "")
+        except (ValueError, TypeError):
+            detail = response.text.strip()[:240]
+        suffix = f"：{detail}" if detail else ""
+        return f"{prefix}：HTTP {response.status_code}{suffix}"
 
     def _headers(self, provider: dict[str, Any]) -> dict[str, str]:
         key = provider.get("api_key") or self.secrets.get(provider.get("secret_ref"))
@@ -50,7 +75,8 @@ class AIProviderGateway:
     def list_models(self, provider: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         try:
-            response = httpx.get(
+            response = self._request(
+                "GET",
                 self._models_url(provider["base_url"]),
                 headers=self._headers(provider),
                 timeout=provider.get("timeout_seconds", 60),
@@ -72,17 +98,18 @@ class AIProviderGateway:
                 "message": f"已获取 {len(models)} 个模型" if models else "接口可达，但没有返回模型列表",
             }
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"获取模型失败：HTTP {exc.response.status_code}") from exc
+            raise RuntimeError(self._http_error_message("获取模型失败", exc.response)) from exc
         except Exception as exc:
             raise RuntimeError(f"获取模型失败：{exc}") from exc
 
     def health_check(self, provider: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         try:
-            response = httpx.post(
+            response = self._request(
+                "POST",
                 self._chat_url(provider["base_url"]),
                 headers=self._headers(provider),
-                json={
+                json_payload={
                     "model": provider["model_name"],
                     "messages": [{"role": "user", "content": "只回复 OK"}],
                     "temperature": 0,
@@ -110,7 +137,7 @@ class AIProviderGateway:
                 "capability_test": False,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
-                "message": f"模型调用失败：HTTP {status}",
+                "message": self._http_error_message("模型调用失败", exc.response),
             }
         except Exception as exc:  # Provider error must not crash the workspace.
             return {
@@ -134,10 +161,11 @@ class AIProviderGateway:
             raise RuntimeError("尚未配置可用的大模型")
         if self.repository.get_setting("protect_internal_data", True) and provider.get("is_external"):
             raise PermissionError("数据保护已开启，不能把内部知识发送给外部模型")
-        response = httpx.post(
+        response = self._request(
+            "POST",
             self._chat_url(provider["base_url"]),
             headers=self._headers(provider),
-            json={
+            json_payload={
                 "model": provider["model_name"],
                 "messages": [
                     {"role": "system", "content": system},

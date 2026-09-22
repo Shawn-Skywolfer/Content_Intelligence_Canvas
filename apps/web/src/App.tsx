@@ -32,7 +32,7 @@ const FORMAT_LABELS: Record<string, string> = {
   wechat: "微信公众号", video_script: "视频号/短视频脚本", poster_campaign: "海报/营销活动",
 };
 const PROVIDER_PRESETS = {
-  deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model_name: "deepseek-chat" },
+  deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model_name: "deepseek-flash" },
   aihubmix: { name: "AIHubMix", base_url: "https://aihubmix.com/v1", model_name: "" },
   custom: { name: "自定义模型", base_url: "", model_name: "" },
 };
@@ -128,8 +128,8 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">智</span><div><strong>内容智能白板</strong><small>可信知识驱动的内容工作台</small></div></div>
-      <nav>{NAV.map((item) => <button className={view === item.id ? "active" : ""} key={item.id} onClick={() => setView(item.id)}>
-        <span>{item.icon}</span>{item.label}
+      <nav aria-label="主要导航">{NAV.map((item) => <button className={view === item.id ? "active" : ""} key={item.id} onClick={() => setView(item.id)}>
+        <span aria-hidden="true">{item.icon}</span><b>{item.label}</b>
       </button>)}</nav>
       <div className="sidebar-project">
         <label>当前项目</label>
@@ -303,7 +303,7 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
   function applyProviderPreset(key: keyof typeof PROVIDER_PRESETS) { const preset = PROVIDER_PRESETS[key]; setSelectedProvider(""); setAvailableModels([]); setForm({ ...form, ...preset, protocol: "openai_compatible", api_key: "", enabled: true, is_external: true }); }
   async function saveProvider(event: FormEvent) { event.preventDefault(); setBusy(true); try { const saved = await api.saveProvider({ ...(selectedProvider ? { id: selectedProvider } : {}), ...form, api_key: form.api_key || null, extra: {} }); const items = await api.listProviders(); setProviders(items); setSelectedProvider(saved.id); setFormFromProvider(saved); setStatus("大模型配置已保存，接口密钥未写入普通数据库"); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function testProvider() { if (!selectedProvider) return; setBusy(true); setStatus("正在执行最小真实模型调用…"); try { const result = await api.testProvider(selectedProvider); setStatus(String(result.message ?? "连接测试完成")); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
-  async function discoverModels() { if (!form.base_url) return; setBusy(true); setStatus("正在从供应商获取模型列表…"); try { const result = await api.discoverModels({ ...(selectedProvider ? { provider_id: selectedProvider } : {}), base_url: form.base_url, api_key: form.api_key || null, timeout_seconds: form.timeout_seconds }); setAvailableModels(result.models); if (!form.model_name && result.models[0]) setForm((current) => ({ ...current, model_name: result.models[0] })); setStatus(result.message); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
+  async function discoverModels() { if (!form.base_url) return; setBusy(true); setStatus("正在从供应商获取模型列表…"); try { const result = await api.discoverModels({ ...(selectedProvider ? { provider_id: selectedProvider } : {}), base_url: form.base_url, api_key: form.api_key || null, timeout_seconds: form.timeout_seconds }); setAvailableModels(result.models); if (result.models.length && !result.models.includes(form.model_name)) setForm((current) => ({ ...current, model_name: result.models[0] })); setStatus(result.message); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function addSource(event: FormEvent) { event.preventDefault(); setBusy(true); try { const source = await api.createSource(sourceName, sourcePath); const items = await api.listSources(); setSources(items); setSourcePath(""); setStatus(`知识源“${source.name}”已添加，请刷新索引`); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function refreshSource(id: string) { setBusy(true); setStatus("正在扫描并增量更新知识库索引…"); try { const report = await api.refresh(id); setStatus(`索引完成：扫描 ${report.discovered ?? 0} 个文件，写入 ${report.chunks_written ?? 0} 个分块`); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function saveProtect(value: boolean) { setProtect(value); try { await api.saveSecurity(value); setStatus(value ? "内部数据保护已开启" : "内部数据保护已关闭，请确认模型服务的数据边界"); } catch (error) { setStatus(errorText(error)); } }

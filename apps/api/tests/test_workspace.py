@@ -208,7 +208,7 @@ https://example.com/beta
         def json() -> dict:
             return {"choices": [{"message": {"content": "OK"}}]}
 
-    monkeypatch.setattr("app.services.ai.gateway.httpx.post", lambda *args, **kwargs: MockModelResponse())
+    monkeypatch.setattr("app.services.ai.gateway.AIProviderGateway._request", lambda *args, **kwargs: MockModelResponse())
     health = client.post(f"/api/providers/{provider.json()['id']}/test")
     assert health.status_code == 200
     assert health.json()["capability_test"] is True
@@ -225,7 +225,7 @@ https://example.com/beta
         def json() -> dict:
             return {"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]}
 
-    monkeypatch.setattr("app.services.ai.gateway.httpx.get", lambda *args, **kwargs: MockModelsResponse())
+    monkeypatch.setattr("app.services.ai.gateway.AIProviderGateway._request", lambda *args, **kwargs: MockModelsResponse())
     models = client.post(
         "/api/providers/discover-models",
         json={

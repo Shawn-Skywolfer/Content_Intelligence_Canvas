@@ -4,7 +4,9 @@
 #include <string.h>
 #include <wchar.h>
 
-static const char MAGIC[16] = "CICPACKV031FULL!";
+static const char MAGIC[16] = "CICPACKV032FULL!";
+static DWORD payload_error = ERROR_SUCCESS;
+static int payload_stage = 0;
 
 static void fail(const wchar_t *message) {
     MessageBoxW(NULL, message, L"内容智能白板启动失败", MB_OK | MB_ICONERROR);
@@ -16,45 +18,60 @@ static int file_exists(const wchar_t *path) {
 }
 
 static int write_payload(const wchar_t *self, const wchar_t *zip_path) {
-    FILE *input = _wfopen(self, L"rb");
-    if (!input) return 0;
-    _fseeki64(input, 0, SEEK_END);
-    __int64 size = _ftelli64(input);
-    if (size < 24 || _fseeki64(input, size - 24, SEEK_SET) != 0) {
-        fclose(input);
-        return 0;
+    HANDLE input = INVALID_HANDLE_VALUE, output = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER size, position;
+    BYTE footer[24], signature[4];
+    BYTE *buffer = NULL;
+    DWORD count = 0;
+    uint64_t payload_size = 0, remaining = 0;
+    int ok = 0;
+    payload_error = ERROR_SUCCESS;
+    payload_stage = 1;
+    input = CreateFileW(self, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (input == INVALID_HANDLE_VALUE) { payload_error = GetLastError(); goto cleanup; }
+    payload_stage = 2;
+    if (!GetFileSizeEx(input, &size) || size.QuadPart < 24) { payload_error = GetLastError(); goto cleanup; }
+    position.QuadPart = size.QuadPart - 24;
+    if (!SetFilePointerEx(input, position, NULL, FILE_BEGIN) ||
+        !ReadFile(input, footer, sizeof(footer), &count, NULL) || count != sizeof(footer)) {
+        payload_error = GetLastError(); goto cleanup;
     }
-    uint64_t payload_size = 0;
-    char magic[16];
-    if (fread(&payload_size, 1, 8, input) != 8 || fread(magic, 1, 16, input) != 16 ||
-        memcmp(magic, MAGIC, 16) != 0 || payload_size > (uint64_t)(size - 24)) {
-        fclose(input);
-        return 0;
-    }
-    if (_fseeki64(input, size - 24 - (__int64)payload_size, SEEK_SET) != 0) {
-        fclose(input);
-        return 0;
-    }
-    FILE *output = _wfopen(zip_path, L"wb");
-    if (!output) {
-        fclose(input);
-        return 0;
-    }
-    char buffer[1024 * 1024];
-    uint64_t remaining = payload_size;
-    while (remaining > 0) {
-        size_t request = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
-        size_t read_count = fread(buffer, 1, request, input);
-        if (read_count == 0 || fwrite(buffer, 1, read_count, output) != read_count) {
-            fclose(input);
-            fclose(output);
-            return 0;
+    memcpy(&payload_size, footer, 8);
+    payload_stage = 3;
+    if (memcmp(footer + 8, MAGIC, 16) != 0 || payload_size == 0 ||
+        payload_size > (uint64_t)(size.QuadPart - 24)) goto cleanup;
+    position.QuadPart = size.QuadPart - 24 - (LONGLONG)payload_size;
+    if (!SetFilePointerEx(input, position, NULL, FILE_BEGIN) ||
+        !ReadFile(input, signature, sizeof(signature), &count, NULL) || count != sizeof(signature) ||
+        memcmp(signature, "PK\x03\x04", 4) != 0) { payload_error = GetLastError(); goto cleanup; }
+    if (!SetFilePointerEx(input, position, NULL, FILE_BEGIN)) { payload_error = GetLastError(); goto cleanup; }
+    payload_stage = 4;
+    DeleteFileW(zip_path);
+    output = CreateFileW(zip_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (output == INVALID_HANDLE_VALUE) { payload_error = GetLastError(); goto cleanup; }
+    buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, 1024 * 1024);
+    if (!buffer) { payload_error = ERROR_NOT_ENOUGH_MEMORY; goto cleanup; }
+    remaining = payload_size;
+    payload_stage = 5;
+    while (remaining) {
+        DWORD request = remaining > 1024 * 1024 ? 1024 * 1024 : (DWORD)remaining;
+        DWORD read_count = 0, written = 0;
+        if (!ReadFile(input, buffer, request, &read_count, NULL) || read_count == 0 ||
+            !WriteFile(output, buffer, read_count, &written, NULL) || written != read_count) {
+            payload_error = GetLastError(); goto cleanup;
         }
         remaining -= read_count;
     }
-    fclose(input);
-    fclose(output);
-    return 1;
+    ok = FlushFileBuffers(output);
+    if (!ok) payload_error = GetLastError();
+cleanup:
+    if (buffer) HeapFree(GetProcessHeap(), 0, buffer);
+    if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+    if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+    if (!ok) DeleteFileW(zip_path);
+    return ok;
 }
 
 static int run_and_wait(wchar_t *command) {
@@ -97,14 +114,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     wchar_t ready[MAX_PATH];
     wchar_t zip_path[MAX_PATH];
     swprintf(app_root, MAX_PATH, L"%ls\\ContentIntelligenceCanvas", local);
-    swprintf(runtime, MAX_PATH, L"%ls\\runtime-v0.3.1", app_root);
+    swprintf(runtime, MAX_PATH, L"%ls\\runtime-v0.3.2", app_root);
     swprintf(ready, MAX_PATH, L"%ls\\.ready", runtime);
-    swprintf(zip_path, MAX_PATH, L"%ls\\payload.zip", app_root);
+    swprintf(zip_path, MAX_PATH, L"%ls\\payload-v0.3.2.zip", app_root);
     CreateDirectoryW(app_root, NULL);
 
     if (!file_exists(ready)) {
         if (!write_payload(self, zip_path)) {
-            fail(L"安装数据读取失败，文件可能下载不完整。");
+            wchar_t message[320];
+            swprintf(message, 320, L"安装数据校验或释放准备失败。\n\n诊断阶段：%d\n系统错误：%lu\n\n请确认文件完整并保证至少 1 GB 可用空间。", payload_stage, payload_error);
+            fail(message);
             return 2;
         }
         wchar_t command[4 * MAX_PATH];
