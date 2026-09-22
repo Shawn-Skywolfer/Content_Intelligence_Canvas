@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Background, Connection, Controls, Edge, EdgeChange, Handle, MarkerType, MiniMap, Node,
-  NodeChange, NodeProps, Position, ReactFlow, applyNodeChanges,
+  NodeChange, NodeProps, Position, ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api, CanvasData, CanvasEdge, CanvasNode, Project } from "./api";
@@ -26,6 +26,14 @@ function cloneCanvas(canvas: CanvasData): CanvasData {
   return structuredClone(canvas);
 }
 
+function sameSelection(current: string[], next: string[]): boolean {
+  return current.length === next.length && current.every((id) => next.includes(id));
+}
+
+function closeEnough(current: number | undefined, next: number, tolerance = 0.01): boolean {
+  return typeof current === "number" && Math.abs(current - next) <= tolerance;
+}
+
 function FlowCard({ data, selected }: NodeProps<FlowNode>) {
   const node = data.canvasNode;
   return <article className={`flow-card node-${node.type} ${selected ? "selected" : ""} ${node.locked ? "locked" : ""}`}>
@@ -39,6 +47,18 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
 }
 
 const NODE_TYPES = { canvas: FlowCard };
+const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.05 };
+const MULTI_SELECTION_KEYS = ["Control", "Meta"];
+const SNAP_GRID: [number, number] = [10, 10];
+const PRO_OPTIONS = { hideAttribution: true };
+const DEFAULT_EDGE_OPTIONS = {
+  type: "smoothstep",
+  markerEnd: { type: MarkerType.ArrowClosed },
+};
+
+function miniMapNodeColor(node: Node): string {
+  return (node.data as FlowNodeData | undefined)?.canvasNode?.type === "insight" ? "#c7000b" : "#9aa5b4";
+}
 
 function EmptyProject() {
   return <div className="empty-state"><strong>请先创建或选择一个项目</strong><p>项目会保存想法、研究、白板节点和最终内容资产。</p></div>;
@@ -71,9 +91,15 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const undoStack = useRef<CanvasData[]>([]);
   const redoStack = useRef<CanvasData[]>([]);
   const boardRef = useRef<CanvasData | null>(canvas);
+  const onChangeRef = useRef(onChange);
   const dragSnapshotTaken = useRef(false);
+  const selectedNodeIdsRef = useRef(selectedIds);
+  const selectedEdgeIdsRef = useRef(selectedEdgeIds);
 
   useEffect(() => { boardRef.current = canvas; }, [canvas]);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  useEffect(() => { selectedNodeIdsRef.current = selectedIds; }, [selectedIds]);
+  useEffect(() => { selectedEdgeIdsRef.current = selectedEdgeIds; }, [selectedEdgeIds]);
   useEffect(() => {
     undoStack.current = [];
     redoStack.current = [];
@@ -83,7 +109,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
 
   function applyWithoutHistory(next: CanvasData) {
     boardRef.current = next;
-    onChange(next);
+    onChangeRef.current(next);
   }
 
   function pushUndoSnapshot() {
@@ -241,18 +267,45 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }));
 
   function onNodesChange(changes: NodeChange<FlowNode>[]) {
-    const movement = changes.filter((change) => change.type === "position" || change.type === "dimensions");
-    if (!movement.length) return;
-    const updated = applyNodeChanges(movement, flowNodes);
-    const byId = new Map(updated.map((node) => [node.id, node]));
-    applyWithoutHistory({
-      ...board,
-      nodes: board.nodes.map((node) => {
-        const changed = byId.get(node.id);
-        return changed ? { ...node, x: changed.position.x, y: changed.position.y } : node;
-      }),
+    const positions = new Map<string, { x: number; y: number }>();
+    for (const change of changes) {
+      if (change.type === "position" && change.position) positions.set(change.id, change.position);
+    }
+    if (!positions.size) return;
+    let didMove = false;
+    const nextNodes = board.nodes.map((node) => {
+      const position = positions.get(node.id);
+      if (!position || (closeEnough(node.x, position.x) && closeEnough(node.y, position.y))) return node;
+      didMove = true;
+      return { ...node, x: position.x, y: position.y };
     });
+    if (didMove) applyWithoutHistory({ ...board, nodes: nextNodes });
   }
+
+  const onSelectionChange = useCallback(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
+    const nextNodeIds = nodes.map((node) => node.id);
+    const nextEdgeIds = edges.map((edge) => edge.id);
+    if (!sameSelection(selectedNodeIdsRef.current, nextNodeIds)) {
+      selectedNodeIdsRef.current = nextNodeIds;
+      setSelectedIds(nextNodeIds);
+    }
+    if (!sameSelection(selectedEdgeIdsRef.current, nextEdgeIds)) {
+      selectedEdgeIdsRef.current = nextEdgeIds;
+      setSelectedEdgeIds(nextEdgeIds);
+    }
+  }, [setSelectedIds]);
+
+  const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
+    const current = boardRef.current;
+    if (!current) return;
+    const previous = current.viewport ?? {};
+    if (
+      closeEnough(previous.x, viewport.x) &&
+      closeEnough(previous.y, viewport.y) &&
+      closeEnough(previous.zoom, viewport.zoom, 0.0001)
+    ) return;
+    applyWithoutHistory({ ...current, viewport });
+  }, []);
 
   function onEdgesChange(changes: EdgeChange<Edge>[]) {
     const removed = new Set(changes.filter((change) => change.type === "remove").map((change) => change.id));
@@ -343,23 +396,23 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           onConnect={onConnect}
           onNodeDragStart={() => { if (!dragSnapshotTaken.current) { pushUndoSnapshot(); dragSnapshotTaken.current = true; } }}
           onNodeDragStop={() => { dragSnapshotTaken.current = false; setStatus("节点位置已更新，正在自动保存"); }}
-          onSelectionChange={({ nodes, edges }) => { setSelectedIds(nodes.map((node) => node.id)); setSelectedEdgeIds(edges.map((edge) => edge.id)); }}
-          onMoveEnd={(_, viewport) => { const current = boardRef.current; if (current) applyWithoutHistory({ ...current, viewport }); }}
+          onSelectionChange={onSelectionChange}
+          onMoveEnd={onMoveEnd}
           fitView
-          fitViewOptions={{ padding: 0.2, maxZoom: 1.05 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.2}
           maxZoom={1.8}
           selectionOnDrag
           panOnDrag={[1, 2]}
-          multiSelectionKeyCode={["Control", "Meta"]}
+          multiSelectionKeyCode={MULTI_SELECTION_KEYS}
           deleteKeyCode={null}
           snapToGrid
-          snapGrid={[10, 10]}
-          proOptions={{ hideAttribution: true }}
-          defaultEdgeOptions={{ type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed } }}
+          snapGrid={SNAP_GRID}
+          proOptions={PRO_OPTIONS}
+          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
         >
           <Background gap={20} size={1} color="#dfe4ea" />
-          <MiniMap pannable zoomable nodeColor={(node) => (node.data as FlowNodeData).canvasNode.type === "insight" ? "#c7000b" : "#9aa5b4"} />
+          <MiniMap pannable zoomable nodeColor={miniMapNodeColor} />
           <Controls showInteractive={false} />
         </ReactFlow>
       </section>
