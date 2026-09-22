@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import textwrap
-from typing import Any
+from typing import Any, Callable
 
 from app.repositories.lance_chunk_store import LanceChunkStore
 from app.repositories.workspace import WorkspaceRepository
@@ -33,17 +33,23 @@ class ContentWorkflowService:
         query: str,
         finding_count: int,
         use_llm: bool,
+        progress: Callable[[int, str, str], None] | None = None,
     ) -> tuple[list[dict[str, Any]], str, bool, str]:
+        emit = progress or (lambda _percent, _phase, _detail: None)
+        emit(8, "读取知识源", "正在确认知识库与检索配置")
         hits = self.retrieval.search(source_id, query, top_k=max(10, finding_count * 2))
         if not hits:
             raise ValueError("知识库中没有找到相关内容，请先刷新索引或调整问题")
+        emit(30, "混合检索完成", f"已召回 {len(hits)} 个候选证据片段")
         run_id = self.repository.create_run(project_id, "quick_research", query, [])
         payload = self._fallback_research(query, hits, finding_count)
+        emit(43, "整理证据", "正在去重并建立事实与来源的对应关系")
         trace: dict[str, str] = {}
         used_llm = False
         message = "已使用本地规则生成研究发现；配置并允许大模型后可获得更强的综合归纳。"
         if use_llm and self.repository.active_provider():
             try:
+                emit(55, "模型归纳", "正在调用已配置模型综合研究发现")
                 evidence_payload = [
                     {
                         "chunk_id": hit.chunk_id,
@@ -75,9 +81,12 @@ class ContentWorkflowService:
                     message = "已仅基于内部知识库生成研究发现和三条创意方向。"
             except Exception as exc:
                 message = f"大模型未使用，已安全降级为本地生成：{exc}"
+        else:
+            emit(55, "本地归纳", "未调用外部模型，正在使用本地规则生成")
 
         nodes: list[dict[str, Any]] = []
         finding_nodes: list[dict[str, Any]] = []
+        emit(72, "写入研究发现", "正在创建带证据引用的白板节点")
         for index, finding in enumerate(payload["findings"]):
             evidence = self._evidence_for_ids(finding["evidence_chunk_ids"], hits)
             node = self.repository.create_node(
@@ -101,6 +110,7 @@ class ContentWorkflowService:
             finding_nodes.append(node)
 
         direction_x = 1420
+        emit(88, "生成创意方向", "正在把研究发现组织为三条内容路线")
         for index, direction in enumerate(payload["directions"][:3]):
             source_indexes = direction.get("source_finding_indexes") or [index % len(finding_nodes)]
             parent = finding_nodes[min(max(int(source_indexes[0]), 0), len(finding_nodes) - 1)]
@@ -133,6 +143,7 @@ class ContentWorkflowService:
             trace.get("provider"),
             trace.get("model"),
         )
+        emit(100, "研究完成", f"已生成 {len(nodes)} 个白板节点")
         return nodes, run_id, used_llm, message
 
     def magic(
@@ -241,15 +252,19 @@ class ContentWorkflowService:
         title: str,
         duration_seconds: int,
         use_llm: bool,
-    ) -> tuple[dict[str, Any], dict[str, Any], str, bool, str]:
+        instruction: str = "",
+        save_as_asset: bool = True,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any], str, bool, str]:
         nodes = self._nodes(project_id, node_ids)
         run_id = self.repository.create_run(project_id, f"generate_{format_name}", title, node_ids)
         project = self.repository.get_project(project_id) or {}
         output_title = title or self._default_output_title(format_name, project.get("name", "内容项目"))
         body = self._fallback_output(format_name, output_title, nodes, duration_seconds)
+        if instruction.strip():
+            body = f"{body}\n\n## 本次创作要求\n\n{instruction.strip()}"
         used_llm = False
         trace: dict[str, str] = {}
-        message = "已生成内容资产草稿。"
+        message = "已生成内容资产草稿。" if save_as_asset else "已在白板生成可编辑内容草稿。"
         if use_llm and self.repository.active_provider():
             try:
                 system = self._output_system_prompt(format_name, duration_seconds)
@@ -259,6 +274,7 @@ class ContentWorkflowService:
                         {
                             "title": output_title,
                             "project": project,
+                            "writing_instruction": instruction.strip(),
                             "content_concept_and_evidence": self._compact_nodes(nodes),
                         },
                         ensure_ascii=False,
@@ -268,8 +284,10 @@ class ContentWorkflowService:
             except Exception as exc:
                 message = f"大模型未使用，已用本地模板生成草稿：{exc}"
         evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in nodes])
-        asset = self.repository.create_asset(
-            project_id, format_name, output_title, body, evidence
+        asset = (
+            self.repository.create_asset(project_id, format_name, output_title, body, evidence)
+            if save_as_asset
+            else None
         )
         output_node = self.repository.create_node(
             project_id,
@@ -282,13 +300,44 @@ class ContentWorkflowService:
                 "y": min(float(node.get("y", 0)) for node in nodes),
                 "created_by": "ai" if used_llm else "system",
                 "parent_id": nodes[0]["id"],
-                "metadata": {"asset_id": asset["id"], "format": format_name, "evidence": evidence},
+                "metadata": {
+                    **({"asset_id": asset["id"]} if asset else {}),
+                    "format": format_name,
+                    "instruction": instruction.strip(),
+                    "evidence": evidence,
+                },
             },
         )
         self.repository.finish_run(
             run_id, [output_node["id"]], trace.get("provider"), trace.get("model")
         )
         return asset, output_node, run_id, used_llm, message
+
+    def save_output_as_asset(
+        self, project_id: str, node_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        node = self.repository.get_node(node_id)
+        if not node or node.get("project_id") != project_id:
+            raise ValueError("内容节点不存在")
+        if node.get("type") != "output":
+            raise ValueError("只有内容输出节点可以保存到内容资产")
+        metadata = node.get("metadata") or {}
+        evidence = metadata.get("evidence") or []
+        format_name = str(metadata.get("format") or "wechat")
+        asset_id = metadata.get("asset_id")
+        asset = (
+            self.repository.update_asset(str(asset_id), node["title"], node["body"], evidence)
+            if asset_id
+            else None
+        )
+        if not asset:
+            asset = self.repository.create_asset(
+                project_id, format_name, node["title"], node["body"], evidence
+            )
+        updated = self.repository.update_node(
+            project_id, node_id, {"metadata": {**metadata, "asset_id": asset["id"]}}
+        )
+        return asset, updated or node
 
     @staticmethod
     def _fallback_research(query: str, hits: list[Any], count: int) -> dict[str, Any]:

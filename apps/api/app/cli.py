@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
         command = subparsers.add_parser(name)
         command.add_argument("--vault", type=Path, required=True)
         command.add_argument("--data-dir", type=Path, required=True)
-        command.add_argument("--name", default="Real Wiki")
+        command.add_argument("--name", default="本地知识库")
         if name == "evaluate":
             command.add_argument("--output", type=Path)
             command.add_argument("--cases", type=Path, required=True)

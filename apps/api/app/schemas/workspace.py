@@ -131,6 +131,8 @@ class ContentGenerateRequest(BaseModel):
     title: str = ""
     duration_seconds: int = Field(default=90, ge=15, le=600)
     use_llm: bool = True
+    instruction: str = Field(default="", max_length=2000)
+    save_as_asset: bool = True
 
 
 class ContentAssetResponse(BaseModel):

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi import Response
 
 from app.container import get_container
 from app.schemas.knowledge import (
@@ -48,6 +51,47 @@ def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceRespo
         root_path=str(path),
         enabled=True,
     )
+
+
+@router.delete("/knowledge-sources/{source_id}", status_code=204)
+def delete_source(source_id: str) -> Response:
+    source = get_container().manifest.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "知识源不存在")
+    document_ids = get_container().manifest.delete_source(source_id)
+    for document_id in document_ids:
+        get_container().chunk_store.delete_document(document_id)
+    return Response(status_code=204)
+
+
+@router.post("/system/select-folder")
+def select_folder() -> dict[str, str]:
+    """Open a native Windows folder picker from the local portable application."""
+    if os.name != "nt":
+        raise HTTPException(501, "文件夹浏览仅在 Windows 本地版中可用")
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$d=New-Object System.Windows.Forms.FolderBrowserDialog; "
+        "$d.Description='选择本地知识库文件夹'; $d.ShowNewFolderButton=$false; "
+        "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output $d.SelectedPath}"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(500, f"无法打开文件夹选择器：{exc}") from exc
+    if completed.returncode != 0:
+        raise HTTPException(500, completed.stderr.strip() or "无法打开文件夹选择器")
+    return {"path": completed.stdout.strip()}
 
 
 @router.post("/knowledge-sources/{source_id}/refresh")

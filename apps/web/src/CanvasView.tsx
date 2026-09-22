@@ -33,7 +33,7 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
     <div className="node-head"><span>{NODE_LABELS[node.type] ?? node.type}</span>{node.locked && <b>已锁定</b>}</div>
     <h3>{node.title}</h3>
     {node.type !== "frame" && <p>{node.body}</p>}
-    <div className="node-foot"><span>{STATUS_LABELS[node.status] ?? node.status}</span>{(node.metadata.evidence?.length ?? 0) > 0 && <span>{node.metadata.evidence?.length} 条证据</span>}</div>
+    <div className="node-foot"><span>{STATUS_LABELS[node.status] ?? node.status}</span>{(node.metadata?.evidence?.length ?? 0) > 0 && <span>{node.metadata?.evidence?.length} 条证据</span>}</div>
     {node.type !== "frame" && <Handle type="source" position={Position.Right} className="connection-handle" />}
   </article>;
 }
@@ -61,6 +61,12 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const [magicType, setMagicType] = useState("insight");
   const [busy, setBusy] = useState(false);
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [contentFormat, setContentFormat] = useState<"wechat" | "video_script" | "poster_campaign">("wechat");
+  const [contentTitle, setContentTitle] = useState("");
+  const [contentInstruction, setContentInstruction] = useState("");
+  const [contentDuration, setContentDuration] = useState(90);
+  const [contentUseLlm, setContentUseLlm] = useState(true);
   const [, setHistoryRevision] = useState(0);
   const undoStack = useRef<CanvasData[]>([]);
   const redoStack = useRef<CanvasData[]>([]);
@@ -289,6 +295,33 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
 
+  async function generateDraft() {
+    if (!selectedIds.length) return;
+    setBusy(true);
+    try {
+      const result = await api.generateContent(
+        activeProject.id, selectedIds, contentFormat, contentTitle, contentDuration,
+        contentUseLlm, contentInstruction, false,
+      );
+      setStatus(result.message); setComposerOpen(false); await onRefresh(); setSelectedIds([result.node.id]);
+    } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
+  }
+
+  async function saveAsAsset() {
+    if (!primary || primary.type !== "output" || !boardRef.current) return;
+    setBusy(true);
+    try {
+      await api.saveCanvas(activeProject.id, boardRef.current);
+      const result = await api.saveNodeAsAsset(activeProject.id, primary.id);
+      setStatus(result.message); await onRefresh(); setSelectedIds([primary.id]);
+    } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
+  }
+
+  function applyQuickInstruction(instruction: string) {
+    setMagicType(primary?.type === "output" ? "output" : "insight");
+    setMagic(instruction);
+  }
+
   return <div className="canvas-page">
     <PageHeader title={activeProject.name} description="拖拽布局和连接观点；支持撤回、重做、多选、快捷键与自动保存。" actions={<>
       <button className="secondary" disabled={!undoStack.current.length} onClick={undo} title="Ctrl+Z">撤回</button>
@@ -296,6 +329,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       <button className="secondary" onClick={addNote} title="N">添加节点</button>
       <button className="secondary" disabled={!selectedIds.length && !selectedEdgeIds.length} onClick={deleteSelection} title="Delete">删除</button>
       <button className="secondary" disabled={selected.length < 2} onClick={createGroup}>创建分组</button>
+      <button className="primary" disabled={!selectedIds.length} onClick={() => setComposerOpen(true)}>生成新内容</button>
     </>} />
     <div className="canvas-shortcuts"><span>拖动节点移动</span><span>从圆点拖出连线</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
     <div className="canvas-workspace flow-workspace">
@@ -310,7 +344,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           onNodeDragStart={() => { if (!dragSnapshotTaken.current) { pushUndoSnapshot(); dragSnapshotTaken.current = true; } }}
           onNodeDragStop={() => { dragSnapshotTaken.current = false; setStatus("节点位置已更新，正在自动保存"); }}
           onSelectionChange={({ nodes, edges }) => { setSelectedIds(nodes.map((node) => node.id)); setSelectedEdgeIds(edges.map((edge) => edge.id)); }}
-          onMoveEnd={(_, viewport) => applyWithoutHistory({ ...boardRef.current!, viewport })}
+          onMoveEnd={(_, viewport) => { const current = boardRef.current; if (current) applyWithoutHistory({ ...current, viewport }); }}
           fitView
           fitViewOptions={{ padding: 0.2, maxZoom: 1.05 }}
           minZoom={0.2}
@@ -333,11 +367,14 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <div className="inspector-title"><div><small>{NODE_LABELS[primary.type] ?? primary.type}</small><h2>节点检查器</h2></div><button className="icon-button danger" disabled={primary.locked} onClick={deleteSelection}>删除</button></div>
         <label>标题<input disabled={primary.locked} value={primary.title} onChange={(event) => updateLocal(primary.id, { title: event.target.value })} /></label>
         <label>正文<textarea disabled={primary.locked} value={primary.body} onChange={(event) => updateLocal(primary.id, { body: event.target.value })} /></label>
+        <div className="quick-edit"><small>快速加工</small><div><button className="secondary" onClick={() => applyQuickInstruction("调整表达风格，使内容更清晰、有节奏，并保留原有事实")}>调整风格</button><button className="secondary" onClick={() => applyQuickInstruction("基于现有证据补充事实、案例和具体细节；证据不足时明确指出缺口，不得编造")}>补充事实/案例</button><button className="secondary" onClick={() => applyQuickInstruction("优化结构与论证顺序，强化开头、转折和结论")}>优化结构</button></div></div>
         <label>状态<select disabled={primary.locked} value={primary.status} onChange={(event) => updateLocal(primary.id, { status: event.target.value })}><option value="exploring">探索中</option><option value="candidate">候选</option><option value="approved">已批准</option></select></label>
         <label className="switch-row"><span><strong>锁定节点</strong><small>锁定后不能修改内容或删除</small></span><input type="checkbox" checked={primary.locked} onChange={(event) => updateLocal(primary.id, { locked: event.target.checked, status: event.target.checked ? "locked" : primary.status === "locked" ? "candidate" : primary.status })} /></label>
-        {!!primary.metadata.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
+        {primary.type === "output" && <div className="asset-save-panel"><strong>{primary.metadata?.asset_id ? "已关联内容资产" : "仍是白板草稿"}</strong><p>先在上方直接修改，确认后再保存到内容资产；再次保存会生成新版本。</p><button className="primary" disabled={busy || primary.locked} onClick={saveAsAsset}>{busy ? "正在保存…" : primary.metadata?.asset_id ? "更新内容资产" : "保存到内容资产"}</button></div>}
+        {!!primary.metadata?.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : selectedEdgeIds.length ? `已选择 ${selectedEdgeIds.length} 条连接` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以创建分组、复制、删除或用智能加工栏处理。" : "从节点边缘的圆点拖到另一个节点，即可创建连接。"}</p></div>}</aside>
     </div>
     {!!selectedIds.length && <div className="magic-bar"><span>已选择 {selectedIds.length} 项</span><select value={magicType} onChange={(event) => setMagicType(event.target.value)}><option value="insight">生成洞察</option><option value="challenge">保存质疑</option><option value="creative_pattern">保存创意模式</option><option value="note">生成笔记</option></select><input value={magic} onChange={(event) => setMagic(event.target.value)} placeholder="例如：找出这些信息里的矛盾，并形成一个核心判断" onKeyDown={(event) => { if (event.key === "Enter") runMagic(); }} /><button className="secondary" disabled={busy} onClick={concept}>形成内容概念</button><button className="primary" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "处理中…" : "用大模型加工"}</button></div>}
+    {composerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setComposerOpen(false); }}><section className="content-composer" role="dialog" aria-modal="true" aria-label="在白板生成新内容"><div className="composer-head"><div><small>白板内容工坊</small><h2>从选中节点生成可编辑草稿</h2><p>草稿先留在白板，修改满意后再保存到内容资产。</p></div><button className="icon-button" onClick={() => setComposerOpen(false)}>关闭</button></div><div className="composer-grid"><label>内容形态<select value={contentFormat} onChange={(event) => setContentFormat(event.target.value as typeof contentFormat)}><option value="wechat">微信公众号</option><option value="video_script">视频号 / 短视频脚本</option><option value="poster_campaign">海报 / 营销活动</option></select></label><label>标题（可选）<input value={contentTitle} onChange={(event) => setContentTitle(event.target.value)} placeholder="留空则自动生成" /></label></div>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<label>风格与创作要求<textarea value={contentInstruction} onChange={(event) => setContentInstruction(event.target.value)} placeholder="例如：专业但不生硬；开头用真实场景切入；增加一个有证据支持的案例；结尾给出三条行动建议。" /></label><label className="check"><input type="checkbox" checked={contentUseLlm} onChange={(event) => setContentUseLlm(event.target.checked)} />使用已配置大模型</label><div className="composer-actions"><span>将使用 {selectedIds.length} 个白板节点作为依据</span><button className="primary large" disabled={busy} onClick={generateDraft}>{busy ? "正在生成…" : "生成到白板"}</button></div></section></div>}
   </div>;
 }

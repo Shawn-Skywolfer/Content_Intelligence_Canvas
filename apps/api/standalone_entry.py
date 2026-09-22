@@ -80,15 +80,26 @@ def _copy_seed_data(runtime_root: Path, user_root: Path) -> tuple[Path, Path]:
         shutil.copytree(seed / "private-evaluation", private_dir)
 
     database = data_dir / "app.db"
-    if database.exists() and wiki_dir.exists():
+    marker = wiki_dir / "README.md"
+    if database.exists() and marker.exists():
         try:
+            marker_text = marker.read_text(encoding="utf-8", errors="ignore")
             with sqlite3.connect(database) as connection:
                 table = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_sources'"
                 ).fetchone()
-                if table:
+                if table and "GitHub Release public test seed" in marker_text:
+                    legacy_ids = [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT id FROM knowledge_sources WHERE root_path = ?",
+                            (str(wiki_dir.resolve()),),
+                        ).fetchall()
+                    ]
+                    for source_id in legacy_ids:
+                        connection.execute("DELETE FROM knowledge_documents WHERE source_id = ?", (source_id,))
                     connection.execute(
-                        "UPDATE knowledge_sources SET root_path = ? WHERE connector_type = 'local_vault'",
+                        "DELETE FROM knowledge_sources WHERE root_path = ?",
                         (str(wiki_dir.resolve()),),
                     )
                     connection.commit()

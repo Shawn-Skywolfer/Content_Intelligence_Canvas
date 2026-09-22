@@ -44,6 +44,11 @@ export type SearchOptions = {
   top_k: number; lexical_weight: number; semantic_weight: number; wikilink_enabled: boolean;
   wikilink_weight: number; max_per_document: number;
 };
+export type ResearchJob = {
+  job_id: string; project_id: string; status: "running" | "completed" | "failed";
+  progress: number; phase: string; detail: string; error?: string;
+  result?: { nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string };
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -68,6 +73,8 @@ export const api = {
   createSource: (name: string, root_path: string) => request<Source>("/api/knowledge-sources", {
     method: "POST", body: JSON.stringify({ name, root_path }),
   }),
+  deleteSource: (sourceId: string) => request<void>(`/api/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+  selectFolder: () => request<{ path: string }>("/api/system/select-folder", { method: "POST" }),
   refresh: (sourceId: string) => request<Record<string, unknown>>(`/api/knowledge-sources/${sourceId}/refresh`, { method: "POST" }),
   search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[] }>("/api/knowledge/search", {
     method: "POST", body: JSON.stringify({ source_id: sourceId, query, ...options }),
@@ -96,6 +103,11 @@ export const api = {
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/research/quick`, {
       method: "POST", body: JSON.stringify({ source_id: sourceId, query, finding_count: findingCount, use_llm: useLlm }),
     }),
+  startQuickResearch: (projectId: string, sourceId: string, query: string, findingCount: number, useLlm: boolean) =>
+    request<ResearchJob>(`/api/projects/${projectId}/research/quick/start`, {
+      method: "POST", body: JSON.stringify({ source_id: sourceId, query, finding_count: findingCount, use_llm: useLlm }),
+    }),
+  researchJob: (jobId: string) => request<ResearchJob>(`/api/research/jobs/${jobId}`),
   magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight") =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),
@@ -105,10 +117,12 @@ export const api = {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, title, use_llm: useLlm }),
     }),
   listAssets: (projectId: string) => request<ContentAsset[]>(`/api/projects/${projectId}/assets`),
-  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true) =>
-    request<{ asset: ContentAsset; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm }),
+  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true) =>
+    request<{ asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, save_as_asset: saveAsAsset }),
     }),
+  saveNodeAsAsset: (projectId: string, nodeId: string) =>
+    request<{ asset: ContentAsset; node: CanvasNode; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/save-asset`, { method: "POST" }),
 
   listProviders: () => request<Provider[]>("/api/providers"),
   saveProvider: (provider: Record<string, unknown>) => request<Provider>("/api/providers", {

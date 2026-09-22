@@ -209,7 +209,41 @@ class WorkspaceRepository:
             raise KeyError("Project canvas not found")
         return str(row["id"])
 
+    def ensure_canvas(self, project_id: str) -> None:
+        """Repair projects created by older/incomplete builds before opening the canvas."""
+        project = self.get_project(project_id)
+        if not project:
+            raise KeyError("Project not found")
+        with self._connect() as db:
+            row = db.execute("SELECT id FROM canvases WHERE project_id=?", (project_id,)).fetchone()
+            if not row:
+                now = utc_now()
+                db.execute(
+                    "INSERT INTO canvases(id,project_id,viewport_json,updated_at) VALUES(?,?,?,?)",
+                    (f"cnv_{uuid.uuid4().hex}", project_id, json.dumps({"x": 0, "y": 0, "zoom": 1}), now),
+                )
+            node_count = int(
+                db.execute("SELECT COUNT(*) FROM canvas_nodes WHERE project_id=?", (project_id,)).fetchone()[0]
+            )
+        if node_count == 0:
+            idea_node = self.create_node(
+                project_id,
+                {"type": "idea", "title": "原始想法", "body": project.get("idea", ""), "x": 80, "y": 120},
+            )
+            self.create_node(
+                project_id,
+                {
+                    "type": "brief",
+                    "title": "内容简报",
+                    "body": project.get("brief") or "可在此补充目标受众、传播目标、语气和限制条件。",
+                    "x": 80,
+                    "y": 390,
+                    "parent_id": idea_node["id"],
+                },
+            )
+
     def get_canvas(self, project_id: str) -> dict[str, Any]:
+        self.ensure_canvas(project_id)
         with self._connect() as db:
             canvas = db.execute("SELECT * FROM canvases WHERE project_id=?", (project_id,)).fetchone()
             if not canvas:
@@ -351,6 +385,11 @@ class WorkspaceRepository:
                 incoming_ids.add(node_id)
                 values = dict(node)
                 values.pop("id", None)
+                if "metadata" in values:
+                    current_metadata = existing[node_id].get("metadata") or {}
+                    incoming_metadata = values.get("metadata") or {}
+                    if current_metadata.get("asset_id") and not incoming_metadata.get("asset_id"):
+                        values["metadata"] = {**incoming_metadata, "asset_id": current_metadata["asset_id"]}
                 if existing[node_id]["locked"]:
                     allowed_locked = ["x", "y", "width", "height", "locked"]
                     if values.get("locked") is False:
@@ -456,6 +495,20 @@ class WorkspaceRepository:
                 "SELECT * FROM content_assets WHERE project_id=? ORDER BY created_at DESC", (project_id,)
             ).fetchall()
         return [self._decode(row, "evidence_json") or {} for row in rows]
+
+    def update_asset(
+        self, asset_id: str, title: str, body: str, evidence: list[dict[str, Any]], status: str = "draft"
+    ) -> dict[str, Any] | None:
+        current = self.get_asset(asset_id)
+        if not current:
+            return None
+        with self._connect() as db:
+            db.execute(
+                """UPDATE content_assets SET title=?,body=?,evidence_json=?,status=?,version=version+1,
+                updated_at=? WHERE id=?""",
+                (title, body, json.dumps(evidence, ensure_ascii=False), status, utc_now(), asset_id),
+            )
+        return self.get_asset(asset_id)
 
     def upsert_provider(self, values: dict[str, Any]) -> dict[str, Any]:
         provider_id = values.get("id") or f"prv_{uuid.uuid4().hex}"

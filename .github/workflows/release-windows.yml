@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.3
+      - release/v0.3.4
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.3"
+      RELEASE_TAG: "v0.3.4"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,7 +53,6 @@ jobs:
           Copy-Item -Recurse -Force apps/api/app (Join-Path $runtime "apps\api\app")
           Copy-Item -Force apps/api/standalone_entry.py $runtime
           Copy-Item -Recurse -Force apps/web/dist/* (Join-Path $runtime "web_dist")
-          @('# GitHub Release public test seed', '# 私有绿色版的数据不会上传到公开仓库。请在设置中添加本地 Wiki 路径。') | Set-Content -LiteralPath (Join-Path $runtime "seed\wiki\README.md") -Encoding utf8
           & (Join-Path $runtime "python.exe") -c "import sys; sys.path.insert(0, r'$runtime\apps\api'); from pathlib import Path; from app.repositories.workspace import WorkspaceRepository; WorkspaceRepository(Path(r'$runtime\seed\data\app.db'))"
 
       - name: 编译原生启动器
@@ -72,21 +71,21 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.3_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.4_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.3.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.3.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.4.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.4.exe -Algorithm SHA256 | Format-List
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: Content Intelligence Canvas v0.3.3
+          name: Content Intelligence Canvas v0.3.4
           body: |
             Windows portable public test build.
 
-            修复 WinError 10060 和无效系统代理导致的模型连接问题，新增自动、直连、Windows 系统代理和自定义代理四种网络模式。
+            新增 Windows 原生文件夹浏览与知识源移除；修复旧版错误添加 Real Wiki、首次进入白板白屏和初始化失败；新增实时研究进度，以及白板内生成、编辑、AI 加工并确认保存到内容资产的完整流程。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.3.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.4.exe
           generate_release_notes: true

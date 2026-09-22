@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -26,6 +28,41 @@ from app.schemas.workspace import (
 
 
 router = APIRouter(prefix="/api", tags=["workspace"])
+_research_jobs: dict[str, dict[str, Any]] = {}
+_research_lock = threading.Lock()
+
+
+def _set_research_job(job_id: str, **values: Any) -> None:
+    with _research_lock:
+        if job_id in _research_jobs:
+            _research_jobs[job_id].update(values)
+
+
+def _run_research_job(job_id: str, project_id: str, request: QuickResearchRequest) -> None:
+    try:
+        def progress(percent: int, phase: str, detail: str) -> None:
+            _set_research_job(job_id, progress=percent, phase=phase, detail=detail)
+
+        nodes, run_id, used_llm, message = get_container().workflow.quick_research(
+            project_id,
+            request.source_id,
+            request.query,
+            request.finding_count,
+            request.use_llm,
+            progress,
+        )
+        _set_research_job(
+            job_id,
+            status="completed",
+            progress=100,
+            phase="研究完成",
+            detail=message,
+            result={"nodes": nodes, "run_id": run_id, "used_llm": used_llm, "message": message},
+        )
+    except Exception as exc:
+        _set_research_job(
+            job_id, status="failed", phase="研究失败", detail=str(exc), error=str(exc)
+        )
 
 
 def _project(project_id: str) -> dict[str, Any]:
@@ -128,6 +165,39 @@ def quick_research(project_id: str, request: QuickResearchRequest) -> WorkflowRe
     return WorkflowResponse(nodes=nodes, run_id=run_id, used_llm=used_llm, message=message)
 
 
+@router.post("/projects/{project_id}/research/quick/start")
+def start_quick_research(project_id: str, request: QuickResearchRequest) -> dict[str, Any]:
+    _project(project_id)
+    if not get_container().manifest.get_source(request.source_id):
+        raise HTTPException(404, "知识源不存在")
+    job_id = f"job_{uuid.uuid4().hex}"
+    with _research_lock:
+        _research_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": project_id,
+            "status": "running",
+            "progress": 2,
+            "phase": "准备研究",
+            "detail": "正在启动本地研究任务",
+        }
+    threading.Thread(
+        target=_run_research_job,
+        args=(job_id, project_id, request),
+        name=f"research-{job_id[-8:]}",
+        daemon=True,
+    ).start()
+    return dict(_research_jobs[job_id])
+
+
+@router.get("/research/jobs/{job_id}")
+def get_research_job(job_id: str) -> dict[str, Any]:
+    with _research_lock:
+        job = _research_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "研究任务不存在或应用已重启")
+        return dict(job)
+
+
 @router.post("/projects/{project_id}/magic", response_model=WorkflowResponse)
 def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     _project(project_id)
@@ -169,6 +239,8 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
             request.title,
             request.duration_seconds,
             request.use_llm,
+            request.instruction,
+            request.save_as_asset,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -179,6 +251,16 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
         "used_llm": used_llm,
         "message": message,
     }
+
+
+@router.post("/projects/{project_id}/nodes/{node_id}/save-asset")
+def save_node_as_asset(project_id: str, node_id: str) -> dict[str, Any]:
+    _project(project_id)
+    try:
+        asset, node = get_container().workflow.save_output_as_asset(project_id, node_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"asset": asset, "node": node, "message": "内容已保存到内容资产"}
 
 
 @router.get("/projects/{project_id}/runs")
