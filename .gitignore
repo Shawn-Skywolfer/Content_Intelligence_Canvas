@@ -1,0 +1,12 @@
+.venv/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+data/
+fixtures/wiki/
+fixtures/wiki-cases.json
+docs/retrieval-evaluation.json
+*.pyc
+.env

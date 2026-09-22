@@ -1,0 +1,70 @@
+name: 持续集成
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: 后端测试
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - run: pytest
+
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  windows-portable:
+    name: Windows 绿色版兼容性
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: 安装并测试后端
+        shell: pwsh
+        run: |
+          python -m pip install -e "apps/api[dev]"
+          python -m pytest apps/api/tests
+          python -m py_compile apps/api/standalone_entry.py
+      - name: 构建同源前端
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
+      - name: 验证生产包没有固定跨域地址
+        shell: pwsh
+        run: |
+          if (Select-String -Path "apps/web/dist/assets/*.js" -Pattern "localhost:8000" -Quiet) {
+            throw "生产前端仍包含固定 API 地址"
+          }
