@@ -30,7 +30,9 @@ def test_canvas_self_repairs_and_draft_is_saved_only_on_confirmation(tmp_path: P
     repaired = client.get(f"/api/projects/{project_id}/canvas")
     assert repaired.status_code == 200
     nodes = repaired.json()["nodes"]
-    assert {node["type"] for node in nodes} == {"idea", "brief"}
+    node_types = {node["type"] for node in nodes}
+    assert {"idea", "brief", "frame", "fact", "insight", "output"} <= node_types
+    assert len([node for node in nodes if node["type"] == "frame"]) == 4
 
     draft = client.post(
         f"/api/projects/{project_id}/content/generate",
@@ -57,6 +59,74 @@ def test_canvas_self_repairs_and_draft_is_saved_only_on_confirmation(tmp_path: P
     assert saved.status_code == 200
     assert saved.json()["asset"]["body"] == "这是用户在白板中修改后的最终正文。"
     assert len(client.get(f"/api/projects/{project_id}/assets").json()) == 1
+
+
+def test_directed_upstream_context_is_inherited_and_generation_stays_in_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, _ = _client(tmp_path, monkeypatch)
+    project = client.post(
+        "/api/projects", json={"name": "有向上下文", "idea": "测试", "brief": ""}
+    ).json()
+    project_id = project["id"]
+    canvas = client.get(f"/api/projects/{project_id}/canvas").json()
+    source = next(node for node in canvas["nodes"] if node["type"] == "fact")
+    target = next(node for node in canvas["nodes"] if node["type"] == "note")
+    source["title"] = "上游事实"
+    source["body"] = "这条事实必须出现在下游生成上下文中。"
+    canvas["edges"].append({
+        "id": "edge_directed_context",
+        "source_node_id": source["id"],
+        "target_node_id": target["id"],
+        "relation": "context",
+        "metadata": {"source_handle": "right", "target_handle": "left"},
+    })
+    saved = client.put(
+        f"/api/projects/{project_id}/canvas",
+        json={"nodes": canvas["nodes"], "edges": canvas["edges"], "viewport": canvas["viewport"]},
+    )
+    assert saved.status_code == 200
+    before_count = len(saved.json()["nodes"])
+
+    generated = client.post(
+        f"/api/projects/{project_id}/nodes/{target['id']}/generate",
+        json={"instruction": "整理成一句清晰判断", "use_llm": False},
+    )
+    assert generated.status_code == 200
+    updated = generated.json()["nodes"][0]
+    assert updated["id"] == target["id"]
+    assert "上游事实" in updated["body"]
+    assert source["id"] in updated["metadata"]["inherited_upstream_ids"]
+    after = client.get(f"/api/projects/{project_id}/canvas").json()
+    assert len(after["nodes"]) == before_count
+
+
+def test_content_generation_job_reports_live_progress(tmp_path: Path, monkeypatch) -> None:
+    client, _ = _client(tmp_path, monkeypatch)
+    project = client.post(
+        "/api/projects", json={"name": "进展", "idea": "生成一篇内容", "brief": ""}
+    ).json()
+    canvas = client.get(f"/api/projects/{project['id']}/canvas").json()
+    idea = next(node for node in canvas["nodes"] if node["type"] == "idea")
+    started = client.post(
+        f"/api/projects/{project['id']}/content/generate/start",
+        json={
+            "node_ids": [idea["id"]], "format": "wechat", "title": "进展测试",
+            "duration_seconds": 90, "use_llm": False, "instruction": "结构清晰",
+            "save_as_asset": False,
+        },
+    )
+    assert started.status_code == 200
+    job = started.json()
+    for _ in range(100):
+        job = client.get(f"/api/content/jobs/{job['job_id']}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert job["status"] == "completed"
+    assert job["progress"] == 100
+    assert job["result"]["asset"] is None
+    assert job["result"]["node"]["type"] == "output"
 
 
 def test_research_job_reports_progress_and_source_can_be_removed(tmp_path: Path, monkeypatch) -> None:

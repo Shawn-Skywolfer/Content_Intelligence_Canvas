@@ -9,7 +9,7 @@ from app.api.workspace import router as workspace_router
 from app.config import Settings
 
 settings = Settings.from_env()
-app = FastAPI(title="Content Intelligence Canvas API", version="0.3.5")
+app = FastAPI(title="Content Intelligence Canvas API", version="0.3.6")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin],
@@ -24,4 +24,4 @@ app.include_router(settings_router)
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "phase": "v0.3.5-portable"}
+    return {"status": "ok", "phase": "v0.3.6-portable"}

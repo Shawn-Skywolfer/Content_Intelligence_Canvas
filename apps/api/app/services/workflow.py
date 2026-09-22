@@ -154,25 +154,29 @@ class ContentWorkflowService:
         output_type: str,
     ) -> tuple[dict[str, Any], str, bool, str]:
         nodes = self._nodes(project_id, node_ids)
+        upstream = self.repository.upstream_nodes(project_id, node_ids)
+        context_nodes = [*nodes, *upstream]
         run_id = self.repository.create_run(project_id, "magic_bar", instruction, node_ids)
         used_llm = False
         trace: dict[str, str] = {}
         title = f"AI 加工：{instruction[:24]}"
-        body = self._fallback_magic(instruction, nodes)
+        body = self._fallback_magic(instruction, context_nodes)
         message = "已生成新节点，原节点未被覆盖。"
         if self.repository.active_provider():
             try:
                 body, trace = self.ai.complete(
                     "你是内容白板共创助手。根据选中节点执行指令，输出一段可直接放入新节点的中文内容。"
                     "不得声称输入里没有的事实；保留不确定性；不要覆盖原节点。",
-                    json.dumps(
-                        {"instruction": instruction, "nodes": self._compact_nodes(nodes)}, ensure_ascii=False
-                    ),
+                    json.dumps({
+                        "instruction": instruction,
+                        "selected_nodes": self._compact_nodes(nodes),
+                        "inherited_upstream_context": self._compact_nodes(upstream),
+                    }, ensure_ascii=False),
                 )
                 used_llm = True
             except Exception as exc:
                 message = f"大模型未使用，已本地降级并创建新节点：{exc}"
-        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in nodes])
+        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in context_nodes])
         created = self.repository.create_node(
             project_id,
             {
@@ -184,7 +188,11 @@ class ContentWorkflowService:
                 "y": min(float(node.get("y", 0)) for node in nodes),
                 "created_by": "ai" if used_llm else "system",
                 "parent_id": nodes[0]["id"],
-                "metadata": {"instruction": instruction, "evidence": evidence},
+                "metadata": {
+                    "instruction": instruction,
+                    "inherited_upstream_ids": [node["id"] for node in upstream],
+                    "evidence": evidence,
+                },
             },
         )
         for node in nodes[1:]:
@@ -202,10 +210,12 @@ class ContentWorkflowService:
         use_llm: bool,
     ) -> tuple[dict[str, Any], str, bool, str]:
         nodes = self._nodes(project_id, node_ids)
+        upstream = self.repository.upstream_nodes(project_id, node_ids)
+        context_nodes = [*nodes, *upstream]
         run_id = self.repository.create_run(project_id, "content_concept", title, node_ids)
         project = self.repository.get_project(project_id) or {}
         concept_title = title or f"内容概念：{project.get('name', '未命名项目')}"
-        body = self._fallback_concept(project, nodes)
+        body = self._fallback_concept(project, context_nodes)
         trace: dict[str, str] = {}
         used_llm = False
         message = "已生成待批准的内容概念。"
@@ -216,13 +226,17 @@ class ContentWorkflowService:
                     "目标受众、为何现在、叙事结构、核心主张、关键证据、品牌角色、语气、"
                     "创意模式、视觉方向。所有标题使用中文，不要创造输入之外的事实。",
                     json.dumps(
-                        {"project": project, "selected_nodes": self._compact_nodes(nodes)}, ensure_ascii=False
+                        {
+                            "project": project,
+                            "selected_nodes": self._compact_nodes(nodes),
+                            "inherited_upstream_context": self._compact_nodes(upstream),
+                        }, ensure_ascii=False
                     ),
                 )
                 used_llm = True
             except Exception as exc:
                 message = f"大模型未使用，已用本地模板生成 Concept：{exc}"
-        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in nodes])
+        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in context_nodes])
         concept = self.repository.create_node(
             project_id,
             {
@@ -234,7 +248,11 @@ class ContentWorkflowService:
                 "y": min(float(node.get("y", 0)) for node in nodes),
                 "created_by": "ai" if used_llm else "system",
                 "parent_id": nodes[0]["id"],
-                "metadata": {"evidence": evidence, "requires_approval": True},
+                "metadata": {
+                    "evidence": evidence,
+                    "requires_approval": True,
+                    "inherited_upstream_ids": [node["id"] for node in upstream],
+                },
             },
         )
         for node in nodes[1:]:
@@ -254,12 +272,18 @@ class ContentWorkflowService:
         use_llm: bool,
         instruction: str = "",
         save_as_asset: bool = True,
+        progress: Callable[[int, str, str], None] | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any], str, bool, str]:
         nodes = self._nodes(project_id, node_ids)
+        upstream = self.repository.upstream_nodes(project_id, node_ids)
+        context_nodes = [*nodes, *upstream]
+        emit = progress or (lambda _percent, _phase, _detail: None)
+        emit(8, "读取白板上下文", f"已选择 {len(nodes)} 个节点，并继承 {len(upstream)} 个上游节点")
         run_id = self.repository.create_run(project_id, f"generate_{format_name}", title, node_ids)
         project = self.repository.get_project(project_id) or {}
         output_title = title or self._default_output_title(format_name, project.get("name", "内容项目"))
-        body = self._fallback_output(format_name, output_title, nodes, duration_seconds)
+        emit(25, "组织内容结构", "正在整理观点、证据和叙事顺序")
+        body = self._fallback_output(format_name, output_title, context_nodes, duration_seconds)
         if instruction.strip():
             body = f"{body}\n\n## 本次创作要求\n\n{instruction.strip()}"
         used_llm = False
@@ -267,6 +291,7 @@ class ContentWorkflowService:
         message = "已生成内容资产草稿。" if save_as_asset else "已在白板生成可编辑内容草稿。"
         if use_llm and self.repository.active_provider():
             try:
+                emit(45, "调用大模型", "正在根据创作要求生成完整草稿")
                 system = self._output_system_prompt(format_name, duration_seconds)
                 body, trace = self.ai.complete(
                     system,
@@ -275,7 +300,8 @@ class ContentWorkflowService:
                             "title": output_title,
                             "project": project,
                             "writing_instruction": instruction.strip(),
-                            "content_concept_and_evidence": self._compact_nodes(nodes),
+                            "selected_nodes": self._compact_nodes(nodes),
+                            "inherited_upstream_context": self._compact_nodes(upstream),
                         },
                         ensure_ascii=False,
                     ),
@@ -283,7 +309,10 @@ class ContentWorkflowService:
                 used_llm = True
             except Exception as exc:
                 message = f"大模型未使用，已用本地模板生成草稿：{exc}"
-        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in nodes])
+        else:
+            emit(45, "本地生成", "未调用外部模型，正在使用本地内容模板")
+        emit(78, "生成白板草稿", "正在创建可继续修改的内容节点")
+        evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in context_nodes])
         asset = (
             self.repository.create_asset(project_id, format_name, output_title, body, evidence)
             if save_as_asset
@@ -304,6 +333,7 @@ class ContentWorkflowService:
                     **({"asset_id": asset["id"]} if asset else {}),
                     "format": format_name,
                     "instruction": instruction.strip(),
+                    "inherited_upstream_ids": [node["id"] for node in upstream],
                     "evidence": evidence,
                 },
             },
@@ -311,7 +341,65 @@ class ContentWorkflowService:
         self.repository.finish_run(
             run_id, [output_node["id"]], trace.get("provider"), trace.get("model")
         )
+        emit(100, "内容生成完成", "草稿已写入白板，可继续编辑后保存为内容资产")
         return asset, output_node, run_id, used_llm, message
+
+    def generate_into_node(
+        self, project_id: str, node_id: str, instruction: str, use_llm: bool = True
+    ) -> tuple[dict[str, Any], str, bool, str]:
+        target = self._nodes(project_id, [node_id])[0]
+        if target.get("locked"):
+            raise ValueError("节点已锁定，不能生成或改写")
+        upstream = self.repository.upstream_nodes(project_id, [node_id])
+        context_nodes = [target, *upstream]
+        run_id = self.repository.create_run(
+            project_id, "generate_into_node", instruction, [node_id, *[node["id"] for node in upstream]]
+        )
+        body = self._fallback_magic(instruction, context_nodes)
+        used_llm = False
+        trace: dict[str, str] = {}
+        message = f"已在当前节点生成内容，并继承 {len(upstream)} 个上游节点作为上下文。"
+        if use_llm and self.repository.active_provider():
+            try:
+                body, trace = self.ai.complete(
+                    "你是内容白板共创助手。请根据处理指令，直接生成当前目标节点的完整正文。"
+                    "上游节点是只读上下文；必须继承其中相关信息与证据，但不得虚构事实。"
+                    "只输出处理后的完整正文，不要解释过程，也不要创建新节点。",
+                    json.dumps(
+                        {
+                            "instruction": instruction,
+                            "target_node": self._compact_nodes([target])[0],
+                            "inherited_upstream_context": self._compact_nodes(upstream),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                used_llm = True
+            except Exception as exc:
+                message = f"大模型未使用，已在当前节点完成本地生成：{exc}"
+        evidence = self._merge_evidence(
+            [node.get("metadata", {}).get("evidence", []) for node in context_nodes]
+        )
+        metadata = target.get("metadata") or {}
+        updated = self.repository.update_node(
+            project_id,
+            node_id,
+            {
+                "body": body,
+                "metadata": {
+                    **metadata,
+                    "last_instruction": instruction,
+                    "inherited_upstream_ids": [node["id"] for node in upstream],
+                    "evidence": evidence,
+                },
+            },
+        )
+        if not updated:
+            raise ValueError("目标节点不存在")
+        self.repository.finish_run(
+            run_id, [node_id], trace.get("provider"), trace.get("model")
+        )
+        return updated, run_id, used_llm, message
 
     def save_output_as_asset(
         self, project_id: str, node_id: str

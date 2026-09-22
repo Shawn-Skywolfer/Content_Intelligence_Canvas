@@ -178,6 +178,7 @@ class WorkspaceRepository:
                 "parent_id": idea_node["id"],
             },
         )
+        self.ensure_canvas(project_id)
         return self.get_project(project_id) or {}
 
     def list_projects(self) -> list[dict[str, Any]]:
@@ -241,6 +242,90 @@ class WorkspaceRepository:
                     "parent_id": idea_node["id"],
                 },
             )
+        self._seed_initial_groups(project_id)
+
+    def _seed_initial_groups(self, project_id: str) -> None:
+        """Add a grouped starter board only while a project still has its two initial nodes."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT id,type FROM canvas_nodes WHERE project_id=? ORDER BY created_at", (project_id,)
+            ).fetchall()
+        if len(rows) != 2 or {str(row["type"]) for row in rows} != {"idea", "brief"}:
+            return
+        ids_by_type = {str(row["type"]): str(row["id"]) for row in rows}
+        self.update_node(
+            project_id, ids_by_type["idea"],
+            {"x": 80, "y": 130, "width": 310, "height": 190, "metadata": {"starter_group": "input"}},
+        )
+        self.update_node(
+            project_id, ids_by_type["brief"],
+            {"x": 420, "y": 130, "width": 310, "height": 190, "metadata": {"starter_group": "input"}},
+        )
+        groups = [
+            ("input", "01 输入与简报", 40, 40),
+            ("research", "02 研究与证据", 820, 40),
+            ("thinking", "03 洞察与策略", 40, 690),
+            ("output", "04 内容生产", 820, 690),
+        ]
+        for key, title, x, y in groups:
+            self.create_node(
+                project_id,
+                {
+                    "type": "frame", "title": title, "body": "", "x": x, "y": y,
+                    "width": 730, "height": 570, "created_by": "system",
+                    "metadata": {"starter_frame": True, "group_key": key},
+                },
+            )
+        templates = [
+            ("knowledge", "知识材料", "从知识检索加入的原始材料与段落。", 860, 130, "research"),
+            ("fact", "事实证据", "可验证的事实、数字与案例。", 1200, 130, "research"),
+            ("signal", "变化信号", "值得关注的市场、客户或技术变化。", 860, 350, "research"),
+            ("internal_knowledge", "内部知识", "来自内部 Wiki 的观点与方法。", 1200, 350, "research"),
+            ("insight", "核心洞察", "把事实和信号转化为有价值的判断。", 80, 780, "thinking"),
+            ("challenge", "反向质疑", "检查假设、证据缺口和潜在风险。", 420, 780, "thinking"),
+            ("creative_pattern", "创意模式", "沉淀可复用的叙事与表达方式。", 80, 1000, "thinking"),
+            ("content_concept", "内容概念", "收敛受众、主张、结构、语气和证据。", 420, 1000, "thinking"),
+            ("note", "自由草稿", "输入 Prompt 后，可直接在当前节点生成或改写。", 860, 780, "output"),
+            ("output", "内容输出", "公众号、视频脚本和营销内容在这里继续编辑。", 1200, 780, "output"),
+        ]
+        for node_type, title, body, x, y, group_key in templates:
+            self.create_node(
+                project_id,
+                {
+                    "type": node_type, "title": title, "body": body, "x": x, "y": y,
+                    "width": 310, "height": 180, "created_by": "system",
+                    "metadata": {"starter_template": True, "group_key": group_key},
+                },
+            )
+
+    def upstream_nodes(
+        self, project_id: str, node_ids: list[str], max_depth: int = 6
+    ) -> list[dict[str, Any]]:
+        """Return directed ancestors, nearest first, while tolerating cycles."""
+        canvas = self.get_canvas(project_id)
+        by_id = {node["id"]: node for node in canvas["nodes"] if node.get("type") != "frame"}
+        incoming: dict[str, list[str]] = {}
+        for edge in canvas["edges"]:
+            incoming.setdefault(edge["target_node_id"], []).append(edge["source_node_id"])
+        selected = set(node_ids)
+        seen = set(node_ids)
+        frontier = list(node_ids)
+        result: list[dict[str, Any]] = []
+        for _ in range(max_depth):
+            next_frontier: list[str] = []
+            for target_id in frontier:
+                for source_id in incoming.get(target_id, []):
+                    if source_id in seen:
+                        continue
+                    seen.add(source_id)
+                    next_frontier.append(source_id)
+                    node = by_id.get(source_id)
+                    if node and source_id not in selected:
+                        result.append(node)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return result
 
     def get_canvas(self, project_id: str) -> dict[str, Any]:
         self.ensure_canvas(project_id)

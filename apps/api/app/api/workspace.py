@@ -17,6 +17,7 @@ from app.schemas.workspace import (
     ContentAssetResponse,
     ContentGenerateRequest,
     MagicRequest,
+    NodeGenerateRequest,
     NodeCreateRequest,
     NodeUpdateRequest,
     ProjectCreateRequest,
@@ -30,6 +31,8 @@ from app.schemas.workspace import (
 router = APIRouter(prefix="/api", tags=["workspace"])
 _research_jobs: dict[str, dict[str, Any]] = {}
 _research_lock = threading.Lock()
+_content_jobs: dict[str, dict[str, Any]] = {}
+_content_lock = threading.Lock()
 
 
 def _set_research_job(job_id: str, **values: Any) -> None:
@@ -62,6 +65,45 @@ def _run_research_job(job_id: str, project_id: str, request: QuickResearchReques
     except Exception as exc:
         _set_research_job(
             job_id, status="failed", phase="研究失败", detail=str(exc), error=str(exc)
+        )
+
+
+def _set_content_job(job_id: str, **values: Any) -> None:
+    with _content_lock:
+        if job_id in _content_jobs:
+            _content_jobs[job_id].update(values)
+
+
+def _run_content_job(job_id: str, project_id: str, request: ContentGenerateRequest) -> None:
+    try:
+        def progress(percent: int, phase: str, detail: str) -> None:
+            _set_content_job(job_id, progress=percent, phase=phase, detail=detail)
+
+        asset, node, run_id, used_llm, message = get_container().workflow.generate_content(
+            project_id,
+            request.node_ids,
+            request.format,
+            request.title,
+            request.duration_seconds,
+            request.use_llm,
+            request.instruction,
+            request.save_as_asset,
+            progress,
+        )
+        _set_content_job(
+            job_id,
+            status="completed",
+            progress=100,
+            phase="内容生成完成",
+            detail=message,
+            result={
+                "asset": asset, "node": node, "run_id": run_id,
+                "used_llm": used_llm, "message": message,
+            },
+        )
+    except Exception as exc:
+        _set_content_job(
+            job_id, status="failed", phase="内容生成失败", detail=str(exc), error=str(exc)
         )
 
 
@@ -210,6 +252,20 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
 
+@router.post("/projects/{project_id}/nodes/{node_id}/generate", response_model=WorkflowResponse)
+def generate_into_node(
+    project_id: str, node_id: str, request: NodeGenerateRequest
+) -> WorkflowResponse:
+    _project(project_id)
+    try:
+        node, run_id, used_llm, message = get_container().workflow.generate_into_node(
+            project_id, node_id, request.instruction, request.use_llm
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
+
+
 @router.post("/projects/{project_id}/concept", response_model=WorkflowResponse)
 def create_concept(project_id: str, request: ConceptRequest) -> WorkflowResponse:
     _project(project_id)
@@ -251,6 +307,39 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
         "used_llm": used_llm,
         "message": message,
     }
+
+
+@router.post("/projects/{project_id}/content/generate/start")
+def start_content_generation(
+    project_id: str, request: ContentGenerateRequest
+) -> dict[str, Any]:
+    _project(project_id)
+    job_id = f"content_{uuid.uuid4().hex}"
+    with _content_lock:
+        _content_jobs[job_id] = {
+            "job_id": job_id,
+            "project_id": project_id,
+            "status": "running",
+            "progress": 2,
+            "phase": "准备生成",
+            "detail": "正在读取选中的白板节点",
+        }
+    threading.Thread(
+        target=_run_content_job,
+        args=(job_id, project_id, request),
+        name=f"content-{job_id[-8:]}",
+        daemon=True,
+    ).start()
+    return dict(_content_jobs[job_id])
+
+
+@router.get("/content/jobs/{job_id}")
+def get_content_job(job_id: str) -> dict[str, Any]:
+    with _content_lock:
+        job = _content_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "内容生成任务不存在或应用已重启")
+        return dict(job)
 
 
 @router.post("/projects/{project_id}/nodes/{node_id}/save-asset")

@@ -49,6 +49,11 @@ export type ResearchJob = {
   progress: number; phase: string; detail: string; error?: string;
   result?: { nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string };
 };
+export type ContentJob = {
+  job_id: string; project_id: string; status: "running" | "completed" | "failed";
+  progress: number; phase: string; detail: string; error?: string;
+  result?: { asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string };
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -112,6 +117,10 @@ export const api = {
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),
     }),
+  generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
+    request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
+      method: "POST", body: JSON.stringify({ instruction, use_llm: useLlm }),
+    }),
   createConcept: (projectId: string, nodeIds: string[], title = "", useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/concept`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, title, use_llm: useLlm }),
@@ -121,6 +130,11 @@ export const api = {
     request<{ asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, save_as_asset: saveAsAsset }),
     }),
+  startContentGeneration: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false) =>
+    request<ContentJob>(`/api/projects/${projectId}/content/generate/start`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, save_as_asset: saveAsAsset }),
+    }),
+  contentJob: (jobId: string) => request<ContentJob>(`/api/content/jobs/${jobId}`),
   saveNodeAsAsset: (projectId: string, nodeId: string) =>
     request<{ asset: ContentAsset; node: CanvasNode; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/save-asset`, { method: "POST" }),
 

@@ -119,6 +119,11 @@ class MagicRequest(BaseModel):
     output_type: str = "insight"
 
 
+class NodeGenerateRequest(BaseModel):
+    instruction: str = Field(min_length=2, max_length=2000)
+    use_llm: bool = True
+
+
 class ConceptRequest(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=30)
     title: str = ""
