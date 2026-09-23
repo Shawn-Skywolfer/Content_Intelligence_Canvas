@@ -163,7 +163,7 @@ class WorkspaceRepository:
                 "INSERT INTO canvases(id,project_id,viewport_json,updated_at) VALUES(?,?,?,?)",
                 (canvas_id, project_id, json.dumps({"x": 0, "y": 0, "zoom": 1}), now),
             )
-        idea_node = self.create_node(
+        self.create_node(
             project_id,
             {"type": "idea", "title": "原始想法", "body": idea, "x": 80, "y": 120},
         )
@@ -175,7 +175,6 @@ class WorkspaceRepository:
                 "body": brief or "可在此补充目标受众、传播目标、语气和限制条件。",
                 "x": 80,
                 "y": 390,
-                "parent_id": idea_node["id"],
             },
         )
         self.ensure_canvas(project_id)
@@ -227,7 +226,7 @@ class WorkspaceRepository:
                 db.execute("SELECT COUNT(*) FROM canvas_nodes WHERE project_id=?", (project_id,)).fetchone()[0]
             )
         if node_count == 0:
-            idea_node = self.create_node(
+            self.create_node(
                 project_id,
                 {"type": "idea", "title": "原始想法", "body": project.get("idea", ""), "x": 80, "y": 120},
             )
@@ -239,10 +238,33 @@ class WorkspaceRepository:
                     "body": project.get("brief") or "可在此补充目标受众、传播目标、语气和限制条件。",
                     "x": 80,
                     "y": 390,
-                    "parent_id": idea_node["id"],
                 },
             )
         self._seed_initial_groups(project_id)
+        # Older builds set the brief's parent_id and generated a derived_from edge.
+        # Clear that legacy parent marker once, so a later user-drawn edge persists.
+        with self._connect() as db:
+            db.execute(
+                """DELETE FROM canvas_edges WHERE project_id=? AND relation='derived_from'
+                AND source_node_id IN (
+                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='idea'
+                    AND json_extract(metadata_json, '$.starter_group')='input'
+                ) AND target_node_id IN (
+                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='brief'
+                    AND json_extract(metadata_json, '$.starter_group')='input'
+                    AND parent_id=canvas_edges.source_node_id
+                )""",
+                (project_id, project_id, project_id),
+            )
+            db.execute(
+                """UPDATE canvas_nodes SET parent_id=NULL WHERE project_id=? AND type='brief'
+                AND json_extract(metadata_json, '$.starter_group')='input'
+                AND parent_id IN (
+                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='idea'
+                    AND json_extract(metadata_json, '$.starter_group')='input'
+                )""",
+                (project_id, project_id),
+            )
 
     def _seed_initial_groups(self, project_id: str) -> None:
         """Add a grouped starter board only while a project still has its two initial nodes."""

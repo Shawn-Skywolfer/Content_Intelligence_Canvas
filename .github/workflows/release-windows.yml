@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.6
+      - release/v0.3.7
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.6"
+      RELEASE_TAG: "v0.3.7"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,6 +31,7 @@ jobs:
         working-directory: apps/web
         run: |
           npm ci
+          npm run test
           npm run build
 
       - name: 准备 Windows Python 运行时和后端依赖
@@ -71,23 +72,23 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.6_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.7_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.6.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.6.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.7.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.7.exe -Algorithm SHA256 | Format-List
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: Content Intelligence Canvas v0.3.6
+          name: Content Intelligence Canvas v0.3.7
           body: |
             Windows portable public test build.
 
-            本版完成白板交互升级：消除节点拖动闪烁；支持上下左右四向有向连接；自动整理节点与连线；下游生成递归继承上游内容；单节点 Prompt 直接写回当前节点；初始白板按类型分组；内容生成提供实时进度；AI 共创入口移动到右侧面板。
+            修复从项目及快速研究进入内容白板时的 React #310 错误。新建白板按四个工作区完整显示分组框与节点，不再自动连接初始节点。卡片默认渲染 Markdown；双击卡片正文可直接输入 Markdown，选中节点时高亮直接关联的上游和下游节点。
 
-            同时保留本地知识库、外部模型、代理设置、撤回重做、快捷键和内容资产工作流。既有白板数据、知识库与模型配置保持兼容。
+            快速研究页新增按项目保存的研究历史和返回白板节点入口。全站统一表单、按钮、标题与卡片对齐，并改进窄屏布局。既有白板数据、知识库与模型配置保持兼容。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.6.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.7.exe
           generate_release_notes: true

@@ -49,6 +49,13 @@ export type ResearchJob = {
   progress: number; phase: string; detail: string; error?: string;
   result?: { nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string };
 };
+export type ResearchRun = {
+  id: string; project_id: string; action: string; prompt: string;
+  input_node_ids: string[]; output_node_ids: string[];
+  status: "running" | "completed" | "failed";
+  provider_name: string | null; model_name: string | null; error: string | null;
+  created_at: string; completed_at: string | null;
+};
 export type ContentJob = {
   job_id: string; project_id: string; status: "running" | "completed" | "failed";
   progress: number; phase: string; detail: string; error?: string;
@@ -113,6 +120,7 @@ export const api = {
       method: "POST", body: JSON.stringify({ source_id: sourceId, query, finding_count: findingCount, use_llm: useLlm }),
     }),
   researchJob: (jobId: string) => request<ResearchJob>(`/api/research/jobs/${jobId}`),
+  listRuns: (projectId: string) => request<ResearchRun[]>(`/api/projects/${projectId}/runs`),
   magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight") =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),

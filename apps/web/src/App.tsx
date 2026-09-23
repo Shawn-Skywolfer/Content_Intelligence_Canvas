@@ -2,7 +2,7 @@ import { Component, ErrorInfo, FormEvent, PointerEvent as ReactPointerEvent, Rea
 import CanvasView from "./CanvasView";
 import {
   api, CanvasData, CanvasEdge, CanvasNode, ChunkDetail, ContentAsset, downloadUrl,
-  Evidence, Hit, Project, Provider, ResearchJob, SearchOptions, Source,
+  Evidence, Hit, Project, Provider, ResearchJob, ResearchRun, SearchOptions, Source,
 } from "./api";
 
 type View = "home" | "search" | "research" | "canvas" | "content" | "settings";
@@ -159,7 +159,7 @@ export default function App() {
   const content = (() => {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} />;
     if (view === "search") return <SearchView sources={sources} project={activeProject} onAdded={refreshCanvas} setStatus={setStatus} />;
-    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={async () => { await refreshCanvas(); setView("canvas"); }} />;
+    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={async (nodeIds) => { await refreshCanvas(); setSelectedIds(nodeIds); setView("canvas"); }} />;
     if (view === "canvas") return <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <ContentView project={activeProject} canvas={canvas} assets={assets} selectedIds={selectedIds} setSelectedIds={setSelectedIds} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={refreshCanvas} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
@@ -256,11 +256,20 @@ function SearchView({ sources, project, onAdded, setStatus }: { sources: Source[
   </>;
 }
 
-function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; onDone: () => Promise<void> }) {
+function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
   const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState(6); const [useLlm, setUseLlm] = useState(true);
   const [job, setJob] = useState<ResearchJob | null>(null);
+  const [history, setHistory] = useState<ResearchRun[]>([]);
   useEffect(() => { if (!sourceId && sources[0]) setSourceId(sources[0].id); }, [sourceId, sources]);
   useEffect(() => { if (project) setQuery(project.idea); }, [project]);
+  useEffect(() => {
+    if (!project?.id) { setHistory([]); return; }
+    let active = true;
+    api.listRuns(project.id).then((runs) => {
+      if (active) setHistory(runs.filter((run) => run.action === "quick_research"));
+    }).catch((error) => { if (active) setStatus(`读取研究历史失败：${errorText(error)}`); });
+    return () => { active = false; };
+  }, [project?.id, setStatus]);
   if (!project) return <><PageHeader eyebrow="快速研究" title="只基于内部知识库形成研究发现" description="默认不联网，事实、信号、内部知识和洞察会分层进入白板。" /><EmptyProject /></>;
   const activeProject = project;
   async function run() { if (!sourceId || !query.trim()) return; setBusy(true); setStatus("研究任务已启动，可在进度框查看当前阶段");
@@ -273,7 +282,11 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { 
         setJob(current);
       }
       if (current.status === "failed") throw new Error(current.error || current.detail || "研究任务失败");
-      setStatus(current.result?.message || "研究完成"); await onDone();
+      setStatus(current.result?.message || "研究完成");
+      api.listRuns(activeProject.id)
+        .then((runs) => setHistory(runs.filter((item) => item.action === "quick_research")))
+        .catch((error) => setStatus(`读取研究历史失败：${errorText(error)}`));
+      await onDone(current.result?.nodes.map((node) => node.id) ?? []);
     }
     catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
@@ -283,6 +296,13 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { 
       <button className="primary large" disabled={busy || !sourceId} onClick={run}>{busy ? "正在研究…" : "开始快速研究"}</button>
       {job && <div className={`research-progress ${job.status}`} aria-live="polite"><div className="progress-heading"><div><small>{job.status === "failed" ? "任务失败" : job.status === "completed" ? "任务完成" : "实时研究进度"}</small><strong>{job.phase}</strong></div><b>{Math.round(job.progress)}%</b></div><div className="progress-track"><i style={{ width: `${Math.max(2, job.progress)}%` }} /></div><p>{job.detail}</p></div>}</div>
       <div className="research-notes"><div><span>01</span><h3>内部优先</h3><p>快速模式只读取已启用知识库，不主动联网。</p></div><div><span>02</span><h3>保留证据</h3><p>每条研究发现都保存文件、标题层级、段落与参考来源。</p></div><div><span>03</span><h3>进入白板</h3><p>生成新节点与关联边，不覆盖已有思考。</p></div></div>
+    </section>
+    <section className="research-history" aria-label="历史研究"><div className="section-title"><h2>历史研究</h2><span>当前项目 · {history.length} 次</span></div>
+      {history.length ? <div className="research-history-list">{history.map((item) => <article className="research-history-item" key={item.id}>
+        <div className="research-history-main"><div className="research-history-meta"><span className={`run-status ${item.status}`}>{item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : "进行中"}</span><time dateTime={item.created_at}>{new Date(item.completed_at || item.created_at).toLocaleString("zh-CN")}</time></div>
+          <h3>{item.prompt || "未命名研究"}</h3><p>{item.status === "failed" ? item.error || "研究失败" : `已生成 ${item.output_node_ids?.length ?? 0} 个白板节点${item.model_name ? ` · ${item.model_name}` : ""}`}</p></div>
+        <button className="secondary" disabled={item.status !== "completed" || !item.output_node_ids?.length} onClick={() => onDone(item.output_node_ids)}>查看白板节点</button>
+      </article>)}</div> : <div className="empty-state"><strong>还没有历史研究</strong><p>完成一次快速研究后，可在这里返回查看生成的白板节点。</p></div>}
     </section></>;
 }
 

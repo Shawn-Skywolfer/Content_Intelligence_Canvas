@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import {
   applyNodeChanges, Background, Connection, ConnectionMode, Controls, Edge, EdgeChange, Handle,
   MarkerType, MiniMap, Node, NodeChange, NodeProps, Position, ReactFlow,
@@ -15,7 +16,11 @@ const STATUS_LABELS: Record<string, string> = {
   exploring: "探索中", candidate: "候选", approved: "已批准", locked: "已锁定",
 };
 
-type FlowNodeData = Record<string, unknown> & { canvasNode: CanvasNode };
+type FlowNodeData = Record<string, unknown> & {
+  canvasNode: CanvasNode;
+  relationship: "upstream" | "downstream" | null;
+  onBodyCommit: (id: string, body: string) => void;
+};
 type FlowNode = Node<FlowNodeData, "canvas">;
 
 function errorText(error: unknown): string {
@@ -36,7 +41,15 @@ function closeEnough(current: number | undefined, next: number, tolerance = 0.01
 
 function FlowCard({ data, selected }: NodeProps<FlowNode>) {
   const node = data.canvasNode;
-  return <article className={`flow-card node-${node.type} ${selected ? "selected" : ""} ${node.locked ? "locked" : ""}`}>
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(node.body);
+  const cancelBlur = useRef(false);
+  useEffect(() => { if (!editing) setDraft(node.body); }, [node.body, editing]);
+  function finishEdit(save: boolean) {
+    if (save && draft !== node.body) data.onBodyCommit(node.id, draft);
+    setEditing(false);
+  }
+  return <article className={`flow-card node-${node.type} ${selected ? "selected" : ""} ${data.relationship ? `related-${data.relationship}` : ""} ${node.locked ? "locked" : ""}`}>
     {node.type !== "frame" && <>
       <Handle id="top" type="source" position={Position.Top} className="connection-handle handle-top" />
       <Handle id="right" type="source" position={Position.Right} className="connection-handle handle-right" />
@@ -45,7 +58,19 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
     </>}
     <div className="node-head"><span>{NODE_LABELS[node.type] ?? node.type}</span>{node.locked && <b>已锁定</b>}</div>
     <h3>{node.title}</h3>
-    {node.type !== "frame" && <p>{node.body}</p>}
+    {node.type !== "frame" && (editing ?
+      <textarea className="flow-card-editor nodrag nowheel" autoFocus aria-label={`编辑${node.title}的 Markdown 正文`}
+        value={draft} onChange={(event) => setDraft(event.target.value)}
+        onPointerDown={(event) => event.stopPropagation()}
+        onBlur={() => { if (cancelBlur.current) { cancelBlur.current = false; return; } finishEdit(true); }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); cancelBlur.current = true; setDraft(node.body); setEditing(false); }
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.blur(); }
+        }} /> :
+      <div className="flow-card-body nodrag" title={node.locked ? "节点已锁定" : "双击直接编辑 Markdown"}
+        onDoubleClick={(event) => { event.stopPropagation(); if (!node.locked) { cancelBlur.current = false; setDraft(node.body); setEditing(true); } }}>
+        {node.body ? <Markdown>{node.body}</Markdown> : <span className="flow-card-placeholder">双击输入 Markdown…</span>}
+      </div>)}
     <div className="node-foot"><span>{STATUS_LABELS[node.status] ?? node.status}</span>{(node.metadata?.evidence?.length ?? 0) > 0 && <span>{node.metadata?.evidence?.length} 条证据</span>}</div>
   </article>;
 }
@@ -62,23 +87,26 @@ const DEFAULT_EDGE_OPTIONS = {
 };
 
 const GROUPS = [
-  { key: "input", title: "01 输入与简报", types: ["idea", "brief", "note"], x: 40, y: 40 },
+  { key: "input", title: "01 输入与简报", types: ["idea", "brief"], x: 40, y: 40 },
   { key: "research", title: "02 研究与证据", types: ["knowledge", "fact", "signal", "internal_knowledge"], x: 800, y: 40 },
   { key: "thinking", title: "03 洞察与策略", types: ["insight", "challenge", "creative_pattern", "content_concept"], x: 40, y: 680 },
-  { key: "output", title: "04 内容生产", types: ["output"], x: 800, y: 680 },
+  { key: "output", title: "04 内容生产", types: ["note", "output"], x: 800, y: 680 },
 ];
 
-function toFlowNodes(nodes: CanvasNode[], selectedIds: string[]): FlowNode[] {
+function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"]): FlowNode[] {
+  const selected = new Set(selectedIds);
+  const upstream = new Set(edges.filter((edge) => selected.has(edge.target_node_id)).map((edge) => edge.source_node_id));
+  const downstream = new Set(edges.filter((edge) => selected.has(edge.source_node_id)).map((edge) => edge.target_node_id));
   return nodes.map((node) => ({
     id: node.id,
     type: "canvas",
     position: { x: node.x, y: node.y },
-    data: { canvasNode: node },
-    selected: selectedIds.includes(node.id),
+    data: { canvasNode: node, relationship: selected.has(node.id) ? null : upstream.has(node.id) ? "upstream" : downstream.has(node.id) ? "downstream" : null, onBodyCommit },
+    selected: selected.has(node.id),
     draggable: !node.locked,
     selectable: true,
     zIndex: node.type === "frame" ? -1 : 2,
-    style: { width: node.width, minHeight: node.height },
+    style: { width: node.width, height: node.height },
   }));
 }
 
@@ -160,16 +188,56 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const selectedNodeIdsRef = useRef(selectedIds);
   const selectedEdgeIdsRef = useRef(selectedEdgeIds);
 
+  const onBodyCommit = useCallback((id: string, body: string) => {
+    const current = boardRef.current;
+    const node = current?.nodes.find((item) => item.id === id);
+    if (!current || !node || node.locked || node.body === body) return;
+    undoStack.current = [...undoStack.current.slice(-79), cloneCanvas(current)];
+    redoStack.current = [];
+    setHistoryRevision((value) => value + 1);
+    const next = { ...current, nodes: current.nodes.map((item) => item.id === id ? { ...item, body } : item) };
+    boardRef.current = next;
+    onChangeRef.current(next);
+    setStatus("Markdown 内容已更新，正在自动保存");
+  }, [setStatus]);
+
+  const onSelectionChange = useCallback(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
+    const nextNodeIds = nodes.map((node) => node.id);
+    const nextEdgeIds = edges.map((edge) => edge.id);
+    if (!sameSelection(selectedNodeIdsRef.current, nextNodeIds)) {
+      selectedNodeIdsRef.current = nextNodeIds;
+      setSelectedIds(nextNodeIds);
+    }
+    if (!sameSelection(selectedEdgeIdsRef.current, nextEdgeIds)) {
+      selectedEdgeIdsRef.current = nextEdgeIds;
+      setSelectedEdgeIds(nextEdgeIds);
+    }
+  }, [setSelectedIds]);
+
+  const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
+    const current = boardRef.current;
+    if (!current) return;
+    const previous = current.viewport ?? {};
+    if (
+      closeEnough(previous.x, viewport.x) &&
+      closeEnough(previous.y, viewport.y) &&
+      closeEnough(previous.zoom, viewport.zoom, 0.0001)
+    ) return;
+    const next = { ...current, viewport };
+    boardRef.current = next;
+    onChangeRef.current(next);
+  }, []);
+
   useEffect(() => { boardRef.current = canvas; }, [canvas]);
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
   useEffect(() => { selectedNodeIdsRef.current = selectedIds; }, [selectedIds]);
   useEffect(() => { selectedEdgeIdsRef.current = selectedEdgeIds; }, [selectedEdgeIds]);
   useEffect(() => {
     if (!canvas || draggingRef.current) return;
-    const next = toFlowNodes(canvas.nodes, selectedIds);
+    const next = toFlowNodes(canvas.nodes, canvas.edges, selectedIds, onBodyCommit);
     displayNodesRef.current = next;
     setDisplayNodes(next);
-  }, [canvas, selectedIds]);
+  }, [canvas, selectedIds, onBodyCommit]);
   useEffect(() => {
     undoStack.current = [];
     redoStack.current = [];
@@ -330,6 +398,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       board.nodes.find((node) => node.id === edge.target_node_id),
     ).target),
     type: "smoothstep",
+    className: selectedIds.includes(edge.source_node_id) || selectedIds.includes(edge.target_node_id) ? "edge-related" : "",
     selected: selectedEdgeIds.includes(edge.id),
     markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
   }));
@@ -361,31 +430,6 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     applyWithoutHistory(next);
     setStatus("节点位置和连接线路由已更新，正在自动保存");
   }
-
-  const onSelectionChange = useCallback(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
-    const nextNodeIds = nodes.map((node) => node.id);
-    const nextEdgeIds = edges.map((edge) => edge.id);
-    if (!sameSelection(selectedNodeIdsRef.current, nextNodeIds)) {
-      selectedNodeIdsRef.current = nextNodeIds;
-      setSelectedIds(nextNodeIds);
-    }
-    if (!sameSelection(selectedEdgeIdsRef.current, nextEdgeIds)) {
-      selectedEdgeIdsRef.current = nextEdgeIds;
-      setSelectedEdgeIds(nextEdgeIds);
-    }
-  }, [setSelectedIds]);
-
-  const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
-    const current = boardRef.current;
-    if (!current) return;
-    const previous = current.viewport ?? {};
-    if (
-      closeEnough(previous.x, viewport.x) &&
-      closeEnough(previous.y, viewport.y) &&
-      closeEnough(previous.zoom, viewport.zoom, 0.0001)
-    ) return;
-    applyWithoutHistory({ ...current, viewport });
-  }, []);
 
   function onEdgesChange(changes: EdgeChange<Edge>[]) {
     const removed = new Set(changes.filter((change) => change.type === "remove").map((change) => change.id));

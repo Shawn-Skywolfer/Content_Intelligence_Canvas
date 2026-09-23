@@ -1,11 +1,12 @@
 {
   "name": "content-intelligence-canvas-web",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -19,6 +20,9 @@
   },
   "devDependencies": {
     "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react-dom": "latest",
+    "@types/react-test-renderer": "^19.3.0",
+    "react-test-renderer": "^19.3.0",
+    "vitest": "^5.0.1"
   }
 }

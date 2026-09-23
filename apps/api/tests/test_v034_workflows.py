@@ -33,6 +33,7 @@ def test_canvas_self_repairs_and_draft_is_saved_only_on_confirmation(tmp_path: P
     node_types = {node["type"] for node in nodes}
     assert {"idea", "brief", "frame", "fact", "insight", "output"} <= node_types
     assert len([node for node in nodes if node["type"] == "frame"]) == 4
+    assert repaired.json()["edges"] == []
 
     draft = client.post(
         f"/api/projects/{project_id}/content/generate",
@@ -59,6 +60,25 @@ def test_canvas_self_repairs_and_draft_is_saved_only_on_confirmation(tmp_path: P
     assert saved.status_code == 200
     assert saved.json()["asset"]["body"] == "这是用户在白板中修改后的最终正文。"
     assert len(client.get(f"/api/projects/{project_id}/assets").json()) == 1
+
+
+def test_legacy_starter_link_is_removed_once_without_erasing_user_links(tmp_path: Path, monkeypatch) -> None:
+    client, data_dir = _client(tmp_path, monkeypatch)
+    project_id = client.post("/api/projects", json={"name": "旧白板", "idea": "想法", "brief": ""}).json()["id"]
+    canvas = client.get(f"/api/projects/{project_id}/canvas").json()
+    idea = next(node for node in canvas["nodes"] if node["type"] == "idea")
+    brief = next(node for node in canvas["nodes"] if node["type"] == "brief")
+    with sqlite3.connect(data_dir / "app.db") as db:
+        db.execute("UPDATE canvas_nodes SET parent_id=? WHERE id=?", (idea["id"], brief["id"]))
+        db.execute(
+            """INSERT INTO canvas_edges(id,project_id,canvas_id,source_node_id,target_node_id,relation,metadata_json,created_at)
+            VALUES(?,?,?,?,?,?,?,datetime('now'))""",
+            ("legacy_starter", project_id, idea["canvas_id"], idea["id"], brief["id"], "derived_from", "{}"),
+        )
+    assert client.get(f"/api/projects/{project_id}/canvas").json()["edges"] == []
+    canvas["edges"] = [{"id": "user_link", "source_node_id": idea["id"], "target_node_id": brief["id"], "relation": "derived_from", "metadata": {}}]
+    assert client.put(f"/api/projects/{project_id}/canvas", json=canvas).status_code == 200
+    assert [edge["id"] for edge in client.get(f"/api/projects/{project_id}/canvas").json()["edges"]] == ["user_link"]
 
 
 def test_directed_upstream_context_is_inherited_and_generation_stays_in_target(
@@ -162,6 +182,11 @@ def test_research_job_reports_progress_and_source_can_be_removed(tmp_path: Path,
     assert job["status"] == "completed"
     assert job["progress"] == 100
     assert job["phase"] == "研究完成"
+    history = client.get(f"/api/projects/{project['id']}/runs")
+    assert history.status_code == 200
+    assert history.json()[0]["action"] == "quick_research"
+    assert history.json()[0]["prompt"] == "本地知识库有什么价值"
+    assert len(history.json()[0]["output_node_ids"]) == len(job["result"]["nodes"])
 
     assert client.delete(f"/api/knowledge-sources/{source['id']}").status_code == 204
     assert client.get("/api/knowledge-sources").json() == []
