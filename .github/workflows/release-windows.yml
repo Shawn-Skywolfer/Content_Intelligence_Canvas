@@ -114,10 +114,19 @@ jobs:
             }
           }
 
+      - name: 将发布标签指向本次构建提交
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push --force origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw "发布标签更新失败：$LASTEXITCODE" }
+
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           name: Content Intelligence Canvas v0.3.8
           body: |
             Windows portable public test build.
