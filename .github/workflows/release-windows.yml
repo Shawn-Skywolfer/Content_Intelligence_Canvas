@@ -77,6 +77,43 @@ jobs:
           & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.7.exe
           Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.7.exe -Algorithm SHA256 | Format-List
 
+      - name: 验证 EXE 启动、接口和旧进程替换
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.7.exe"
+          $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
+          function Wait-For-App([int]$previousPid) {
+            for ($attempt = 0; $attempt -lt 180; $attempt++) {
+              Start-Sleep -Seconds 1
+              if (-not (Test-Path $pidFile)) { continue }
+              try {
+                $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
+                if ($appPid -eq $previousPid) { continue }
+                $connections = Get-NetTCPConnection -State Listen -OwningProcess $appPid -ErrorAction SilentlyContinue |
+                  Where-Object { $_.LocalAddress -eq '127.0.0.1' }
+                foreach ($connection in $connections) {
+                  $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($connection.LocalPort)/api/health" -TimeoutSec 2 -ErrorAction Stop
+                  if ($health.status -eq 'ok') { return $appPid }
+                }
+              } catch { }
+            }
+            throw "单体 EXE 未能在 180 秒内提供本地健康接口。"
+          }
+          try {
+            Start-Process -FilePath $exe | Out-Null
+            $firstPid = Wait-For-App 0
+            Start-Process -FilePath $exe | Out-Null
+            $secondPid = Wait-For-App $firstPid
+            if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
+            Write-Host "EXE 启动成功，健康接口可用，旧进程 $firstPid 已由新进程 $secondPid 替换。"
+          } finally {
+            if (Test-Path $pidFile) {
+              $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
+              Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
