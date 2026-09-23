@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.7
+      - release/v0.3.8
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.7"
+      RELEASE_TAG: "v0.3.8"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,16 +72,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.7_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.8_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.7.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.7.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.8.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.8.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.7.exe"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.8.exe"
           $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
           function Wait-For-App([int]$previousPid) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
@@ -118,14 +118,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: Content Intelligence Canvas v0.3.7
+          name: Content Intelligence Canvas v0.3.8
           body: |
             Windows portable public test build.
 
-            修复从项目及快速研究进入内容白板时的 React #310 错误。新建白板按四个工作区完整显示分组框与节点，不再自动连接初始节点。卡片默认渲染 Markdown；双击卡片正文可直接输入 Markdown，选中节点时高亮直接关联的上游和下游节点。
+            修复从历史研究查看白板节点时触发 React #185 循环更新、重新初始化也无法恢复的问题。白板只在用户实际修改选择时同步节点和连线，不会在加载研究节点时反复覆盖选中状态。
 
-            快速研究页新增按项目保存的研究历史和返回白板节点入口。全站统一表单、按钮、标题与卡片对齐，并改进窄屏布局。既有白板数据、知识库与模型配置保持兼容。
+            已完成研究的项目自动整理为三列：输入与简报、研究与证据、洞察与策略。每列双子列向下扩展，生成节点全部纳入对应分组；未编辑也未连接的示例卡片自动清理，修改或连接过的内容保留。手动“按类型整理”采用相同的三列布局。
+
+            增加真实 React Flow 挂载、历史研究跳转和项目卡片返回白板的回归测试。保留 Markdown 卡片编辑、知识库、模型和内容资产功能；既有数据兼容。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.7.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.8.exe
           generate_release_notes: true

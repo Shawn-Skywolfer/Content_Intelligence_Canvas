@@ -351,6 +351,7 @@ class WorkspaceRepository:
 
     def get_canvas(self, project_id: str) -> dict[str, Any]:
         self.ensure_canvas(project_id)
+        self._layout_completed_research(project_id)
         with self._connect() as db:
             canvas = db.execute("SELECT * FROM canvases WHERE project_id=?", (project_id,)).fetchone()
             if not canvas:
@@ -369,6 +370,102 @@ class WorkspaceRepository:
             "nodes": [self._decode(row, "metadata_json") for row in nodes],
             "edges": [self._decode(row, "metadata_json") for row in edges],
         }
+
+    def _layout_completed_research(self, project_id: str) -> None:
+        """Migrate existing research boards once per completed run into three growing columns."""
+        seed_titles = {
+            "knowledge": ("知识材料", "从知识检索加入的原始材料与段落。"),
+            "fact": ("事实证据", "可验证的事实、数字与案例。"),
+            "signal": ("变化信号", "值得关注的市场、客户或技术变化。"),
+            "internal_knowledge": ("内部知识", "来自内部 Wiki 的观点与方法。"),
+            "insight": ("核心洞察", "把事实和信号转化为有价值的判断。"),
+            "challenge": ("反向质疑", "检查假设、证据缺口和潜在风险。"),
+            "creative_pattern": ("创意模式", "沉淀可复用的叙事与表达方式。"),
+            "content_concept": ("内容概念", "收敛受众、主张、结构、语气和证据。"),
+            "note": ("自由草稿", "输入 Prompt 后，可直接在当前节点生成或改写。"),
+            "output": ("内容输出", "公众号、视频脚本和营销内容在这里继续编辑。"),
+        }
+        groups = (
+            ("input", "01 输入与简报", 40, {"idea", "brief"}),
+            ("research", "02 研究与证据", 820, {"knowledge", "fact", "signal", "internal_knowledge"}),
+            ("thinking", "03 洞察与策略", 1600, {"insight", "challenge", "creative_pattern", "content_concept"}),
+        )
+        with self._connect() as db:
+            runs = db.execute(
+                """SELECT id FROM ai_runs WHERE project_id=? AND action='quick_research'
+                AND status='completed' ORDER BY created_at,id""", (project_id,),
+            ).fetchall()
+            if not runs:
+                return
+            marker = f"research_layout_v2:{project_id}"
+            version = json.dumps([row["id"] for row in runs])
+            saved = db.execute("SELECT value_json FROM app_settings WHERE key=?", (marker,)).fetchone()
+            if saved and saved["value_json"] == version:
+                return
+            rows = db.execute(
+                "SELECT * FROM canvas_nodes WHERE project_id=? ORDER BY created_at,id", (project_id,),
+            ).fetchall()
+            linked = {
+                item[0] for item in db.execute(
+                    """SELECT source_node_id FROM canvas_edges WHERE project_id=?
+                    UNION SELECT target_node_id FROM canvas_edges WHERE project_id=?""",
+                    (project_id, project_id),
+                ).fetchall()
+            }
+            remaining = []
+            frames: dict[str, str] = {}
+            for row in rows:
+                metadata = json.loads(row["metadata_json"] or "{}")
+                if metadata.get("starter_template") and row["id"] not in linked and not row["locked"] and row["status"] == "exploring" and (
+                    row["title"], row["body"]
+                ) == seed_titles.get(row["type"]):
+                    db.execute("DELETE FROM canvas_nodes WHERE id=?", (row["id"],))
+                elif row["type"] == "frame" and (metadata.get("starter_frame") or metadata.get("auto_group")):
+                    key = metadata.get("group_key")
+                    if key in {"input", "research", "thinking"} and key not in frames:
+                        frames[key] = row["id"]
+                    else:
+                        db.execute("DELETE FROM canvas_nodes WHERE id=?", (row["id"],))
+                elif row["type"] != "frame":
+                    remaining.append(row)
+            columns: dict[str, list[sqlite3.Row]] = {key: [] for key, *_ in groups}
+            extras: list[sqlite3.Row] = []
+            for row in remaining:
+                key = next((key for key, _, _, types in groups if row["type"] in types), None)
+                (columns[key] if key else extras).append(row)
+            height = max(570, 110 + max((len(items) + 1) // 2 for items in columns.values()) * 230)
+            now = utc_now()
+            for key, title, x, _ in groups:
+                metadata = json.dumps({"starter_frame": True, "group_key": key, "layout_version": 2}, ensure_ascii=False)
+                if key in frames:
+                    db.execute(
+                        """UPDATE canvas_nodes SET title=?,x=?,y=40,width=730,height=?,metadata_json=?,updated_at=? WHERE id=?""",
+                        (title, x, height, metadata, now, frames[key]),
+                    )
+                else:
+                    canvas_id = db.execute("SELECT id FROM canvases WHERE project_id=?", (project_id,)).fetchone()[0]
+                    db.execute(
+                        """INSERT INTO canvas_nodes(id,project_id,canvas_id,type,title,body,status,locked,x,y,width,height,
+                        metadata_json,created_by,parent_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (f"nod_{uuid.uuid4().hex}", project_id, canvas_id, "frame", title, "", "exploring", 0,
+                         x, 40, 730, height, metadata, "system", None, now, now),
+                    )
+                for index, row in enumerate(columns[key]):
+                    db.execute(
+                        "UPDATE canvas_nodes SET x=?,y=?,width=310,height=190,updated_at=? WHERE id=?",
+                        (x + 34 + (index % 2) * 340, 130 + (index // 2) * 230, now, row["id"]),
+                    )
+            # Authored output nodes are retained below the research columns, without a fourth starter column.
+            for index, row in enumerate(extras):
+                db.execute(
+                    "UPDATE canvas_nodes SET x=?,y=?,updated_at=? WHERE id=?",
+                    (820 + (index % 2) * 340, height + 120 + (index // 2) * 260, now, row["id"]),
+                )
+            db.execute(
+                """INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at""",
+                (marker, version, now),
+            )
 
     def create_node(self, project_id: str, values: dict[str, Any]) -> dict[str, Any]:
         node_id = values.get("id") or f"nod_{uuid.uuid4().hex}"

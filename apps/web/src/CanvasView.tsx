@@ -88,9 +88,8 @@ const DEFAULT_EDGE_OPTIONS = {
 
 const GROUPS = [
   { key: "input", title: "01 输入与简报", types: ["idea", "brief"], x: 40, y: 40 },
-  { key: "research", title: "02 研究与证据", types: ["knowledge", "fact", "signal", "internal_knowledge"], x: 800, y: 40 },
-  { key: "thinking", title: "03 洞察与策略", types: ["insight", "challenge", "creative_pattern", "content_concept"], x: 40, y: 680 },
-  { key: "output", title: "04 内容生产", types: ["note", "output"], x: 800, y: 680 },
+  { key: "research", title: "02 研究与证据", types: ["knowledge", "fact", "signal", "internal_knowledge"], x: 820, y: 40 },
+  { key: "thinking", title: "03 洞察与策略", types: ["insight", "challenge", "creative_pattern", "content_concept"], x: 1600, y: 40 },
 ];
 
 function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"]): FlowNode[] {
@@ -200,19 +199,6 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     onChangeRef.current(next);
     setStatus("Markdown 内容已更新，正在自动保存");
   }, [setStatus]);
-
-  const onSelectionChange = useCallback(({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
-    const nextNodeIds = nodes.map((node) => node.id);
-    const nextEdgeIds = edges.map((edge) => edge.id);
-    if (!sameSelection(selectedNodeIdsRef.current, nextNodeIds)) {
-      selectedNodeIdsRef.current = nextNodeIds;
-      setSelectedIds(nextNodeIds);
-    }
-    if (!sameSelection(selectedEdgeIdsRef.current, nextEdgeIds)) {
-      selectedEdgeIdsRef.current = nextEdgeIds;
-      setSelectedEdgeIds(nextEdgeIds);
-    }
-  }, [setSelectedIds]);
 
   const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
     const current = boardRef.current;
@@ -404,11 +390,16 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }));
 
   function onNodesChange(changes: NodeChange<FlowNode>[]) {
-    setDisplayNodes((current) => {
-      const next = applyNodeChanges(changes, current);
-      displayNodesRef.current = next;
-      return next;
-    });
+    const next = applyNodeChanges(changes, displayNodesRef.current);
+    displayNodesRef.current = next;
+    setDisplayNodes(next);
+    if (changes.some((change) => change.type === "select" || change.type === "remove")) {
+      const ids = next.filter((node) => node.selected).map((node) => node.id);
+      if (!sameSelection(selectedNodeIdsRef.current, ids)) {
+        selectedNodeIdsRef.current = ids;
+        setSelectedIds(ids);
+      }
+    }
   }
 
   function onNodeDragStart() {
@@ -432,6 +423,18 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   function onEdgesChange(changes: EdgeChange<Edge>[]) {
+    if (changes.some((change) => change.type === "select" || change.type === "remove")) {
+      const ids = new Set(selectedEdgeIdsRef.current);
+      for (const change of changes) {
+        if (change.type === "remove" || (change.type === "select" && !change.selected)) ids.delete(change.id);
+        else if (change.type === "select" && change.selected) ids.add(change.id);
+      }
+      const next = [...ids];
+      if (!sameSelection(selectedEdgeIdsRef.current, next)) {
+        selectedEdgeIdsRef.current = next;
+        setSelectedEdgeIds(next);
+      }
+    }
     const removed = new Set(changes.filter((change) => change.type === "remove").map((change) => change.id));
     if (!removed.size) return;
     commit({ ...board, edges: board.edges.filter((edge) => !removed.has(edge.id)) }, "已删除连接线");
@@ -466,29 +469,30 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     const placed = new Set<string>();
     const arranged: CanvasNode[] = [];
     const frames: CanvasNode[] = [];
+    const tallestRows = Math.max(1, ...GROUPS.map((group) => Math.ceil(regular.filter((node) => group.types.includes(node.type)).length / 2)));
+    const frameHeight = Math.max(570, 110 + tallestRows * 230);
     for (const group of GROUPS) {
       const members = regular.filter((node) => group.types.includes(node.type));
       members.forEach((node, index) => {
         placed.add(node.id);
         arranged.push({
           ...node,
-          x: group.x + 34 + (index % 2) * 328,
-          y: group.y + 76 + Math.floor(index / 2) * 220,
-          width: Math.min(node.width || 300, 300),
-          height: Math.max(node.height || 180, 180),
+          x: group.x + 34 + (index % 2) * 340,
+          y: group.y + 90 + Math.floor(index / 2) * 230,
+          width: 310,
+          height: 190,
         });
       });
-      const rows = Math.max(1, Math.ceil(members.length / 2));
       frames.push({
         id: `grp_${group.key}_${current.id}`,
         type: "frame", title: group.title, body: "", status: "exploring", locked: false,
-        x: group.x, y: group.y, width: 700, height: Math.max(560, 108 + rows * 220),
+        x: group.x, y: group.y, width: 730, height: frameHeight,
         metadata: { auto_group: true, group_key: group.key }, created_by: "system",
         project_id: current.project_id, canvas_id: current.id,
       });
     }
     const unplaced = regular.filter((node) => !placed.has(node.id)).map((node, index) => ({
-      ...node, x: 1540 + (index % 2) * 328, y: 100 + Math.floor(index / 2) * 220,
+      ...node, x: 820 + (index % 2) * 340, y: frameHeight + 120 + Math.floor(index / 2) * 260,
     }));
     const next = rerouteEdges({ ...current, nodes: [...frames, ...userFrames, ...arranged, ...unplaced] });
     commit(next, "已按节点类型分组，并自动重排有向连接线");
@@ -587,7 +591,6 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           onConnect={onConnect}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
-          onSelectionChange={onSelectionChange}
           onMoveEnd={onMoveEnd}
           fitView
           fitViewOptions={FIT_VIEW_OPTIONS}

@@ -81,6 +81,31 @@ def test_legacy_starter_link_is_removed_once_without_erasing_user_links(tmp_path
     assert [edge["id"] for edge in client.get(f"/api/projects/{project_id}/canvas").json()["edges"]] == ["user_link"]
 
 
+def test_existing_research_board_removes_only_unused_examples(tmp_path: Path, monkeypatch) -> None:
+    client, _ = _client(tmp_path, monkeypatch)
+    project_id = client.post("/api/projects", json={"name": "旧研究项目", "idea": "AIDC 液冷", "brief": ""}).json()["id"]
+    before = client.get(f"/api/projects/{project_id}/canvas").json()
+    repo = get_container().workspace
+    idea = next(node for node in before["nodes"] if node["type"] == "idea")
+    edited = next(node for node in before["nodes"] if node["type"] == "knowledge")
+    linked = next(node for node in before["nodes"] if node["type"] == "fact")
+    repo.update_node(project_id, edited["id"], {"body": "我自己修改过的知识材料"})
+    repo.create_edge(project_id, idea["id"], linked["id"])
+    generated = repo.create_node(project_id, {
+        "type": "fact", "title": "真实研究事实", "body": "基于知识库的事实", "x": 1800, "y": 40,
+        "metadata": {"research_query": "AIDC 液冷"},
+    })
+    run_id = repo.create_run(project_id, "quick_research", "AIDC 液冷", [])
+    repo.finish_run(run_id, [generated["id"]], None, None)
+    migrated = client.get(f"/api/projects/{project_id}/canvas").json()
+    ids = {node["id"] for node in migrated["nodes"]}
+    assert {edited["id"], linked["id"], generated["id"]} <= ids
+    assert len([node for node in migrated["nodes"] if node["metadata"].get("starter_template")]) == 2
+    assert len([node for node in migrated["nodes"] if node["type"] == "frame"]) == 3
+    assert len(migrated["edges"]) == 1
+    assert next(node for node in migrated["nodes"] if node["id"] == edited["id"])["body"] == "我自己修改过的知识材料"
+
+
 def test_directed_upstream_context_is_inherited_and_generation_stays_in_target(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -187,6 +212,23 @@ def test_research_job_reports_progress_and_source_can_be_removed(tmp_path: Path,
     assert history.json()[0]["action"] == "quick_research"
     assert history.json()[0]["prompt"] == "本地知识库有什么价值"
     assert len(history.json()[0]["output_node_ids"]) == len(job["result"]["nodes"])
+
+    board = client.get(f"/api/projects/{project['id']}/canvas").json()
+    frames = [node for node in board["nodes"] if node["type"] == "frame"]
+    assert [frame["metadata"]["group_key"] for frame in frames] == ["input", "research", "thinking"]
+    assert not any(node["metadata"].get("starter_template") for node in board["nodes"])
+    results = [node for node in board["nodes"] if node["id"] in history.json()[0]["output_node_ids"]]
+    assert len(results) == len(job["result"]["nodes"])
+    for node in results:
+        frame = next(frame for frame in frames if frame["x"] <= node["x"] < frame["x"] + frame["width"])
+        assert frame["metadata"]["group_key"] in {"research", "thinking"}
+        assert node["y"] + node["height"] <= frame["y"] + frame["height"]
+    assert all(
+        left["x"] + left["width"] <= right["x"] or right["x"] + right["width"] <= left["x"]
+        or left["y"] + left["height"] <= right["y"] or right["y"] + right["height"] <= left["y"]
+        for index, left in enumerate(results) for right in results[index + 1:]
+    )
+    assert client.get(f"/api/projects/{project['id']}/canvas").json()["nodes"] == board["nodes"]
 
     assert client.delete(f"/api/knowledge-sources/{source['id']}").status_code == 204
     assert client.get("/api/knowledge-sources").json() == []
