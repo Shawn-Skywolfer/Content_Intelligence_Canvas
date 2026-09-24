@@ -158,13 +158,14 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
   return <header className="page-header"><div><small>内容白板</small><h1>{title}</h1><p>{description}</p></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
-export default function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, onRefresh, setStatus }: {
+export default function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, onRefresh, beforeGenerate, setStatus }: {
   project: Project | null;
   canvas: CanvasData | null;
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
   onChange: (canvas: CanvasData) => void;
   onRefresh: (skipPendingSave?: boolean) => Promise<void>;
+  beforeGenerate?: () => Promise<void>;
   setStatus: (value: string) => void;
 }) {
   const [magic, setMagic] = useState("");
@@ -545,7 +546,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setBusy(true);
     setAiPhase("正在保存画布并收集上游上下文");
     try {
-      await api.saveCanvas(activeProject.id, boardRef.current!);
+      if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       setAiPhase("正在请求模型并综合内容");
       const result = await api.magic(activeProject.id, inputs, magic, magicType);
       setAiPhase("正在载入新节点与来源关系");
@@ -557,7 +558,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     if (!selectedIds.length) return;
     setBusy(true);
     try {
-      await api.saveCanvas(activeProject.id, boardRef.current!);
+      if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       const result = await api.createConcept(activeProject.id, selectedIds);
       setStatus(result.message); await onRefresh(true); setSelectedIds(result.nodes.map((node) => node.id));
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
@@ -568,7 +569,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setBusy(true);
     setContentJob(null);
     try {
-      await api.saveCanvas(activeProject.id, boardRef.current!);
+      if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       let job = await api.startContentGeneration(
         activeProject.id, selectedIds, contentFormat, contentTitle, contentDuration,
         contentUseLlm, contentInstruction, false,
@@ -592,7 +593,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     if (!primary || primary.type !== "output" || !boardRef.current) return;
     setBusy(true);
     try {
-      await api.saveCanvas(activeProject.id, boardRef.current);
+      if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current);
       const result = await api.saveNodeAsAsset(activeProject.id, primary.id);
       setStatus(result.message); await onRefresh(true); setSelectedIds([primary.id]);
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }

@@ -95,6 +95,7 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   const [canvasError, setCanvasError] = useState("");
   const saveSequence = useRef(0);
+  const saveInFlight = useRef<Promise<CanvasData> | null>(null);
 
   const activeProject = projects.find((item) => item.id === projectId) ?? null;
 
@@ -125,19 +126,31 @@ export default function App() {
     if (!dirty || !canvas || !projectId) return;
     const sequence = ++saveSequence.current;
     const timer = window.setTimeout(() => {
-      api.saveCanvas(projectId, canvas).then((saved) => {
+      const pending = api.saveCanvas(projectId, canvas);
+      saveInFlight.current = pending;
+      pending.then((saved) => {
         if (sequence === saveSequence.current) { setCanvas(normalizeCanvas(saved)); setDirty(false); setStatus("白板已自动保存"); }
-      }).catch((error) => setStatus(`自动保存失败：${errorText(error)}`));
+      }).catch((error) => setStatus(`自动保存失败：${errorText(error)}`))
+        .finally(() => { if (saveInFlight.current === pending) saveInFlight.current = null; });
     }, 700);
     return () => window.clearTimeout(timer);
   }, [canvas, dirty, projectId]);
 
   function changeCanvas(next: CanvasData) { setCanvas(next); setDirty(true); }
 
+  async function flushCanvas() {
+    ++saveSequence.current;
+    if (saveInFlight.current) await saveInFlight.current;
+    if (dirty && canvas && canvas.project_id === projectId) {
+      await api.saveCanvas(projectId, canvas);
+      setDirty(false);
+    }
+  }
+
   async function refreshCanvas(skipPendingSave = false) {
     if (!projectId) return;
     ++saveSequence.current;
-    if (dirty && canvas && !skipPendingSave) await api.saveCanvas(projectId, canvas);
+    if (!skipPendingSave) await flushCanvas();
     const [canvasData, assetItems] = await Promise.all([api.getCanvas(projectId), api.listAssets(projectId)]);
     setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
   }
@@ -164,9 +177,9 @@ export default function App() {
 
   const content = (() => {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} />;
-    if (view === "search") return <SearchView sources={sources} project={activeProject} onAdded={refreshCanvas} setStatus={setStatus} />;
-    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={async (nodeIds) => { await refreshCanvas(); setSelectedIds(nodeIds); setView("canvas"); }} />;
-    if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>白板加载失败</strong><p>{canvasError}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>重新读取白板</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
+    if (view === "search") return <SearchView sources={sources} project={activeProject} beforeAdd={flushCanvas} onAdded={() => refreshCanvas(true)} setStatus={setStatus} />;
+    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
+    if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>白板加载失败</strong><p>{canvasError}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>重新读取白板</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} beforeGenerate={flushCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <ContentView project={activeProject} canvas={canvas} assets={assets} selectedIds={selectedIds} setSelectedIds={setSelectedIds} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={refreshCanvas} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
   })();
@@ -218,7 +231,7 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen }: {
   </>;
 }
 
-function SearchView({ sources, project, onAdded, setStatus }: { sources: Source[]; project: Project | null; onAdded: () => Promise<void>; setStatus: (value: string) => void }) {
+function SearchView({ sources, project, beforeAdd, onAdded, setStatus }: { sources: Source[]; project: Project | null; beforeAdd: () => Promise<void>; onAdded: () => Promise<void>; setStatus: (value: string) => void }) {
   const [sourceId, setSourceId] = useState(sources[0]?.id ?? "");
   const [query, setQuery] = useState(project?.idea ?? "");
   const [hits, setHits] = useState<Hit[]>([]); const [busy, setBusy] = useState(false);
@@ -234,7 +247,7 @@ function SearchView({ sources, project, onAdded, setStatus }: { sources: Source[
     try { const detail = await api.chunkDetail(hit.chunk_id); setExpanded((current) => ({ ...current, [hit.chunk_id]: detail })); } catch (error) { setStatus(errorText(error)); }
   }
   async function addToCanvas(hit: Hit) { if (!project) { setStatus("请先创建项目，再把证据加入白板"); return; }
-    try { await api.createNode(project.id, { type: "knowledge", title: hit.title, body: hit.excerpt, status: "candidate", x: 420, y: 160 + Math.random() * 360, metadata: { evidence: [{ chunk_id: hit.chunk_id, title: hit.title, path: hit.source_path, heading: hit.heading_path, excerpt: hit.excerpt, start_line: hit.start_line, end_line: hit.end_line, references: hit.original_references }] } }); await onAdded(); setStatus("已加入内容白板"); }
+    try { await beforeAdd(); await api.createNode(project.id, { type: "knowledge", title: hit.title, body: hit.excerpt, status: "candidate", x: 420, y: 160 + Math.random() * 360, metadata: { evidence: [{ chunk_id: hit.chunk_id, title: hit.title, path: hit.source_path, heading: hit.heading_path, excerpt: hit.excerpt, start_line: hit.start_line, end_line: hit.end_line, references: hit.original_references }] } }); await onAdded(); setStatus("已加入内容白板"); }
     catch (error) { setStatus(errorText(error)); }
   }
   return <>
@@ -262,7 +275,7 @@ function SearchView({ sources, project, onAdded, setStatus }: { sources: Source[
   </>;
 }
 
-function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
+function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onDone: (nodeIds: string[]) => Promise<void> }) {
   const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState(6); const [useLlm, setUseLlm] = useState(true);
   const [job, setJob] = useState<ResearchJob | null>(null);
   const [history, setHistory] = useState<ResearchRun[]>([]);
@@ -285,6 +298,7 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { 
   }
   async function run() { if (!sourceId || !query.trim()) return; setBusy(true); setStatus("研究任务已启动，可在进度框查看当前阶段");
     try {
+      await beforeRun();
       let current = await api.startQuickResearch(activeProject.id, sourceId, query, count, useLlm);
       setJob(current);
       while (current.status === "running") {
