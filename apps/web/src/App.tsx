@@ -67,7 +67,7 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; onRetry: () =
   componentDidCatch(error: Error, info: ErrorInfo) { console.error("白板渲染失败", error, info); }
   render() {
     if (!this.state.error) return this.props.children;
-    return <div className="canvas-recovery"><strong>白板未能正确初始化</strong><p>{this.state.error}</p><button className="primary" onClick={async () => { await this.props.onRetry(); this.setState({ error: "" }); }}>重新初始化白板</button></div>;
+    return <div className="canvas-recovery"><strong>白板加载失败</strong><p>{this.state.error}</p><button className="primary" onClick={async () => { try { await this.props.onRetry(); this.setState({ error: "" }); } catch (error) { this.setState({ error: errorText(error) }); } }}>重新读取白板</button></div>;
   }
 }
 
@@ -93,6 +93,7 @@ export default function App() {
   const [status, setStatus] = useState("正在连接本地工作台…");
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [canvasError, setCanvasError] = useState("");
   const saveSequence = useRef(0);
 
   const activeProject = projects.find((item) => item.id === projectId) ?? null;
@@ -110,10 +111,15 @@ export default function App() {
 
   useEffect(() => {
     if (!projectId) { setCanvas(null); setAssets([]); return; }
+    if (view !== "canvas" && view !== "content") return;
+    if (canvas?.project_id === projectId && !canvasError) return;
+    let active = true;
+    setCanvasError("");
     Promise.all([api.getCanvas(projectId), api.listAssets(projectId)])
-      .then(([canvasData, assetItems]) => { setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); })
-      .catch((error) => setStatus(errorText(error)));
-  }, [projectId]);
+      .then(([canvasData, assetItems]) => { if (active) { setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); setCanvasError(""); } })
+      .catch((error) => { if (active) { setCanvasError(errorText(error)); setStatus(`白板加载失败：${errorText(error)}`); } });
+    return () => { active = false; };
+  }, [projectId, view]);
 
   useEffect(() => {
     if (!dirty || !canvas || !projectId) return;
@@ -128,20 +134,20 @@ export default function App() {
 
   function changeCanvas(next: CanvasData) { setCanvas(next); setDirty(true); }
 
-  async function refreshCanvas() {
+  async function refreshCanvas(skipPendingSave = false) {
     if (!projectId) return;
     ++saveSequence.current;
+    if (dirty && canvas && !skipPendingSave) await api.saveCanvas(projectId, canvas);
     const [canvasData, assetItems] = await Promise.all([api.getCanvas(projectId), api.listAssets(projectId)]);
-    setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false);
+    setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
   }
 
   async function openCanvas(id: string) {
-    ++saveSequence.current;
-    setProjectId(id); setCanvas(null); setSelectedIds([]); setView("canvas");
-    try {
-      const [canvasData, assetItems] = await Promise.all([api.getCanvas(id), api.listAssets(id)]);
-      setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setStatus("白板已初始化，可直接开始编辑");
-    } catch (error) { setStatus(`白板初始化失败：${errorText(error)}`); }
+    if (id !== projectId) { ++saveSequence.current; setCanvas(null); setSelectedIds([]); setProjectId(id); }
+    setView("canvas");
+    if (id === projectId && canvasError) {
+      try { await refreshCanvas(); } catch (error) { setCanvasError(errorText(error)); setStatus(`白板加载失败：${errorText(error)}`); }
+    }
   }
 
   async function createProject(idea: string, name: string, brief: string) {
@@ -160,7 +166,7 @@ export default function App() {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} />;
     if (view === "search") return <SearchView sources={sources} project={activeProject} onAdded={refreshCanvas} setStatus={setStatus} />;
     if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={async (nodeIds) => { await refreshCanvas(); setSelectedIds(nodeIds); setView("canvas"); }} />;
-    if (view === "canvas") return <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
+    if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>白板加载失败</strong><p>{canvasError}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>重新读取白板</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <ContentView project={activeProject} canvas={canvas} assets={assets} selectedIds={selectedIds} setSelectedIds={setSelectedIds} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={refreshCanvas} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
   })();
@@ -272,6 +278,11 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { 
   }, [project?.id, setStatus]);
   if (!project) return <><PageHeader eyebrow="快速研究" title="只基于内部知识库形成研究发现" description="默认不联网，事实、信号、内部知识和洞察会分层进入白板。" /><EmptyProject /></>;
   const activeProject = project;
+  async function deleteHistory(item: ResearchRun) {
+    if (!window.confirm("仅删除这条研究历史记录？已生成的白板节点和证据会保留。")) return;
+    try { await api.deleteResearchRun(activeProject.id, item.id); setHistory((current) => current.filter((run) => run.id !== item.id)); setStatus("已删除研究记录，白板节点保留"); }
+    catch (error) { setStatus(`删除研究记录失败：${errorText(error)}`); }
+  }
   async function run() { if (!sourceId || !query.trim()) return; setBusy(true); setStatus("研究任务已启动，可在进度框查看当前阶段");
     try {
       let current = await api.startQuickResearch(activeProject.id, sourceId, query, count, useLlm);
@@ -301,7 +312,7 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, onDone }: { 
       {history.length ? <div className="research-history-list">{history.map((item) => <article className="research-history-item" key={item.id}>
         <div className="research-history-main"><div className="research-history-meta"><span className={`run-status ${item.status}`}>{item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : "进行中"}</span><time dateTime={item.created_at}>{new Date(item.completed_at || item.created_at).toLocaleString("zh-CN")}</time></div>
           <h3>{item.prompt || "未命名研究"}</h3><p>{item.status === "failed" ? item.error || "研究失败" : `已生成 ${item.output_node_ids?.length ?? 0} 个白板节点${item.model_name ? ` · ${item.model_name}` : ""}`}</p></div>
-        <button className="secondary" disabled={item.status !== "completed" || !item.output_node_ids?.length} onClick={() => onDone(item.output_node_ids)}>查看白板节点</button>
+        <div className="research-history-actions"><button className="secondary" disabled={item.status !== "completed" || !item.output_node_ids?.length} onClick={() => onDone(item.output_node_ids)}>查看白板节点</button><button className="secondary danger" disabled={item.status === "running"} onClick={() => deleteHistory(item)}>删除记录</button></div>
       </article>)}</div> : <div className="empty-state"><strong>还没有历史研究</strong><p>完成一次快速研究后，可在这里返回查看生成的白板节点。</p></div>}
     </section></>;
 }

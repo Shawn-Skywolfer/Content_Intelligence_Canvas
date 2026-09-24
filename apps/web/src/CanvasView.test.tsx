@@ -19,6 +19,7 @@ vi.mock("@xyflow/react", () => ({
   Background: () => null,
   Controls: () => null,
   MiniMap: () => null,
+  NodeResizer: () => null,
   Handle: () => null,
   applyNodeChanges: (changes: Array<{ id: string; type: string; selected?: boolean }>, nodes: Array<{ id: string; selected?: boolean }>) =>
     nodes.map((node) => {

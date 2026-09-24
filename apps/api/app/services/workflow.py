@@ -190,6 +190,9 @@ class ContentWorkflowService:
                 "parent_id": nodes[0]["id"],
                 "metadata": {
                     "instruction": instruction,
+                    "source_node_ids": [node["id"] for node in nodes],
+                    "source_node_titles": [node["title"] for node in nodes],
+                    "ai_run_id": run_id,
                     "inherited_upstream_ids": [node["id"] for node in upstream],
                     "evidence": evidence,
                 },

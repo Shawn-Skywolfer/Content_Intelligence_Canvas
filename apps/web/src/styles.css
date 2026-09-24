@@ -279,6 +279,16 @@ summary { cursor: pointer; font-weight: 750; }
 .flow-card-body a { color: #275eaa; }
 .flow-card-placeholder { color: #98a3b3; }
 .flow-card-editor { min-height: 70px; width: 100%; flex: 1; margin: 0 0 22px; padding: 6px 8px; border-radius: 7px; background: #fbfcfe; font-size: 12px; line-height: 1.5; user-select: text; resize: none; }
+.flow-card .react-flow__resize-control.handle { width: 11px; height: 11px; border: 2px solid white; border-radius: 3px; background: #c7000b; }
+.source-panel { margin: 12px 0; padding: 13px; border: 1px solid #dde4ed; border-radius: 10px; background: #f6f8fc; color: #425064; }
+.source-panel strong { display: block; color: #202d40; font-size: 13px; }
+.source-panel p { margin: 7px 0; line-height: 1.55; font-size: 12px; }
+.source-panel small { display: block; overflow-wrap: anywhere; color: #708095; font-size: 11px; }
+.ai-progress { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; padding: 10px; border-radius: 8px; background: #fff1f2; color: #9b1923; font-size: 12px; }
+.ai-progress-spinner { width: 14px; height: 14px; border: 2px solid #e8a6ab; border-top-color: #c7000b; border-radius: 50%; animation: ai-spin .75s linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+.research-history-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.research-history-actions .danger { border-color: #efdbde; color: #a6212a; }
 .flow-card .node-head, .flow-card > h3 { flex: 0 0 auto; }
 .inspector { min-width: 0; }
 

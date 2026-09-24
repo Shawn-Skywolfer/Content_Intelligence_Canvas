@@ -230,5 +230,21 @@ def test_research_job_reports_progress_and_source_can_be_removed(tmp_path: Path,
     )
     assert client.get(f"/api/projects/{project['id']}/canvas").json()["nodes"] == board["nodes"]
 
+    generated = client.post(
+        f"/api/projects/{project['id']}/magic",
+        json={"node_ids": [results[0]["id"], results[1]["id"]], "instruction": "综合两条研究发现", "output_type": "insight"},
+    )
+    assert generated.status_code == 200
+    created = generated.json()["nodes"][0]
+    assert created["metadata"]["source_node_ids"] == [results[0]["id"], results[1]["id"]]
+    assert created["metadata"]["source_node_titles"] == [results[0]["title"], results[1]["title"]]
+    after_magic = client.get(f"/api/projects/{project['id']}/canvas").json()
+    assert {edge["source_node_id"] for edge in after_magic["edges"] if edge["target_node_id"] == created["id"]} == {results[0]["id"], results[1]["id"]}
+
+    removed = client.delete(f"/api/projects/{project['id']}/research/runs/{history.json()[0]['id']}")
+    assert removed.status_code == 204
+    assert all(run["id"] != history.json()[0]["id"] for run in client.get(f"/api/projects/{project['id']}/runs").json())
+    assert {node["id"] for node in results} <= {node["id"] for node in client.get(f"/api/projects/{project['id']}/canvas").json()["nodes"]}
+
     assert client.delete(f"/api/knowledge-sources/{source['id']}").status_code == 204
     assert client.get("/api/knowledge-sources").json() == []

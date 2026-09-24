@@ -121,6 +121,8 @@ export const api = {
     }),
   researchJob: (jobId: string) => request<ResearchJob>(`/api/research/jobs/${jobId}`),
   listRuns: (projectId: string) => request<ResearchRun[]>(`/api/projects/${projectId}/runs`),
+  deleteResearchRun: (projectId: string, runId: string) =>
+    request<void>(`/api/projects/${projectId}/research/runs/${runId}`, { method: "DELETE" }),
   magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight") =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),

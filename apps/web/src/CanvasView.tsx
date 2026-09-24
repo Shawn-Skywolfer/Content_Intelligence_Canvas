@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import {
   applyNodeChanges, Background, Connection, ConnectionMode, Controls, Edge, EdgeChange, Handle,
-  MarkerType, MiniMap, Node, NodeChange, NodeProps, Position, ReactFlow,
+  MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api, CanvasData, CanvasEdge, CanvasNode, ContentJob, Project } from "./api";
@@ -20,6 +20,7 @@ type FlowNodeData = Record<string, unknown> & {
   canvasNode: CanvasNode;
   relationship: "upstream" | "downstream" | null;
   onBodyCommit: (id: string, body: string) => void;
+  onResizeCommit: (id: string, width: number, height: number) => void;
 };
 type FlowNode = Node<FlowNodeData, "canvas">;
 
@@ -50,6 +51,7 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
     setEditing(false);
   }
   return <article className={`flow-card node-${node.type} ${selected ? "selected" : ""} ${data.relationship ? `related-${data.relationship}` : ""} ${node.locked ? "locked" : ""}`}>
+    <NodeResizer isVisible={selected} minWidth={220} minHeight={140} onResizeEnd={(_, size) => data.onResizeCommit(node.id, size.width, size.height)} />
     {node.type !== "frame" && <>
       <Handle id="top" type="source" position={Position.Top} className="connection-handle handle-top" />
       <Handle id="right" type="source" position={Position.Right} className="connection-handle handle-right" />
@@ -92,7 +94,7 @@ const GROUPS = [
   { key: "thinking", title: "03 洞察与策略", types: ["insight", "challenge", "creative_pattern", "content_concept"], x: 1600, y: 40 },
 ];
 
-function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"]): FlowNode[] {
+function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"], onResizeCommit: FlowNodeData["onResizeCommit"]): FlowNode[] {
   const selected = new Set(selectedIds);
   const upstream = new Set(edges.filter((edge) => selected.has(edge.target_node_id)).map((edge) => edge.source_node_id));
   const downstream = new Set(edges.filter((edge) => selected.has(edge.source_node_id)).map((edge) => edge.target_node_id));
@@ -100,7 +102,7 @@ function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: stri
     id: node.id,
     type: "canvas",
     position: { x: node.x, y: node.y },
-    data: { canvasNode: node, relationship: selected.has(node.id) ? null : upstream.has(node.id) ? "upstream" : downstream.has(node.id) ? "downstream" : null, onBodyCommit },
+    data: { canvasNode: node, relationship: selected.has(node.id) ? null : upstream.has(node.id) ? "upstream" : downstream.has(node.id) ? "downstream" : null, onBodyCommit, onResizeCommit },
     selected: selected.has(node.id),
     draggable: !node.locked,
     selectable: true,
@@ -162,12 +164,13 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
   onChange: (canvas: CanvasData) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: (skipPendingSave?: boolean) => Promise<void>;
   setStatus: (value: string) => void;
 }) {
   const [magic, setMagic] = useState("");
   const [magicType, setMagicType] = useState("insight");
   const [busy, setBusy] = useState(false);
+  const [aiPhase, setAiPhase] = useState("");
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [composerOpen, setComposerOpen] = useState(false);
   const [contentFormat, setContentFormat] = useState<"wechat" | "video_script" | "poster_campaign">("wechat");
@@ -200,6 +203,20 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setStatus("Markdown 内容已更新，正在自动保存");
   }, [setStatus]);
 
+  const onResizeCommit = useCallback((id: string, width: number, height: number) => {
+    const current = boardRef.current;
+    const node = current?.nodes.find((item) => item.id === id);
+    if (!current || !node || !Number.isFinite(width) || !Number.isFinite(height) ||
+      (closeEnough(node.width, width) && closeEnough(node.height, height))) return;
+    undoStack.current = [...undoStack.current.slice(-79), cloneCanvas(current)];
+    redoStack.current = [];
+    setHistoryRevision((value) => value + 1);
+    const next = rerouteEdges({ ...current, nodes: current.nodes.map((item) => item.id === id ? { ...item, width, height } : item) });
+    boardRef.current = next;
+    onChangeRef.current(next);
+    setStatus("节点大小已更新，正在自动保存");
+  }, [setStatus]);
+
   const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
     const current = boardRef.current;
     if (!current) return;
@@ -220,10 +237,10 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   useEffect(() => { selectedEdgeIdsRef.current = selectedEdgeIds; }, [selectedEdgeIds]);
   useEffect(() => {
     if (!canvas || draggingRef.current) return;
-    const next = toFlowNodes(canvas.nodes, canvas.edges, selectedIds, onBodyCommit);
+    const next = toFlowNodes(canvas.nodes, canvas.edges, selectedIds, onBodyCommit, onResizeCommit);
     displayNodesRef.current = next;
     setDisplayNodes(next);
-  }, [canvas, selectedIds, onBodyCommit]);
+  }, [canvas, selectedIds, onBodyCommit, onResizeCommit]);
   useEffect(() => {
     undoStack.current = [];
     redoStack.current = [];
@@ -292,7 +309,10 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     const board = boardRef.current;
     if (!board || (!selectedIds.length && !selectedEdgeIds.length)) return;
     const removable = new Set(board.nodes.filter((node) => selectedIds.includes(node.id) && !node.locked).map((node) => node.id));
-    const keptNodes = board.nodes.filter((node) => !removable.has(node.id));
+    const keptNodes = board.nodes.filter((node) => !removable.has(node.id)).map((node) =>
+      node.type === "frame" && Array.isArray(node.metadata.member_ids)
+        ? { ...node, metadata: { ...node.metadata, member_ids: (node.metadata.member_ids as string[]).filter((id) => !removable.has(id)) } }
+        : node);
     const keptEdges = board.edges.filter((edge) => !selectedEdgeIds.includes(edge.id) && !removable.has(edge.source_node_id) && !removable.has(edge.target_node_id));
     if (keptNodes.length === board.nodes.length && keptEdges.length === board.edges.length) {
       setStatus("选中的节点已锁定，不能删除");
@@ -318,7 +338,8 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       x, y, width, height, metadata: { member_ids: selectedIds }, created_by: "user",
       project_id: board.project_id, canvas_id: board.id,
     };
-    commit({ ...board, nodes: [frame, ...board.nodes] }, "已创建内容分组");
+    commit({ ...board, nodes: [frame, ...board.nodes] }, "已创建内容分组；选中分组后可综合加工成员节点");
+    setSelectedIds([frame.id]);
   }
 
   function duplicateSelection() {
@@ -408,12 +429,18 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     draggingRef.current = true;
   }
 
-  function onNodeDragStop() {
+  function onNodeDragStop(_: unknown, dragged?: FlowNode) {
     const current = boardRef.current;
     if (!current) return;
     const positions = new Map(displayNodesRef.current.map((node) => [node.id, node.position]));
+    const frame = current.nodes.find((node) => node.id === dragged?.id && node.type === "frame");
+    const framePosition = frame ? positions.get(frame.id) : undefined;
+    const dx = frame && framePosition ? framePosition.x - frame.x : 0;
+    const dy = frame && framePosition ? framePosition.y - frame.y : 0;
+    const members = new Set<string>(Array.isArray(frame?.metadata.member_ids) ? frame.metadata.member_ids as string[] : []);
     const moved = current.nodes.map((node) => {
       const position = positions.get(node.id);
+      if (members.has(node.id)) return { ...node, x: node.x + dx, y: node.y + dy };
       return position ? { ...node, x: position.x, y: position.y } : node;
     });
     const next = rerouteEdges({ ...current, nodes: moved });
@@ -510,22 +537,29 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
 
   async function runMagic() {
     if (!magic.trim() || !selectedIds.length) return;
+    const inputs = [...new Set(selectedIds.flatMap((id) => {
+      const node = boardRef.current?.nodes.find((item) => item.id === id);
+      return node?.type === "frame" ? (Array.isArray(node.metadata.member_ids) ? node.metadata.member_ids as string[] : []) : [id];
+    }))];
+    if (!inputs.length) { setStatus("分组中没有可加工的节点"); return; }
     setBusy(true);
+    setAiPhase("正在保存画布并收集上游上下文");
     try {
-      const result = selectedIds.length === 1
-        ? await api.generateIntoNode(activeProject.id, selectedIds[0], magic, true)
-        : await api.magic(activeProject.id, selectedIds, magic, magicType);
-      const nextIds = selectedIds.length === 1 ? [selectedIds[0]] : result.nodes.map((node) => node.id);
-      setStatus(result.message); setMagic(""); await onRefresh(); setSelectedIds(nextIds);
-    } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
+      await api.saveCanvas(activeProject.id, boardRef.current!);
+      setAiPhase("正在请求模型并综合内容");
+      const result = await api.magic(activeProject.id, inputs, magic, magicType);
+      setAiPhase("正在载入新节点与来源关系");
+      setStatus(result.message); setMagic(""); await onRefresh(true); setSelectedIds(result.nodes.map((node) => node.id));
+    } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); setAiPhase(""); }
   }
 
   async function concept() {
     if (!selectedIds.length) return;
     setBusy(true);
     try {
+      await api.saveCanvas(activeProject.id, boardRef.current!);
       const result = await api.createConcept(activeProject.id, selectedIds);
-      setStatus(result.message); await onRefresh(); setSelectedIds(result.nodes.map((node) => node.id));
+      setStatus(result.message); await onRefresh(true); setSelectedIds(result.nodes.map((node) => node.id));
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
 
@@ -534,6 +568,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setBusy(true);
     setContentJob(null);
     try {
+      await api.saveCanvas(activeProject.id, boardRef.current!);
       let job = await api.startContentGeneration(
         activeProject.id, selectedIds, contentFormat, contentTitle, contentDuration,
         contentUseLlm, contentInstruction, false,
@@ -546,7 +581,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       }
       if (job.status === "failed") throw new Error(job.error || "内容生成失败");
       if (!job.result) throw new Error("内容生成已结束，但没有返回草稿");
-      setStatus(job.result.message); await onRefresh(); setSelectedIds([job.result.node.id]);
+      setStatus(job.result.message); await onRefresh(true); setSelectedIds([job.result.node.id]);
     } catch (error) {
       setStatus(errorText(error));
       setContentJob((current) => current ? { ...current, status: "failed", error: errorText(error), detail: errorText(error) } : null);
@@ -559,7 +594,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     try {
       await api.saveCanvas(activeProject.id, boardRef.current);
       const result = await api.saveNodeAsAsset(activeProject.id, primary.id);
-      setStatus(result.message); await onRefresh(); setSelectedIds([primary.id]);
+      setStatus(result.message); await onRefresh(true); setSelectedIds([primary.id]);
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
 
@@ -612,9 +647,11 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         </ReactFlow>
       </section>
       <aside className="inspector"><div className="inspector-content">{primary ? <>
-        <div className="inspector-title"><div><small>{NODE_LABELS[primary.type] ?? primary.type}</small><h2>节点检查器</h2></div><button className="icon-button danger" disabled={primary.locked} onClick={deleteSelection}>删除</button></div>
+        <div className="inspector-title"><div><small>{NODE_LABELS[primary.type] ?? primary.type}</small><h2>节点详情</h2></div><button className="icon-button danger" disabled={primary.locked} onClick={deleteSelection}>删除</button></div>
         <label>标题<input disabled={primary.locked} value={primary.title} onChange={(event) => updateLocal(primary.id, { title: event.target.value })} /></label>
         <label>正文<textarea disabled={primary.locked} value={primary.body} onChange={(event) => updateLocal(primary.id, { body: event.target.value })} /></label>
+        {Array.isArray(primary.metadata?.source_node_ids) && <div className="source-panel"><strong>加工来源</strong><p>由 {(primary.metadata.source_node_titles as string[] | undefined)?.join("、") || (primary.metadata.source_node_ids as string[]).join("、")} 联合加工生成</p><small>来源节点 ID：{(primary.metadata.source_node_ids as string[]).join("、")}</small>{Array.isArray(primary.metadata.inherited_upstream_ids) && primary.metadata.inherited_upstream_ids.length > 0 && <p>额外继承 {(primary.metadata.inherited_upstream_ids as string[]).length} 个上游节点</p>}</div>}
+        {primary.type === "frame" && Array.isArray(primary.metadata.member_ids) && <div className="source-panel"><strong>分组成员</strong><p>包含 {(primary.metadata.member_ids as string[]).length} 个节点；输入处理要求可生成新的下游节点。</p></div>}
         <div className="quick-edit"><small>快速加工</small><div><button className="secondary" onClick={() => applyQuickInstruction("调整表达风格，使内容更清晰、有节奏，并保留原有事实")}>调整风格</button><button className="secondary" onClick={() => applyQuickInstruction("基于现有证据补充事实、案例和具体细节；证据不足时明确指出缺口，不得编造")}>补充事实/案例</button><button className="secondary" onClick={() => applyQuickInstruction("优化结构与论证顺序，强化开头、转折和结论")}>优化结构</button></div></div>
         <label>状态<select disabled={primary.locked} value={primary.status} onChange={(event) => updateLocal(primary.id, { status: event.target.value })}><option value="exploring">探索中</option><option value="candidate">候选</option><option value="approved">已批准</option></select></label>
         <label className="switch-row"><span><strong>锁定节点</strong><small>锁定后不能修改内容或删除</small></span><input type="checkbox" checked={primary.locked} onChange={(event) => updateLocal(primary.id, { locked: event.target.checked, status: event.target.checked ? "locked" : primary.status === "locked" ? "candidate" : primary.status })} /></label>
@@ -622,11 +659,12 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         {!!primary.metadata?.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : selectedEdgeIds.length ? `已选择 ${selectedEdgeIds.length} 条连接` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以将多个节点综合为一个新的下游节点。" : "从任一节点的上下左右端口拖到另一个节点，即可创建有向连接。"}</p></div>}</div>
         {!!selectedIds.length && <section className="ai-copilot">
-          <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 ? "在当前节点内生成" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
-          <p className="context-note">{inheritedIds.length ? `将自动继承 ${inheritedIds.length} 个上游节点作为上下文。` : "当前没有上游节点；可先建立有向连接补充上下文。"}{selectedIds.length === 1 ? " 生成结果会直接写入当前节点，不会另建下游节点。" : " 多选加工会生成一个新的综合节点。"}</p>
-          {selectedIds.length > 1 && <label>新节点类型<select value={magicType} onChange={(event) => setMagicType(event.target.value)}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option></select></label>}
+          <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 && primary?.type !== "frame" ? "由当前节点生成下游" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
+          <p className="context-note">{inheritedIds.length ? `将自动继承 ${inheritedIds.length} 个上游节点作为上下文。` : "有向连接的上游节点会自动作为上下文。"} 原节点保留；生成结果进入新的下游节点，并标注加工来源。框选多个节点可直接综合，或先创建分组再加工。</p>
+          <label>新节点类型<select value={magicType} onChange={(event) => setMagicType(event.target.value)}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
           <label>处理要求<textarea value={magic} onChange={(event) => setMagic(event.target.value)} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
-          <button className="primary ai-run" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "正在处理…" : selectedIds.length === 1 ? "生成到当前节点" : "综合为新节点"}</button>
+          {busy && aiPhase && <div className="ai-progress" role="status"><span className="ai-progress-spinner" />{aiPhase}</div>}
+          <button className="primary ai-run" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "正在处理…" : "AI 加工并生成下游节点"}</button>
           <div className="ai-secondary-actions"><button className="secondary" disabled={busy} onClick={concept}>形成内容概念</button><button className="secondary" disabled={busy} onClick={() => { setContentJob(null); setComposerOpen(true); }}>生成新内容</button></div>
         </section>}
       </aside>

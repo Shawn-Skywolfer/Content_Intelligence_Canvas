@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -11,6 +12,27 @@ from typing import Any, Iterator
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+logger = logging.getLogger(__name__)
+
+
+def read_metadata(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def read_viewport(raw: str | None) -> dict[str, float]:
+    try:
+        value = json.loads(raw or "{}")
+        if isinstance(value, dict) and all(isinstance(value.get(key, 0), (int, float)) for key in ("x", "y", "zoom")):
+            return value
+    except (TypeError, ValueError):
+        pass
+    return {"x": 0, "y": 0, "zoom": 1}
 
 
 class WorkspaceRepository:
@@ -141,7 +163,14 @@ class WorkspaceRepository:
         item = dict(row)
         for field in json_fields:
             if field in item:
-                item[field.removesuffix("_json")] = json.loads(item.pop(field) or "{}")
+                raw = item.pop(field)
+                if field == "metadata_json":
+                    item["metadata"] = read_metadata(raw)
+                else:
+                    try:
+                        item[field.removesuffix("_json")] = json.loads(raw or "[]")
+                    except (TypeError, ValueError):
+                        item[field.removesuffix("_json")] = []
         if "locked" in item:
             item["locked"] = bool(item["locked"])
         if "enabled" in item:
@@ -225,6 +254,10 @@ class WorkspaceRepository:
             node_count = int(
                 db.execute("SELECT COUNT(*) FROM canvas_nodes WHERE project_id=?", (project_id,)).fetchone()[0]
             )
+            legacy_marker = f"starter_edges_checked:{project_id}"
+            already_checked = db.execute("SELECT 1 FROM app_settings WHERE key=?", (legacy_marker,)).fetchone()
+        if node_count and already_checked:
+            return
         if node_count == 0:
             self.create_node(
                 project_id,
@@ -244,27 +277,20 @@ class WorkspaceRepository:
         # Older builds set the brief's parent_id and generated a derived_from edge.
         # Clear that legacy parent marker once, so a later user-drawn edge persists.
         with self._connect() as db:
-            db.execute(
-                """DELETE FROM canvas_edges WHERE project_id=? AND relation='derived_from'
-                AND source_node_id IN (
-                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='idea'
-                    AND json_extract(metadata_json, '$.starter_group')='input'
-                ) AND target_node_id IN (
-                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='brief'
-                    AND json_extract(metadata_json, '$.starter_group')='input'
-                    AND parent_id=canvas_edges.source_node_id
-                )""",
-                (project_id, project_id, project_id),
-            )
-            db.execute(
-                """UPDATE canvas_nodes SET parent_id=NULL WHERE project_id=? AND type='brief'
-                AND json_extract(metadata_json, '$.starter_group')='input'
-                AND parent_id IN (
-                    SELECT id FROM canvas_nodes WHERE project_id=? AND type='idea'
-                    AND json_extract(metadata_json, '$.starter_group')='input'
-                )""",
-                (project_id, project_id),
-            )
+            starters = db.execute(
+                "SELECT id,type,parent_id,metadata_json FROM canvas_nodes WHERE project_id=? AND type IN ('idea','brief')",
+                (project_id,),
+            ).fetchall()
+            ideas = {row["id"] for row in starters if row["type"] == "idea" and read_metadata(row["metadata_json"]).get("starter_group") == "input"}
+            for brief in starters:
+                if brief["type"] != "brief" or brief["parent_id"] not in ideas or read_metadata(brief["metadata_json"]).get("starter_group") != "input":
+                    continue
+                db.execute(
+                    "DELETE FROM canvas_edges WHERE project_id=? AND source_node_id=? AND target_node_id=? AND relation='derived_from'",
+                    (project_id, brief["parent_id"], brief["id"]),
+                )
+                db.execute("UPDATE canvas_nodes SET parent_id=NULL WHERE id=?", (brief["id"],))
+            db.execute("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)", (legacy_marker, 'true', utc_now()))
 
     def _seed_initial_groups(self, project_id: str) -> None:
         """Add a grouped starter board only while a project still has its two initial nodes."""
@@ -351,7 +377,11 @@ class WorkspaceRepository:
 
     def get_canvas(self, project_id: str) -> dict[str, Any]:
         self.ensure_canvas(project_id)
-        self._layout_completed_research(project_id)
+        try:
+            self._layout_completed_research(project_id)
+        except (ValueError, TypeError, sqlite3.DatabaseError):
+            # Legacy layout is optional: always return the user's original board.
+            logger.exception("Could not migrate layout for project %s", project_id)
         with self._connect() as db:
             canvas = db.execute("SELECT * FROM canvases WHERE project_id=?", (project_id,)).fetchone()
             if not canvas:
@@ -365,7 +395,7 @@ class WorkspaceRepository:
         return {
             "id": canvas["id"],
             "project_id": project_id,
-            "viewport": json.loads(canvas["viewport_json"] or "{}"),
+            "viewport": read_viewport(canvas["viewport_json"]),
             "updated_at": canvas["updated_at"],
             "nodes": [self._decode(row, "metadata_json") for row in nodes],
             "edges": [self._decode(row, "metadata_json") for row in edges],
@@ -402,6 +432,39 @@ class WorkspaceRepository:
             saved = db.execute("SELECT value_json FROM app_settings WHERE key=?", (marker,)).fetchone()
             if saved and saved["value_json"] == version:
                 return
+            if saved:
+                # Subsequent research runs append below existing cards. Previously edited
+                # positions and dimensions are user data and must not be migrated again.
+                try:
+                    previous_runs = set(json.loads(saved["value_json"]))
+                except (TypeError, ValueError):
+                    previous_runs = set()
+                fresh = db.execute(
+                    "SELECT output_node_ids_json FROM ai_runs WHERE project_id=? AND action='quick_research' AND status='completed' ORDER BY created_at,id",
+                    (project_id,),
+                ).fetchall()
+                new_ids: list[str] = []
+                for run, outputs in zip(runs, fresh):
+                    if run["id"] not in previous_runs:
+                        try:
+                            new_ids.extend(json.loads(outputs["output_node_ids_json"] or "[]"))
+                        except (TypeError, ValueError):
+                            pass
+                rows = db.execute("SELECT id,type,x,y,width,height,metadata_json FROM canvas_nodes WHERE project_id=?", (project_id,)).fetchall()
+                new_set = set(new_ids)
+                now = utc_now()
+                for key, _, x, types in groups:
+                    previous = [row for row in rows if row["id"] not in new_set and row["type"] in types]
+                    additions = [row for row in rows if row["id"] in new_set and row["type"] in types]
+                    start_y = max((float(row["y"]) + float(row["height"]) + 40 for row in previous), default=130)
+                    for index, row in enumerate(additions):
+                        db.execute("UPDATE canvas_nodes SET x=?,y=?,updated_at=? WHERE id=?", (x + 34 + (index % 2) * 340, start_y + (index // 2) * 230, now, row["id"]))
+                    required_height = max(570, start_y + ((len(additions) + 1) // 2) * 230 + 50 - 40) if additions else 570
+                    for row in rows:
+                        if row["type"] == "frame" and read_metadata(row["metadata_json"]).get("group_key") == key and float(row["height"]) < required_height:
+                            db.execute("UPDATE canvas_nodes SET height=?,updated_at=? WHERE id=?", (required_height, now, row["id"]))
+                db.execute("UPDATE app_settings SET value_json=?,updated_at=? WHERE key=?", (version, now, marker))
+                return
             rows = db.execute(
                 "SELECT * FROM canvas_nodes WHERE project_id=? ORDER BY created_at,id", (project_id,),
             ).fetchall()
@@ -415,7 +478,7 @@ class WorkspaceRepository:
             remaining = []
             frames: dict[str, str] = {}
             for row in rows:
-                metadata = json.loads(row["metadata_json"] or "{}")
+                metadata = read_metadata(row["metadata_json"])
                 if metadata.get("starter_template") and row["id"] not in linked and not row["locked"] and row["status"] == "exploring" and (
                     row["title"], row["body"]
                 ) == seed_titles.get(row["type"]):
@@ -668,6 +731,24 @@ class WorkspaceRepository:
                 "SELECT * FROM ai_runs WHERE project_id=? ORDER BY created_at DESC", (project_id,)
             ).fetchall()
         return [self._decode(row, "input_node_ids_json", "output_node_ids_json") or {} for row in rows]
+
+    def delete_research_run(self, project_id: str, run_id: str) -> bool:
+        """Forget only the research record; its authored canvas nodes remain intact."""
+        with self._connect() as db:
+            cursor = db.execute(
+                "DELETE FROM ai_runs WHERE id=? AND project_id=? AND action='quick_research' AND status!='running'",
+                (run_id, project_id),
+            )
+            if cursor.rowcount:
+                remaining = db.execute(
+                    "SELECT id FROM ai_runs WHERE project_id=? AND action='quick_research' AND status='completed' ORDER BY created_at,id",
+                    (project_id,),
+                ).fetchall()
+                db.execute(
+                    "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)",
+                    (f"research_layout_v2:{project_id}", json.dumps([row["id"] for row in remaining]), utc_now()),
+                )
+            return cursor.rowcount > 0
 
     def create_asset(
         self,

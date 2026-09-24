@@ -358,6 +358,14 @@ def list_runs(project_id: str) -> list[dict[str, Any]]:
     return get_container().workspace.list_runs(project_id)
 
 
+@router.delete("/projects/{project_id}/research/runs/{run_id}", status_code=204)
+def delete_research_run(project_id: str, run_id: str) -> Response:
+    _project(project_id)
+    if not get_container().workspace.delete_research_run(project_id, run_id):
+        raise HTTPException(404, "研究记录不存在，或任务仍在进行中")
+    return Response(status_code=204)
+
+
 @router.get("/projects/{project_id}/export")
 def export_project(project_id: str, format: str = "markdown") -> Response:
     project = _project(project_id)
