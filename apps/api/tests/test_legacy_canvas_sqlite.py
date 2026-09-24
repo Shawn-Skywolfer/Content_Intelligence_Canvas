@@ -6,6 +6,7 @@ Uses only SQLite so old canvas recovery remains testable on hosts without LanceD
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from app.repositories.workspace import WorkspaceRepository
@@ -24,9 +25,10 @@ class LegacyCanvasTests(unittest.TestCase):
             repository.create_edge(project_id, idea["id"], finding["id"])
             run = repository.create_run(project_id, "quick_research", "知识库研究", [])
             repository.finish_run(run, [finding["id"]], None, None)
-            with sqlite3.connect(db_path) as db:
-                db.execute("UPDATE canvas_nodes SET metadata_json='invalid legacy value' WHERE id=?", (idea["id"],))
-                db.execute("DELETE FROM app_settings WHERE key=?", (f"starter_edges_checked:{project_id}",))
+            with closing(sqlite3.connect(db_path)) as db:
+                with db:
+                    db.execute("UPDATE canvas_nodes SET metadata_json='invalid legacy value' WHERE id=?", (idea["id"],))
+                    db.execute("DELETE FROM app_settings WHERE key=?", (f"starter_edges_checked:{project_id}",))
 
             loaded = repository.get_canvas(project_id)
             self.assertEqual(next(node["body"] for node in loaded["nodes"] if node["id"] == finding["id"]), "正文保留")
