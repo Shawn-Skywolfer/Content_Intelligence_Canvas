@@ -69,6 +69,8 @@ def test_legacy_starter_link_is_removed_once_without_erasing_user_links(tmp_path
     idea = next(node for node in canvas["nodes"] if node["type"] == "idea")
     brief = next(node for node in canvas["nodes"] if node["type"] == "brief")
     with sqlite3.connect(data_dir / "app.db") as db:
+        # A migrated legacy project has not yet received the one-time cleanup marker.
+        db.execute("DELETE FROM app_settings WHERE key=?", (f"starter_edges_checked:{project_id}",))
         db.execute("UPDATE canvas_nodes SET parent_id=? WHERE id=?", (idea["id"], brief["id"]))
         db.execute(
             """INSERT INTO canvas_edges(id,project_id,canvas_id,source_node_id,target_node_id,relation,metadata_json,created_at)
