@@ -188,13 +188,36 @@ def test_research_job_reports_progress_and_source_can_be_removed(tmp_path: Path,
     assert client.post(f"/api/knowledge-sources/{source['id']}/refresh").status_code == 200
     project = client.post("/api/projects", json={"name": "研究", "idea": "知识证据", "brief": ""}).json()
 
+    def wiki_model(_system: str, prompt: str):
+        import json
+        data = json.loads(prompt)
+        trace = {"provider": "测试模型", "model": "test-model"}
+        if "evidence" not in data:
+            return {"queries": ["本地知识库 可追溯事实"]}, trace
+        chunk_id = data["evidence"][0]["chunk_id"]
+        return {
+            "findings": [
+                {"type": "fact", "title": f"发现{index}", "body": "知识库保存可追溯事实", "evidence_chunk_ids": [chunk_id]}
+                for index in range(3)
+            ],
+            "directions": [
+                {"title": f"方向{index}", "body": "基于证据的方向", "source_finding_indexes": [index]}
+                for index in range(3)
+            ],
+        }, trace
+
+    monkeypatch.setattr(get_container().ai, "complete_json", wiki_model)
+    monkeypatch.setattr(get_container().ai, "complete", lambda _system, _prompt: (
+        "依据 Wiki 合并的研究结论", {"provider": "测试模型", "model": "test-model"}
+    ))
+
     started = client.post(
         f"/api/projects/{project['id']}/research/quick/start",
         json={
             "source_id": source["id"],
             "query": "本地知识库有什么价值",
             "finding_count": 3,
-            "use_llm": False,
+            "use_llm": True,
         },
     )
     assert started.status_code == 200

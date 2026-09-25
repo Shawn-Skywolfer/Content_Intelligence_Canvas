@@ -83,6 +83,13 @@ button, .button { min-height: 40px; border: 0; border-radius: 9px; padding: 0 15
 .check { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .check input { width: 16px; height: 16px; margin: 0; }
 .result-list { max-width: 1220px; margin: 0 auto; display: grid; gap: 12px; }
+.wiki-answer { max-width: 1220px; margin: 18px auto; text-align: left; line-height: 1.75; overflow-wrap: anywhere; }
+.wiki-answer .section-title { margin-bottom: 16px; }
+.wiki-answer .card-actions { margin-top: 18px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.wiki-answer .card-actions span { color: #647186; font-size: 13px; }
+.wiki-answer-body h1, .wiki-answer-body h2, .wiki-answer-body h3 { margin: 18px 0 8px; color: #233047; font-size: 18px; }
+.wiki-answer-body p, .wiki-answer-body ul, .wiki-answer-body ol { margin: 0 0 12px; }
+.wiki-answer-body pre { overflow-x: auto; padding: 12px; border-radius: 8px; background: #f2f5f9; }
 .result-card { display: grid; grid-template-columns: 54px 1fr; gap: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.9); }
 .rank { color: var(--red); font-size: 23px; font-weight: 900; }
 .result-head { display: flex; justify-content: space-between; gap: 16px; }

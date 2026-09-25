@@ -88,7 +88,7 @@ export const api = {
   deleteSource: (sourceId: string) => request<void>(`/api/knowledge-sources/${sourceId}`, { method: "DELETE" }),
   selectFolder: () => request<{ path: string }>("/api/system/select-folder", { method: "POST" }),
   refresh: (sourceId: string) => request<Record<string, unknown>>(`/api/knowledge-sources/${sourceId}/refresh`, { method: "POST" }),
-  search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[] }>("/api/knowledge/search", {
+  search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[]; answer: string; provider_name: string; model_name: string }>("/api/knowledge/search", {
     method: "POST", body: JSON.stringify({ source_id: sourceId, query, ...options }),
   }),
   chunkDetail: (chunkId: string) => request<ChunkDetail>(`/api/knowledge/chunks/${chunkId}`),

@@ -202,7 +202,7 @@ def quick_research(project_id: str, request: QuickResearchRequest) -> WorkflowRe
             request.finding_count,
             request.use_llm,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError, RuntimeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=nodes, run_id=run_id, used_llm=used_llm, message=message)
 
@@ -247,7 +247,7 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
         node, run_id, used_llm, message = get_container().workflow.magic(
             project_id, request.node_ids, request.instruction, request.output_type
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
@@ -261,7 +261,7 @@ def generate_into_node(
         node, run_id, used_llm, message = get_container().workflow.generate_into_node(
             project_id, node_id, request.instruction, request.use_llm
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
@@ -273,7 +273,7 @@ def create_concept(project_id: str, request: ConceptRequest) -> WorkflowResponse
         node, run_id, used_llm, message = get_container().workflow.create_concept(
             project_id, request.node_ids, request.title, request.use_llm
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
@@ -298,7 +298,7 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
             request.instruction,
             request.save_as_asset,
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {
         "asset": asset,

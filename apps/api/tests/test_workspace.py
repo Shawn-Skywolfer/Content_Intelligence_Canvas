@@ -56,6 +56,34 @@ https://example.com/beta
     assert report.status_code == 200
     assert report.json()["discovered"] == 2
 
+    def wiki_model(system: str, prompt: str):
+        import json
+        data = json.loads(prompt)
+        trace = {"provider": "测试模型", "model": "test-model"}
+        if "wiki_evidence" in data:
+            assert "Alpha 系统有什么价值" in data["question"]
+            return {"answer": "模块化设计提升供电连续性。[证据1]", "evidence_chunk_ids": [data["wiki_evidence"][0]["chunk_id"]]}, trace
+        if "evidence" in data:
+            ids = [item["chunk_id"] for item in data["evidence"]]
+            assert ids and all(item["text"] for item in data["evidence"])
+            return {
+                "findings": [
+                    {"type": kind, "title": title, "body": "来自 Wiki 的分析", "evidence_chunk_ids": [ids[0]]}
+                    for kind, title in [("fact", "供电连续性"), ("internal_knowledge", "模块化部署"), ("fact", "调度能力")]
+                ],
+                "directions": [
+                    {"title": f"方向{index}", "body": "基于 Wiki 的方向", "source_finding_indexes": [index]}
+                    for index in range(3)
+                ],
+            }, trace
+        assert data["question"]
+        return {"queries": ["Alpha 模块化供电连续性", "Beta 调度能力"]}, trace
+
+    monkeypatch.setattr(get_container().ai, "complete_json", wiki_model)
+    monkeypatch.setattr(get_container().ai, "complete", lambda _system, prompt: (
+        "根据 Wiki 和白板节点形成的洞察", {"provider": "测试模型", "model": "test-model"}
+    ))
+
     search = client.post(
         "/api/knowledge/search",
         json={
@@ -71,6 +99,8 @@ https://example.com/beta
     )
     assert search.status_code == 200
     assert search.json()["hits"]
+    assert "模块化设计" in search.json()["answer"]
+    assert search.json()["model_name"] == "test-model"
     chunk_id = search.json()["hits"][0]["chunk_id"]
     detail = client.get(f"/api/knowledge/chunks/{chunk_id}")
     assert detail.status_code == 200
@@ -90,12 +120,12 @@ https://example.com/beta
             "source_id": source_id,
             "query": "Alpha 系统有什么价值",
             "finding_count": 3,
-            "use_llm": False,
+            "use_llm": True,
         },
     )
     assert research.status_code == 200
     assert len(research.json()["nodes"]) == 6
-    assert research.json()["used_llm"] is False
+    assert research.json()["used_llm"] is True
 
     canvas = client.get(f"/api/projects/{project_id}/canvas")
     assert canvas.status_code == 200

@@ -11,6 +11,7 @@ from app.services.ai.secret_store import LocalSecretStore
 from app.services.knowledge.chunker import HeadingAwareChunker
 from app.services.knowledge.indexer import WikiIndexService
 from app.services.knowledge.parser import WikiMarkdownParser
+from app.services.knowledge.wiki_reasoning import WikiReasoningService
 from app.services.retrieval.embedding import LocalHashEmbeddingProvider
 from app.services.retrieval.hybrid import HybridRetrievalService
 from app.services.workflow import ContentWorkflowService
@@ -40,8 +41,9 @@ class AppContainer:
             self.manifest, self.chunk_store, self.embeddings, settings.retrieval
         )
         self.ai = AIProviderGateway(self.workspace, self.secrets)
+        self.wiki_reasoning = WikiReasoningService(self.retrieval, self.chunk_store, self.ai)
         self.workflow = ContentWorkflowService(
-            self.workspace, self.retrieval, self.chunk_store, self.ai
+            self.workspace, self.retrieval, self.chunk_store, self.ai, self.wiki_reasoning
         )
 
 

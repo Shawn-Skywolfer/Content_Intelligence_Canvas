@@ -53,6 +53,9 @@ class SearchHitResponse(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     hits: list[SearchHitResponse]
+    answer: str
+    provider_name: str
+    model_name: str
 
 
 class ContextChunkResponse(BaseModel):

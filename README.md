@@ -3,7 +3,7 @@
 一个本地优先、内部知识优先的中文内容工作台。它把现有 Markdown / Obsidian Wiki 作为只读可信知识源，完成：
 
 ```text
-本地 Wiki → 混合检索 → Findings / Evidence → 内容白板共创
+提问 → 大模型规划 Wiki 检索 → 混合召回 → 模型依据 Wiki 作答 / 研究节点
           → Content Concept → 微信公众号 / 视频号 / Campaign → 导出
 ```
 
@@ -12,7 +12,8 @@
 - 只读 `LocalVaultConnector`、Markdown/Wiki Parser、Heading-aware chunk；
 - SQLite 增量清单、LanceDB 分块与向量存储；
 - BM25 + 离线向量 + RRF + 一跳 WikiLink 混合检索；
-- 完整结果卡片、前后文、文件/标题/行号/原始 URL；
+- 模型规划检索词、阅读 Wiki 原文、输出带可核对引用的中文回答和研究节点；
+- 完整证据卡片、前后文、文件/标题/行号/原始 URL；
 - Top-K、关键词/语义/WikiLink 权重和单文档上限配置；
 - 项目、Idea、Brief、Canvas Node / Edge 持久化；
 - 节点拖拽、多选、连接、分组、状态、锁定、自动保存；
@@ -25,7 +26,7 @@
 - DeepSeek、AIHubMix 与其他兼容供应商预设，可从 `/models` 刷新并选择模型；
 - 白板撤回/重做、鼠标拖拽连线、添加/删除节点、框选、多选与键盘快捷键；
 - Windows 单体绿色版运行模式：前后端同源、随机本地端口、自动清理上一实例；
-- 内部数据保护开关；没有可用模型时自动使用本地模板，应用仍可完整运行；
+- 内部数据保护开关；没有可用模型或模型调用失败时明确显示错误，不产生伪装为 AI 的回答或研究节点；
 - 全中文界面。
 
 ## Windows 快速启动（无需 Docker）
@@ -87,10 +88,10 @@ npm run dev
 ## 第一次使用
 
 1. 打开“设置”，添加本地 Wiki 文件夹并点击“刷新索引”；
-2. 可选：配置 OpenAI-compatible 大模型，填写 Base URL、模型名和 API Key；
+2. 配置 OpenAI-compatible 大模型，填写 Base URL、模型名和 API Key，并点击“测试连接”；
 3. 根据模型服务的数据边界设置“内部数据保护”；
 4. 在“项目”输入一句想法；
-5. 进入“快速研究”，生成 Findings 和创意方向；
+5. 在“知识检索”提问，阅读模型解读与引用的 Wiki 原文；再进入“快速研究”，生成带出处的 Findings 和创意方向；
 6. 在“内容白板”选择节点，通过 Magic Bar 加工并形成 Content Concept；
 7. 在“内容资产”生成三种内容，展开审阅并导出。
 
@@ -99,7 +100,7 @@ npm run dev
 - API Key 不写入普通 SQLite 表，不进入项目导出；
 - 本地版密钥保存在 `CIC_DATA_DIR/secrets.json`，文件权限在支持的平台设为仅当前用户可读写；
 - 内部数据保护默认开启；被标记为“外部”的模型不会收到内部 Wiki 和白板内容；
-- 数据保护阻止模型调用时，研究、Magic Bar 和内容生成会自动使用本地模板；
+- 数据保护阻止模型调用时，模型操作会明确失败并保留原因；若要使用外部供应商处理内部 Wiki，需自行确认数据边界并调整此设置；
 - 源 Wiki 永远只读，刷新索引不会修改任何 Markdown 文件。
 
 ## 验证

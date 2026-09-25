@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.9
+      - release/v0.3.10
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.9"
+      RELEASE_TAG: "v0.3.10"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +56,20 @@ jobs:
           Copy-Item -Recurse -Force apps/web/dist/* (Join-Path $runtime "web_dist")
           & (Join-Path $runtime "python.exe") -c "import sys; sys.path.insert(0, r'$runtime\apps\api'); from pathlib import Path; from app.repositories.workspace import WorkspaceRepository; WorkspaceRepository(Path(r'$runtime\seed\data\app.db'))"
 
+      - name: 验证模型驱动研究及后端 API
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtime = Join-Path $env:GITHUB_WORKSPACE "portable-runtime\runtime"
+          $sitePackages = Join-Path $runtime "Lib\site-packages"
+          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target $sitePackages "pytest>=8,<10"
+          if ($LASTEXITCODE -ne 0) { throw "测试依赖安装失败" }
+          Push-Location apps/api
+          try {
+            & (Join-Path $runtime "python.exe") -m pytest -q tests
+            if ($LASTEXITCODE -ne 0) { throw "后端测试失败，不允许发布" }
+          } finally { Pop-Location }
+
       - name: 校验旧项目 SQLite 白板恢复
         shell: pwsh
         run: |
@@ -79,16 +93,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.9_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.10_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.9.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.9.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.10.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.10.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.9.exe"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.10.exe"
           $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
           function Wait-For-App([int]$previousPid) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
@@ -117,8 +131,10 @@ jobs:
             if (-not $canvas.nodes -or $canvas.nodes.Count -lt 2) { throw "新项目白板读取失败" }
             $nodeId = ($canvas.nodes | Where-Object { $_.type -eq 'idea' } | Select-Object -First 1).id
             $body = @{ node_ids=@($nodeId); instruction='整理为新节点'; output_type='insight' } | ConvertTo-Json
-            $generated = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic" -ContentType 'application/json; charset=utf-8' -Body $body
-            if ($generated.nodes[0].id -eq $nodeId -or $generated.nodes[0].metadata.source_node_ids[0] -ne $nodeId) { throw "AI 下游节点及来源验证失败" }
+            $failed = Invoke-WebRequest -SkipHttpErrorCheck -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic" -ContentType 'application/json; charset=utf-8' -Body $body
+            if ($failed.StatusCode -ne 422) { throw "未配置模型时应明确失败，实际状态 $($failed.StatusCode)" }
+            $after = Invoke-RestMethod -Uri "$baseUrl/api/projects/$($project.id)/canvas"
+            if ($after.nodes.Count -ne $canvas.nodes.Count) { throw "模型失败后不应生成模板节点" }
             Start-Process -FilePath $exe | Out-Null
             $secondPid = Wait-For-App $firstPid
             if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
@@ -143,16 +159,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.9
+          name: Content Intelligence Canvas v0.3.10
           body: |
             Windows portable public test build.
 
-            修复历史研究进入白板时的旧数据读取和重复加载问题。研究历史可删除记录并保留白板节点；节点可拖拽调整尺寸。
+            大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            AI 共创从单个、多个或分组节点生成新的下游节点，原节点保留；新节点详情显示直接来源和继承的上游节点。研究后的新发现追加排布，不会重新调整旧卡片尺寸。
-
-            新版中文 PRD 在 docs/PRD-v0.3.9.md。Windows 构建额外验证旧项目 SQLite 恢复、EXE 项目白板接口和新节点来源。
+            白板 AI 共创和内容生成默认调用模型，结合所选节点与 Wiki 内容。新版中文 PRD 在 docs/PRD-v0.3.10.md；Windows 构建验证后端测试、EXE 白板接口、模型报错和旧实例替换。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.9.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.10.exe
           generate_release_notes: true

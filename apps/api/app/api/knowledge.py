@@ -110,18 +110,32 @@ async def refresh_source(source_id: str) -> dict:
 def search(request: SearchRequest) -> SearchResponse:
     if not get_container().manifest.get_source(request.source_id):
         raise HTTPException(404, "Knowledge source not found")
-    hits = get_container().retrieval.search(
-        request.source_id,
-        request.query,
-        request.top_k,
-        lexical_weight=request.lexical_weight,
-        semantic_weight=request.semantic_weight,
-        wikilink_enabled=request.wikilink_enabled,
-        wikilink_weight=request.wikilink_weight,
-        max_per_document=request.max_per_document,
-    )
+    reasoning = get_container().wiki_reasoning
+    try:
+        hits, _ = reasoning.gather(
+            request.source_id,
+            request.query,
+            top_k=request.top_k,
+            search_options={
+                "lexical_weight": request.lexical_weight,
+                "semantic_weight": request.semantic_weight,
+                "wikilink_enabled": request.wikilink_enabled,
+                "wikilink_weight": request.wikilink_weight,
+                "max_per_document": request.max_per_document,
+            },
+        )
+        answer, hits, trace = reasoning.answer(request.query, hits, top_k=request.top_k)
+    except PermissionError as exc:
+        raise HTTPException(403, f"模型尚未获准读取内部 Wiki：{exc}。请在设置中确认数据保护选项") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"模型检索失败：{exc}") from exc
     return SearchResponse(
         query=request.query,
+        answer=answer,
+        provider_name=trace["provider"],
+        model_name=trace["model"],
         hits=[SearchHitResponse(**{
             "chunk_id": hit.chunk_id,
             "document_id": hit.document_id,
