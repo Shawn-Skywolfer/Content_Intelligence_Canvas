@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -77,3 +78,37 @@ def test_cannot_show_fabricated_evidence() -> None:
     service = WikiReasoningService(None, None, Model())
     with pytest.raises(ValueError, match="不存在的 Wiki 证据"):
         service.answer("问题", [])
+
+
+def test_expanded_query_has_room_when_original_query_fills_candidate_window() -> None:
+    class Model:
+        def complete_json(self, _system, _prompt):
+            return {"queries": ["关键英文术语"]}, {"provider": "测试", "model": "模型"}
+
+    class Retrieval:
+        def search(self, _source_id, query, top_k, **_options):
+            if query == "原问题":
+                return [SimpleNamespace(chunk_id=f"original-{index}") for index in range(top_k)]
+            return [SimpleNamespace(chunk_id="expanded-answer")]
+
+    hits, _ = WikiReasoningService(Retrieval(), None, Model()).gather("local", "原问题", top_k=30)
+    assert len(hits) == 30
+    assert any(hit.chunk_id == "expanded-answer" for hit in hits)
+
+
+def test_mixed_real_and_fabricated_evidence_is_rejected() -> None:
+    class Model:
+        def complete_json(self, _system, _prompt):
+            return {"answer": "结论。[证据1]", "evidence_chunk_ids": ["fabricated", "real"]}, {}
+
+    class Store:
+        def get_chunk(self, _chunk_id):
+            return {"text": "Wiki 原文"}
+
+    real = KnowledgeHit(
+        chunk_id="real", document_id="doc", title="标题", heading_path=(), excerpt="原文",
+        score=1, retrieval_reasons=("fts",), source_path="a.md", start_line=1,
+        end_line=2, declared_updated_at=None, original_references=(),
+    )
+    with pytest.raises(ValueError, match="不存在的 Wiki 证据"):
+        WikiReasoningService(None, Store(), Model()).answer("问题", [real])

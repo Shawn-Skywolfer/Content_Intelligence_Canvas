@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.10
+      - release/v0.3.11
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.10"
+      RELEASE_TAG: "v0.3.11"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,17 +93,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.10_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.11_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.10.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.10.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.11.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.11.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.10.exe"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.11.exe"
           $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
+          $oldRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.8"
+          New-Item -ItemType Directory -Force -Path $oldRuntime | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $oldRuntime ".ready") | Out-Null
           function Wait-For-App([int]$previousPid) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
               Start-Sleep -Seconds 1
@@ -124,6 +127,10 @@ jobs:
           try {
             Start-Process -FilePath $exe | Out-Null
             $firstPid = Wait-For-App 0
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.11"
+            if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
+              throw "新版 EXE 错误复用了旧版运行时缓存。"
+            }
             $connection = Get-NetTCPConnection -State Listen -OwningProcess $firstPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1
             $baseUrl = "http://127.0.0.1:$($connection.LocalPort)"
             $project = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/projects" -ContentType 'application/json; charset=utf-8' -Body '{"name":"发布验证","idea":"验证白板启动和新节点","brief":""}'
@@ -159,14 +166,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.10
+          name: Content Intelligence Canvas v0.3.11
           body: |
             Windows portable public test build.
 
             大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            白板 AI 共创和内容生成默认调用模型，结合所选节点与 Wiki 内容。新版中文 PRD 在 docs/PRD-v0.3.10.md；Windows 构建验证后端测试、EXE 白板接口、模型报错和旧实例替换。
+            v0.3.11 修复旧版运行时缓存被复用、模型扩展词结果被首个查询挤掉、伪造证据 ID 被静默丢弃，以及研究发现过滤后内容方向误连其他证据。白板 AI 共创和内容生成默认调用模型，结合所选节点与 Wiki 内容。新版中文 PRD 在 docs/PRD-v0.3.11.md；Windows 构建验证后端测试、EXE 白板接口、升级缓存隔离、模型报错和旧实例替换。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.10.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.11.exe
           generate_release_notes: true

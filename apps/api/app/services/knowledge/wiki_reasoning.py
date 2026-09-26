@@ -37,9 +37,19 @@ class WikiReasoningService:
                 queries.append(item.strip())
         found: dict[str, KnowledgeHit] = {}
         options = search_options or {}
-        for item in queries:
-            for hit in self.retrieval.search(source_id, item, top_k=min(30, max(12, top_k * 2)), **options):
-                found.setdefault(hit.chunk_id, hit)
+        per_query = [
+            self.retrieval.search(source_id, item, top_k=min(30, max(12, top_k * 2)), **options)
+            for item in queries
+        ]
+        # Give each model-expanded query a chance to contribute to the evidence
+        # window even when the original query alone returns 30 distinct chunks.
+        for rank in range(max(map(len, per_query), default=0)):
+            for matches in per_query:
+                if rank < len(matches):
+                    hit = matches[rank]
+                    found.setdefault(hit.chunk_id, hit)
+            if len(found) >= 30:
+                break
         if not found:
             raise ValueError("Wiki 中没有找到可用材料，请刷新知识源或调整问题")
         # Query order and the original query remain visible for debugging; the model
@@ -79,7 +89,9 @@ class WikiReasoningService:
         if not isinstance(raw_ids, list):
             raise ValueError("大模型没有给出可核对的证据列表，请重试")
         by_id = {hit.chunk_id: hit for hit in hits[:16]}
-        chosen = list(dict.fromkeys(item for item in raw_ids if isinstance(item, str) and item in by_id))[:top_k]
+        if any(not isinstance(item, str) or item not in by_id for item in raw_ids):
+            raise ValueError("大模型引用了不存在的 Wiki 证据，请重试")
+        chosen = list(dict.fromkeys(raw_ids))[:top_k]
         numbers = [int(value) for value in re.findall(r"\[证据(\d+)\]", result["answer"])]
         if any(value < 1 or value > len(chosen) for value in numbers):
             raise ValueError("大模型引用了不存在的 Wiki 证据，请重试")

@@ -462,13 +462,17 @@ class ContentWorkflowService:
     ) -> dict[str, Any]:
         valid_ids = {hit.chunk_id for hit in hits}
         findings = []
-        for raw in result.get("findings", [])[:count]:
+        original_indexes: dict[int, int] = {}
+        for original_index, raw in enumerate(result.get("findings", [])[:count]):
             if not isinstance(raw, dict):
                 continue
-            ids = [item for item in raw.get("evidence_chunk_ids", []) if item in valid_ids]
-            if not ids:
+            raw_ids = raw.get("evidence_chunk_ids")
+            if (not isinstance(raw_ids, list) or not raw_ids
+                    or any(not isinstance(item, str) or item not in valid_ids for item in raw_ids)):
                 continue
+            ids = list(dict.fromkeys(raw_ids))
             kind = raw.get("type", "insight")
+            original_indexes[original_index] = len(findings)
             findings.append(
                 {
                     "type": kind if kind in FINDING_TYPES else "insight",
@@ -483,8 +487,13 @@ class ContentWorkflowService:
         for raw in result.get("directions", [])[:3]:
             if not isinstance(raw, dict):
                 continue
-            indexes = [int(i) for i in raw.get("source_finding_indexes", [])
-                       if str(i).isdigit() and int(i) < len(findings)]
+            raw_indexes = raw.get("source_finding_indexes")
+            if not isinstance(raw_indexes, list):
+                continue
+            indexes = list(dict.fromkeys(
+                original_indexes[int(i)] for i in raw_indexes
+                if str(i).isdigit() and int(i) in original_indexes
+            ))
             if not indexes:
                 continue
             directions.append(

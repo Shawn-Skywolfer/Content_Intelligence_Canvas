@@ -82,3 +82,21 @@ def test_canvas_ai_error_does_not_create_a_template_node(tmp_path: Path) -> None
         workflow.magic(project["id"], [idea["id"]], "从 Wiki 提炼事实", "insight")
     assert len(repo.get_canvas(project["id"])["nodes"]) == original
     assert repo.list_runs(project["id"])[0]["status"] == "failed"
+
+
+def test_research_direction_indexes_follow_validated_findings(tmp_path: Path) -> None:
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    workflow = ContentWorkflowService(repo, None, None, None, None)
+    hits = [type("Hit", (), {"chunk_id": "real"})()]
+    payload = workflow._validate_research_payload({
+        "findings": [
+            {"type": "fact", "title": "伪造", "body": "", "evidence_chunk_ids": ["fake"]},
+            {"type": "fact", "title": "可信", "body": "", "evidence_chunk_ids": ["real"]},
+        ],
+        "directions": [
+            {"title": f"方向{index}", "body": "", "source_finding_indexes": [1]}
+            for index in range(3)
+        ],
+    }, hits, 3)
+    assert [item["title"] for item in payload["findings"]] == ["可信"]
+    assert all(item["source_finding_indexes"] == [0] for item in payload["directions"])
