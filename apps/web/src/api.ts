@@ -20,6 +20,7 @@ export type Evidence = {
 };
 export type CanvasNode = {
   id: string; type: string; title: string; body: string; status: string; locked: boolean;
+  summary?: string | null; summary_model?: string | null;
   x: number; y: number; width: number; height: number;
   metadata: Record<string, unknown> & { evidence?: Evidence[] }; created_by: string;
   parent_id?: string | null; project_id?: string; canvas_id?: string; created_at?: string; updated_at?: string;
@@ -109,6 +110,9 @@ export const api = {
   }),
   updateNode: (projectId: string, nodeId: string, values: Partial<CanvasNode>) => request<CanvasNode>(`/api/projects/${projectId}/nodes/${nodeId}`, {
     method: "PATCH", body: JSON.stringify(values),
+  }),
+  summarizeNode: (projectId: string, nodeId: string, force = false) => request<CanvasNode>(`/api/projects/${projectId}/nodes/${nodeId}/summary`, {
+    method: "POST", body: JSON.stringify({ force }),
   }),
   deleteNode: (projectId: string, nodeId: string) => request<void>(`/api/projects/${projectId}/nodes/${nodeId}`, { method: "DELETE" }),
   quickResearch: (projectId: string, sourceId: string, query: string, findingCount: number, useLlm: boolean) =>

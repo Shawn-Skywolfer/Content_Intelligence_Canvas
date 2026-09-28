@@ -17,6 +17,7 @@
 - Top-K、关键词/语义/WikiLink 权重和单文档上限配置；
 - 项目、Idea、Brief、Canvas Node / Edge 持久化；
 - 节点拖拽、多选、连接、分组、状态、锁定、自动保存；
+- 白板节点自动生成并保存模型短摘要，卡片可点击展开完整 Markdown；编辑正文后重新生成摘要；
 - Quick Research（纯 Wiki）、4–8 条 Findings、三条创意方向；
 - Magic Bar，AI 默认生成新节点，不覆盖原节点；
 - Content Concept；

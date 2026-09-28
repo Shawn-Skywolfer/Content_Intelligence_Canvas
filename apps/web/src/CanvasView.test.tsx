@@ -38,7 +38,7 @@ const project: Project = {
 const canvas: CanvasData = {
   id: "c1", project_id: project.id, viewport: { x: 0, y: 0, zoom: 1 }, updated_at: "",
   nodes: [
-    { id: "idea", type: "idea", title: "想法", body: "**重要结论**", status: "exploring", locked: false, x: 0, y: 0, width: 300, height: 180, metadata: {}, created_by: "user" },
+    { id: "idea", type: "idea", title: "想法", body: "**重要结论**", summary: "重要结论的概要", status: "exploring", locked: false, x: 0, y: 0, width: 300, height: 180, metadata: {}, created_by: "user" },
     { id: "brief", type: "brief", title: "简报", body: "目标", status: "exploring", locked: false, x: 400, y: 0, width: 300, height: 180, metadata: {}, created_by: "user" },
   ],
   edges: [{ id: "e1", source_node_id: "idea", target_node_id: "brief", relation: "context", metadata: {} }],
@@ -115,7 +115,7 @@ describe("白板进入与节点编辑", () => {
     await act(async () => { renderer.update(createElement(CanvasView, { ...props, canvas, selectedIds: ["idea"] })); });
     const cards = renderer.root.findAllByType("article");
     expect(cards[1].props.className).toContain("related-downstream");
-    expect(cards[0].findAllByType("strong")[0].children).toContain("重要结论");
+    expect(cards[0].findByProps({ className: "flow-card-summary" }).children).toContain("重要结论的概要");
     await act(async () => {
       cards[0].findByProps({ className: "flow-card-body nodrag" }).props.onDoubleClick({ stopPropagation() {} });
     });
@@ -125,6 +125,7 @@ describe("白板进入与节点编辑", () => {
     });
     await act(async () => { renderer.root.findByProps({ className: "flow-card-editor nodrag nowheel" }).props.onBlur(); });
     expect(edited?.nodes[0].body).toBe("## 新的 Markdown 标题");
+    expect(edited?.nodes[0].summary).toBeNull();
     await act(async () => { renderer.root.findByProps({ className: "mock-select" }).props.onClick(); });
     expect(props.setSelectedIds).toHaveBeenCalledWith(["idea", "brief"]);
     await act(async () => { renderer.unmount(); });

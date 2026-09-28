@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from "react";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import CanvasView from "./CanvasView";
 import type { CanvasData, CanvasNode, Project } from "./api";
@@ -45,6 +45,21 @@ describe("真实 React Flow 中的研究历史跳转", () => {
     await waitFor(() => expect(view.container.querySelectorAll(".flow-card")).toHaveLength(9));
     expect(view.container.querySelectorAll(".flow-card.selected")).toHaveLength(9);
     expect(selectionUpdates).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("卡片展示完整短摘要，展开后渲染完整 Markdown 正文", async () => {
+    const full = "## 完整分析\n\n正文末尾的关键限定条件。";
+    const board = { ...canvas, nodes: [{ ...nodes[0], body: full, summary: "浓缩后的关键判断。" }] };
+    const view = render(<CanvasView project={project} canvas={board} selectedIds={[]}
+      setSelectedIds={() => {}} onChange={() => {}} onRefresh={async () => {}} setStatus={() => {}} />);
+    await waitFor(() => expect(view.container.querySelector(".flow-card-summary")?.textContent).toBe("浓缩后的关键判断。"));
+    expect(view.container.querySelector(".flow-card")?.textContent).not.toContain("正文末尾的关键限定条件");
+    fireEvent.click(view.container.querySelector(".flow-card-expand")!);
+    const dialog = view.getByRole("dialog", { name: /完整内容/ });
+    expect(within(dialog).getByText("正文末尾的关键限定条件。")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "收起全文" }));
+    expect(view.queryByRole("dialog")).toBeNull();
     view.unmount();
   });
 });

@@ -155,6 +155,11 @@ class WorkspaceRepository:
                 );
                 """
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(canvas_nodes)")}
+            if "summary" not in columns:
+                db.execute("ALTER TABLE canvas_nodes ADD COLUMN summary TEXT")
+            if "summary_model" not in columns:
+                db.execute("ALTER TABLE canvas_nodes ADD COLUMN summary_model TEXT")
 
     @staticmethod
     def _decode(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
@@ -585,6 +590,9 @@ class WorkspaceRepository:
             "metadata", "parent_id",
         }
         clean = {key: value for key, value in values.items() if key in allowed_fields}
+        if any(key in clean and clean[key] != current[key] for key in ("title", "body")):
+            clean["summary"] = None
+            clean["summary_model"] = None
         if "metadata" in clean:
             clean["metadata_json"] = json.dumps(clean.pop("metadata"), ensure_ascii=False)
         if "locked" in clean:
@@ -597,6 +605,17 @@ class WorkspaceRepository:
                 (*clean.values(), node_id, project_id),
             )
             db.execute("UPDATE projects SET updated_at=? WHERE id=?", (utc_now(), project_id))
+        return self.get_node(node_id)
+
+    def save_node_summary(self, project_id: str, node_id: str, title: str, body: str,
+                          summary: str, model_name: str) -> dict[str, Any] | None:
+        """Never attach a model summary to a node edited while the model was running."""
+        with self._connect() as db:
+            db.execute(
+                """UPDATE canvas_nodes SET summary=?,summary_model=?
+                   WHERE id=? AND project_id=? AND title=? AND body=?""",
+                (summary, model_name, node_id, project_id, title, body),
+            )
         return self.get_node(node_id)
 
     def delete_node(self, project_id: str, node_id: str) -> bool:

@@ -21,6 +21,8 @@ type FlowNodeData = Record<string, unknown> & {
   relationship: "upstream" | "downstream" | null;
   onBodyCommit: (id: string, body: string) => void;
   onResizeCommit: (id: string, width: number, height: number) => void;
+  onExpand: (id: string) => void;
+  summarizing: boolean;
 };
 type FlowNode = Node<FlowNodeData, "canvas">;
 
@@ -69,10 +71,14 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
           if (event.key === "Escape") { event.preventDefault(); cancelBlur.current = true; setDraft(node.body); setEditing(false); }
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.blur(); }
         }} /> :
-      <div className="flow-card-body nodrag" title={node.locked ? "节点已锁定" : "双击直接编辑 Markdown"}
+      <div className="flow-card-body nodrag" title={node.locked ? "点击展开完整内容" : "双击直接编辑 Markdown"}
         onDoubleClick={(event) => { event.stopPropagation(); if (!node.locked) { cancelBlur.current = false; setDraft(node.body); setEditing(true); } }}>
-        {node.body ? <Markdown>{node.body}</Markdown> : <span className="flow-card-placeholder">双击输入 Markdown…</span>}
+        {node.summary ? <p className="flow-card-summary">{node.summary}</p> :
+          <span className="flow-card-placeholder">{node.body ? data.summarizing ? "模型正在总结…" : "模型摘要待生成" : "双击输入 Markdown…"}</span>}
       </div>)}
+    {node.type !== "frame" && !!node.body && !editing && <button type="button" className="flow-card-expand nodrag"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => { event.stopPropagation(); data.onExpand(node.id); }}>展开全文</button>}
     <div className="node-foot"><span>{STATUS_LABELS[node.status] ?? node.status}</span>{(node.metadata?.evidence?.length ?? 0) > 0 && <span>{node.metadata?.evidence?.length} 条证据</span>}</div>
   </article>;
 }
@@ -94,7 +100,7 @@ const GROUPS = [
   { key: "thinking", title: "03 洞察与策略", types: ["insight", "challenge", "creative_pattern", "content_concept"], x: 1600, y: 40 },
 ];
 
-function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"], onResizeCommit: FlowNodeData["onResizeCommit"]): FlowNode[] {
+function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: string[], onBodyCommit: FlowNodeData["onBodyCommit"], onResizeCommit: FlowNodeData["onResizeCommit"], onExpand: FlowNodeData["onExpand"], summaryInFlight: string): FlowNode[] {
   const selected = new Set(selectedIds);
   const upstream = new Set(edges.filter((edge) => selected.has(edge.target_node_id)).map((edge) => edge.source_node_id));
   const downstream = new Set(edges.filter((edge) => selected.has(edge.source_node_id)).map((edge) => edge.target_node_id));
@@ -102,7 +108,7 @@ function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: stri
     id: node.id,
     type: "canvas",
     position: { x: node.x, y: node.y },
-    data: { canvasNode: node, relationship: selected.has(node.id) ? null : upstream.has(node.id) ? "upstream" : downstream.has(node.id) ? "downstream" : null, onBodyCommit, onResizeCommit },
+    data: { canvasNode: node, relationship: selected.has(node.id) ? null : upstream.has(node.id) ? "upstream" : downstream.has(node.id) ? "downstream" : null, onBodyCommit, onResizeCommit, onExpand, summarizing: summaryInFlight === node.id },
     selected: selected.has(node.id),
     draggable: !node.locked,
     selectable: true,
@@ -180,6 +186,12 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const [contentDuration, setContentDuration] = useState(90);
   const [contentJob, setContentJob] = useState<ContentJob | null>(null);
   const [displayNodes, setDisplayNodes] = useState<FlowNode[]>([]);
+  const [expandedNodeId, setExpandedNodeId] = useState("");
+  const [summaryInFlight, setSummaryInFlight] = useState("");
+  const [summaryRevision, setSummaryRevision] = useState(0);
+  const summaryBusyRef = useRef(false);
+  const summaryBlockedRef = useRef(false);
+  const summaryAttemptedRef = useRef(new Set<string>());
   const [, setHistoryRevision] = useState(0);
   const undoStack = useRef<CanvasData[]>([]);
   const redoStack = useRef<CanvasData[]>([]);
@@ -189,6 +201,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const draggingRef = useRef(false);
   const selectedNodeIdsRef = useRef(selectedIds);
   const selectedEdgeIdsRef = useRef(selectedEdgeIds);
+  const onExpand = useCallback((id: string) => setExpandedNodeId(id), []);
 
   const onBodyCommit = useCallback((id: string, body: string) => {
     const current = boardRef.current;
@@ -197,7 +210,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     undoStack.current = [...undoStack.current.slice(-79), cloneCanvas(current)];
     redoStack.current = [];
     setHistoryRevision((value) => value + 1);
-    const next = { ...current, nodes: current.nodes.map((item) => item.id === id ? { ...item, body } : item) };
+    const next = { ...current, nodes: current.nodes.map((item) => item.id === id ? { ...item, body, summary: null, summary_model: null } : item) };
     boardRef.current = next;
     onChangeRef.current(next);
     setStatus("Markdown 内容已更新，正在自动保存");
@@ -237,16 +250,60 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   useEffect(() => { selectedEdgeIdsRef.current = selectedEdgeIds; }, [selectedEdgeIds]);
   useEffect(() => {
     if (!canvas || draggingRef.current) return;
-    const next = toFlowNodes(canvas.nodes, canvas.edges, selectedIds, onBodyCommit, onResizeCommit);
+    const next = toFlowNodes(canvas.nodes, canvas.edges, selectedIds, onBodyCommit, onResizeCommit, onExpand, summaryInFlight);
     displayNodesRef.current = next;
     setDisplayNodes(next);
-  }, [canvas, selectedIds, onBodyCommit, onResizeCommit]);
+  }, [canvas, selectedIds, onBodyCommit, onResizeCommit, onExpand, summaryInFlight]);
   useEffect(() => {
     undoStack.current = [];
     redoStack.current = [];
     setSelectedEdgeIds([]);
     setHistoryRevision((value) => value + 1);
   }, [project?.id]);
+  useEffect(() => {
+    summaryAttemptedRef.current.clear();
+    summaryBlockedRef.current = false;
+    setExpandedNodeId("");
+  }, [project?.id]);
+
+  async function generateSummary(node: CanvasNode, force = false) {
+    if (!project || summaryBusyRef.current) return;
+    summaryBusyRef.current = true;
+    setSummaryInFlight(node.id);
+    const projectId = project.id;
+    try {
+      if (beforeGenerate) await beforeGenerate();
+      else if (boardRef.current) await api.saveCanvas(projectId, boardRef.current);
+      const result = await api.summarizeNode(projectId, node.id, force);
+      const current = boardRef.current;
+      if (current?.project_id === projectId && result.summary) {
+        const next = { ...current, nodes: current.nodes.map((item) =>
+          item.id === node.id && item.title === result.title && item.body === result.body
+            ? { ...item, summary: result.summary, summary_model: result.summary_model } : item) };
+        boardRef.current = next;
+        onChangeRef.current(next);
+      }
+    } catch (error) {
+      summaryBlockedRef.current = true;
+      setStatus(`模型摘要暂不可用：${errorText(error)}。仍可展开查看完整正文。`);
+    } finally {
+      summaryBusyRef.current = false;
+      setSummaryInFlight("");
+      setSummaryRevision((value) => value + 1);
+    }
+  }
+
+  useEffect(() => {
+    if (!canvas || !project || summaryBusyRef.current || summaryBlockedRef.current) return;
+    const missing = canvas.nodes.find((node) => node.type !== "frame" && node.body.trim() && !node.summary &&
+      !summaryAttemptedRef.current.has(`${node.id}|${node.title}|${node.body}`));
+    if (!missing) return;
+    const timer = setTimeout(() => {
+      summaryAttemptedRef.current.add(`${missing.id}|${missing.title}|${missing.body}`);
+      void generateSummary(missing);
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [canvas, project?.id, summaryRevision]);
 
   function applyWithoutHistory(next: CanvasData) {
     boardRef.current = next;
@@ -532,7 +589,10 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   function updateLocal(id: string, values: Partial<CanvasNode>) {
-    commit({ ...board, nodes: board.nodes.map((node) => node.id === id ? { ...node, ...values } : node) });
+    commit({ ...board, nodes: board.nodes.map((node) => node.id === id ? {
+      ...node, ...values,
+      ...("title" in values || "body" in values ? { summary: null, summary_model: null } : {}),
+    } : node) });
   }
 
   async function runMagic() {
@@ -614,7 +674,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       <button className="secondary" onClick={organizeCanvas}>按类型整理</button>
       <button className="primary" disabled={!selectedIds.length} onClick={() => { setContentJob(null); setComposerOpen(true); }}>生成新内容</button>
     </>} />
-    <div className="canvas-shortcuts"><span>拖动节点移动</span><span>四向端口拖出有向连线</span><span>下游继承上游上下文</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
+    <div className="canvas-shortcuts"><span>卡片显示模型摘要，点击展开全文</span><span>双击正文编辑 Markdown</span><span>四向端口拖出有向连线</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
     <div className="canvas-workspace flow-workspace">
       <section className="board-wrap">
         <ReactFlow
@@ -650,6 +710,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <div className="inspector-title"><div><small>{NODE_LABELS[primary.type] ?? primary.type}</small><h2>节点详情</h2></div><button className="icon-button danger" disabled={primary.locked} onClick={deleteSelection}>删除</button></div>
         <label>标题<input disabled={primary.locked} value={primary.title} onChange={(event) => updateLocal(primary.id, { title: event.target.value })} /></label>
         <label>正文<textarea disabled={primary.locked} value={primary.body} onChange={(event) => updateLocal(primary.id, { body: event.target.value })} /></label>
+        {primary.type !== "frame" && !!primary.body && <div className="node-summary-inspector"><strong>卡片模型摘要</strong><p>{primary.summary || (summaryInFlight === primary.id ? "正在生成摘要…" : "尚未生成摘要")}</p><button className="secondary" disabled={!!summaryInFlight} onClick={() => { summaryBlockedRef.current = false; void generateSummary(primary, true); }}>{summaryInFlight === primary.id ? "生成中…" : "重新生成摘要"}</button></div>}
         {Array.isArray(primary.metadata?.source_node_ids) && <div className="source-panel"><strong>加工来源</strong><p>由 {(primary.metadata.source_node_titles as string[] | undefined)?.join("、") || (primary.metadata.source_node_ids as string[]).join("、")} 联合加工生成</p><small>来源节点 ID：{(primary.metadata.source_node_ids as string[]).join("、")}</small>{Array.isArray(primary.metadata.inherited_upstream_ids) && primary.metadata.inherited_upstream_ids.length > 0 && <p>额外继承 {(primary.metadata.inherited_upstream_ids as string[]).length} 个上游节点</p>}</div>}
         {primary.type === "frame" && Array.isArray(primary.metadata.member_ids) && <div className="source-panel"><strong>分组成员</strong><p>包含 {(primary.metadata.member_ids as string[]).length} 个节点；输入处理要求可生成新的下游节点。</p></div>}
         <div className="quick-edit"><small>快速加工</small><div><button className="secondary" onClick={() => applyQuickInstruction("调整表达风格，使内容更清晰、有节奏，并保留原有事实")}>调整风格</button><button className="secondary" onClick={() => applyQuickInstruction("基于现有证据补充事实、案例和具体细节；证据不足时明确指出缺口，不得编造")}>补充事实/案例</button><button className="secondary" onClick={() => applyQuickInstruction("优化结构与论证顺序，强化开头、转折和结论")}>优化结构</button></div></div>
@@ -669,6 +730,16 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         </section>}
       </aside>
     </div>
+    {expandedNodeId && (() => {
+      const expanded = board.nodes.find((node) => node.id === expandedNodeId);
+      return expanded ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setExpandedNodeId(""); }}>
+        <section className="node-full-content" role="dialog" aria-modal="true" aria-label={`${expanded.title}的完整内容`}>
+          <header><div><small>{NODE_LABELS[expanded.type] ?? expanded.type} · 完整内容</small><h2>{expanded.title}</h2></div><button className="secondary" onClick={() => setExpandedNodeId("")}>收起全文</button></header>
+          {expanded.summary && <p className="node-full-summary"><strong>模型摘要</strong>{expanded.summary}</p>}
+          <div className="node-full-markdown"><Markdown>{expanded.body}</Markdown></div>
+        </section>
+      </div> : null;
+    })()}
     {composerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setComposerOpen(false); }}><section className="content-composer" role="dialog" aria-modal="true" aria-label="在白板生成新内容"><div className="composer-head"><div><small>白板内容工坊</small><h2>从选中节点生成可编辑草稿</h2><p>草稿先留在白板，修改满意后再保存到内容资产。</p></div><button className="icon-button" disabled={busy} onClick={() => setComposerOpen(false)}>关闭</button></div><div className="composer-grid"><label>内容形态<select disabled={busy} value={contentFormat} onChange={(event) => setContentFormat(event.target.value as typeof contentFormat)}><option value="wechat">微信公众号</option><option value="video_script">视频号 / 短视频脚本</option><option value="poster_campaign">海报 / 营销活动</option></select></label><label>标题（可选）<input disabled={busy} value={contentTitle} onChange={(event) => setContentTitle(event.target.value)} placeholder="留空则自动生成" /></label></div>{contentFormat === "video_script" && <label>目标时长（秒）<input disabled={busy} type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<label>风格与创作要求<textarea disabled={busy} value={contentInstruction} onChange={(event) => setContentInstruction(event.target.value)} placeholder="例如：专业但不生硬；开头用真实场景切入；增加一个有证据支持的案例；结尾给出三条行动建议。" /></label><p>将由已配置的大模型结合所选节点与 Wiki 生成草稿。</p>{contentJob && <div className={`research-progress ${contentJob.status}`}><div className="progress-heading"><div><small>实时生成进展</small><strong>{contentJob.phase}</strong></div><b>{contentJob.progress}%</b></div><div className="progress-track"><i style={{ width: `${contentJob.progress}%` }} /></div><p>{contentJob.detail}{contentJob.error ? `：${contentJob.error}` : ""}</p></div>}<div className="composer-actions"><span>选中 {selectedIds.length} 个节点，并继承 {inheritedIds.length} 个上游节点</span>{contentJob?.status === "completed" ? <button className="primary large" onClick={() => setComposerOpen(false)}>完成，返回白板</button> : <button className="primary large" disabled={busy} onClick={generateDraft}>{busy ? "正在生成…" : contentJob?.status === "failed" ? "重新生成" : "生成到白板"}</button>}</div></section></div>}
   </div>;
 }

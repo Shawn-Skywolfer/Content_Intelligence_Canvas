@@ -40,6 +40,8 @@ class CanvasNode(BaseModel):
     type: str = "note"
     title: str = "未命名节点"
     body: str = ""
+    summary: str | None = None
+    summary_model: str | None = None
     status: str = "exploring"
     locked: bool = False
     x: float = 0
@@ -97,6 +99,10 @@ class NodeUpdateRequest(BaseModel):
     height: float | None = None
     metadata: dict[str, Any] | None = None
     parent_id: str | None = None
+
+
+class NodeSummaryRequest(BaseModel):
+    force: bool = False
 
 
 class QuickResearchRequest(BaseModel):
