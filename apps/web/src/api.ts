@@ -33,9 +33,10 @@ export type CanvasData = {
   nodes: CanvasNode[]; edges: CanvasEdge[];
 };
 export type ContentAsset = {
-  id: string; project_id: string; format: string; title: string; body: string; evidence: Evidence[];
+  id: string; project_id: string; node_id?: string | null; format: string; title: string; body: string; evidence: Evidence[];
   status: string; version: number; created_at: string; updated_at: string;
 };
+export type ContentFormat = { id: string; name: string; positive_prompt: string; negative_prompt: string };
 export type Provider = {
   id: string; name: string; protocol: string; base_url: string; model_name: string; enabled: boolean;
   is_external: boolean; temperature: number; max_tokens: number; timeout_seconds: number;
@@ -101,6 +102,7 @@ export const api = {
   updateProject: (projectId: string, values: Partial<Project>) => request<Project>(`/api/projects/${projectId}`, {
     method: "PATCH", body: JSON.stringify(values),
   }),
+  deleteProject: (projectId: string) => request<void>(`/api/projects/${projectId}`, { method: "DELETE" }),
   getCanvas: (projectId: string) => request<CanvasData>(`/api/projects/${projectId}/canvas`),
   saveCanvas: (projectId: string, canvas: CanvasData) => request<CanvasData>(`/api/projects/${projectId}/canvas`, {
     method: "PUT", body: JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, viewport: canvas.viewport }),
@@ -140,11 +142,19 @@ export const api = {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, title, use_llm: useLlm }),
     }),
   listAssets: (projectId: string) => request<ContentAsset[]>(`/api/projects/${projectId}/assets`),
-  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true, negativePrompt = "") =>
+  updateAsset: (projectId: string, assetId: string, title: string, body: string) => request<ContentAsset>(`/api/projects/${projectId}/assets/${assetId}`, {
+    method: "PATCH", body: JSON.stringify({ title, body }),
+  }),
+  deleteAsset: (projectId: string, assetId: string) => request<void>(`/api/projects/${projectId}/assets/${assetId}`, { method: "DELETE" }),
+  listContentFormats: () => request<ContentFormat[]>("/api/content-formats"),
+  saveContentFormats: (formats: ContentFormat[]) => request<ContentFormat[]>("/api/content-formats", {
+    method: "PUT", body: JSON.stringify({ formats }),
+  }),
+  generateContent: (projectId: string, nodeIds: string[], format: string, title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true, negativePrompt = "") =>
     request<{ asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
     }),
-  startContentGeneration: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false, negativePrompt = "") =>
+  startContentGeneration: (projectId: string, nodeIds: string[], format: string, title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false, negativePrompt = "") =>
     request<ContentJob>(`/api/projects/${projectId}/content/generate/start`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
     }),

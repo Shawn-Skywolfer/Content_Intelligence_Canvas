@@ -5,7 +5,7 @@ import {
   MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, CanvasData, CanvasEdge, CanvasNode, ContentJob, Project } from "./api";
+import { api, CanvasData, CanvasEdge, CanvasNode, ContentFormat, ContentJob, Project } from "./api";
 
 const NODE_LABELS: Record<string, string> = {
   idea: "想法", brief: "简报", note: "笔记", knowledge: "知识", fact: "事实",
@@ -181,7 +181,8 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const [aiPhase, setAiPhase] = useState("");
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [contentFormat, setContentFormat] = useState<"wechat" | "video_script" | "poster_campaign">("wechat");
+  const [contentFormat, setContentFormat] = useState("wechat");
+  const [contentFormats, setContentFormats] = useState<ContentFormat[]>([]);
   const [contentTitle, setContentTitle] = useState("");
   const [contentInstruction, setContentInstruction] = useState("");
   const [contentNegativePrompt, setContentNegativePrompt] = useState("");
@@ -204,6 +205,15 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const selectedNodeIdsRef = useRef(selectedIds);
   const selectedEdgeIdsRef = useRef(selectedEdgeIds);
   const onExpand = useCallback((id: string) => setExpandedNodeId(id), []);
+  useEffect(() => {
+    let active = true;
+    api.listContentFormats().then((formats) => {
+      if (!active) return;
+      setContentFormats(formats);
+      setContentFormat((current) => formats.some((item) => item.id === current) ? current : formats[0]?.id ?? "");
+    }).catch((error) => setStatus(`读取输出形态失败：${errorText(error)}`));
+    return () => { active = false; };
+  }, [setStatus]);
 
   const onBodyCommit = useCallback((id: string, body: string) => {
     const current = boardRef.current;
@@ -599,7 +609,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   async function runMagic() {
-    if (!magic.trim() || !selectedIds.length) return;
+    if ((!magic.trim() && magicType !== "output") || !selectedIds.length) return;
     const inputs = [...new Set(selectedIds.flatMap((id) => {
       const node = boardRef.current?.nodes.find((item) => item.id === id);
       return node?.type === "frame" ? (Array.isArray(node.metadata.member_ids) ? node.metadata.member_ids as string[] : []) : [id];
@@ -609,10 +619,23 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setAiPhase("正在保存画布并收集上游上下文");
     try {
       if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
-      setAiPhase("正在请求模型并综合内容");
-      const result = await api.magic(activeProject.id, inputs, magic, magicType, magicType === "output" ? magicNegativePrompt : "");
-      setAiPhase("正在载入新节点与来源关系");
-      setStatus(result.message); setMagic(""); setMagicNegativePrompt(""); await onRefresh(true); setSelectedIds(result.nodes.map((node) => node.id));
+      if (magicType === "output") {
+        let job = await api.startContentGeneration(activeProject.id, inputs, contentFormat, "", contentDuration, true, magic, false, magicNegativePrompt);
+        setAiPhase(`${job.phase} · ${job.progress}%`);
+        while (job.status === "running") {
+          await new Promise((resolve) => window.setTimeout(resolve, 350));
+          job = await api.contentJob(job.job_id);
+          setAiPhase(`${job.phase} · ${job.progress}% · ${job.detail}`);
+        }
+        if (job.status === "failed" || !job.result) throw new Error(job.error || "内容输出失败");
+        setStatus(job.result.message); await onRefresh(true); setSelectedIds([job.result.node.id]);
+      } else {
+        setAiPhase("正在请求模型并综合内容");
+        const result = await api.magic(activeProject.id, inputs, magic, magicType);
+        setAiPhase("正在载入新节点与来源关系");
+        setStatus(result.message); await onRefresh(true); setSelectedIds(result.nodes.map((node) => node.id));
+      }
+      setMagic(""); setMagicNegativePrompt("");
     } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); setAiPhase(""); }
   }
 
@@ -720,16 +743,18 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <label>状态<select disabled={primary.locked} value={primary.status} onChange={(event) => updateLocal(primary.id, { status: event.target.value })}><option value="exploring">探索中</option><option value="candidate">候选</option><option value="approved">已批准</option></select></label>
         <label className="switch-row"><span><strong>锁定节点</strong><small>锁定后不能修改内容或删除</small></span><input type="checkbox" checked={primary.locked} onChange={(event) => updateLocal(primary.id, { locked: event.target.checked, status: event.target.checked ? "locked" : primary.status === "locked" ? "candidate" : primary.status })} /></label>
         {primary.type === "output" && <div className="asset-save-panel"><strong>{primary.metadata?.asset_id ? "已关联内容资产" : "仍是白板草稿"}</strong><p>先在上方直接修改，确认后再保存到内容资产；再次保存会生成新版本。</p><button className="primary" disabled={busy || primary.locked} onClick={saveAsAsset}>{busy ? "正在保存…" : primary.metadata?.asset_id ? "更新内容资产" : "保存到内容资产"}</button></div>}
+        {primary.type === "output" && <details className="source-panel"><summary>查看生成形态与 Prompt</summary><p>输出形态：{String(primary.metadata?.format_name || primary.metadata?.format || "未记录")}</p><p>正向要求：{String(primary.metadata?.instruction || "未单独填写")}</p><p>负向要求：{String(primary.metadata?.negative_prompt || "未单独填写")}</p><p>形态默认要求：{String(primary.metadata?.format_positive_prompt || "未记录")}</p><p>形态避免事项：{String(primary.metadata?.format_negative_prompt || "未记录")}</p></details>}
         {!!primary.metadata?.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : selectedEdgeIds.length ? `已选择 ${selectedEdgeIds.length} 条连接` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以将多个节点综合为一个新的下游节点。" : "从任一节点的上下左右端口拖到另一个节点，即可创建有向连接。"}</p></div>}</div>
         {!!selectedIds.length && <section className="ai-copilot">
           <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 && primary?.type !== "frame" ? "由当前节点生成下游" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
           <p className="context-note">{inheritedIds.length ? `将自动继承 ${inheritedIds.length} 个上游节点作为上下文。` : "有向连接的上游节点会自动作为上下文。"} 原节点保留；生成结果进入新的下游节点，并标注加工来源。框选多个节点可直接综合，或先创建分组再加工。</p>
           <label>新节点类型<select value={magicType} onChange={(event) => setMagicType(event.target.value)}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
+          {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => setContentFormat(event.target.value)}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
           <label>{magicType === "output" ? "正向 Prompt（要做的事情）" : "处理要求"}<textarea value={magic} onChange={(event) => setMagic(event.target.value)} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
           {magicType === "output" && <label>负向 Prompt（不要做的事情）<textarea value={magicNegativePrompt} onChange={(event) => setMagicNegativePrompt(event.target.value)} placeholder="例如：不要编造案例；不要使用夸张标题；不要忽略证据不足的部分。" /></label>}
           {busy && aiPhase && <div className="ai-progress" role="status"><span className="ai-progress-spinner" />{aiPhase}</div>}
-          <button className="primary ai-run" disabled={busy || !magic.trim()} onClick={runMagic}>{busy ? "正在处理…" : "AI 加工并生成下游节点"}</button>
+          <button className="primary ai-run" disabled={busy || (magicType === "output" ? !contentFormat : !magic.trim())} onClick={runMagic}>{busy ? "正在处理…" : magicType === "output" ? "生成内容输出节点" : "AI 加工并生成下游节点"}</button>
           <div className="ai-secondary-actions"><button className="secondary" disabled={busy} onClick={concept}>形成内容概念</button><button className="secondary" disabled={busy} onClick={() => { setContentJob(null); setComposerOpen(true); }}>生成新内容</button></div>
         </section>}
       </aside>
@@ -744,6 +769,6 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         </section>
       </div> : null;
     })()}
-    {composerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setComposerOpen(false); }}><section className="content-composer" role="dialog" aria-modal="true" aria-label="在白板生成新内容"><div className="composer-head"><div><small>白板内容工坊</small><h2>从选中节点生成可编辑草稿</h2><p>草稿先留在白板，修改满意后再保存到内容资产。</p></div><button className="icon-button" disabled={busy} onClick={() => setComposerOpen(false)}>关闭</button></div><div className="composer-grid"><label>内容形态<select disabled={busy} value={contentFormat} onChange={(event) => setContentFormat(event.target.value as typeof contentFormat)}><option value="wechat">微信公众号</option><option value="video_script">视频号 / 短视频脚本</option><option value="poster_campaign">海报 / 营销活动</option></select></label><label>标题（可选）<input disabled={busy} value={contentTitle} onChange={(event) => setContentTitle(event.target.value)} placeholder="留空则自动生成" /></label></div>{contentFormat === "video_script" && <label>目标时长（秒）<input disabled={busy} type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<label>正向 Prompt（要做的事情）<textarea disabled={busy} value={contentInstruction} onChange={(event) => setContentInstruction(event.target.value)} placeholder="例如：用真实场景切入，补充有证据支持的案例，结尾给出三条行动建议。" /></label><label>负向 Prompt（不要做的事情）<textarea disabled={busy} value={contentNegativePrompt} onChange={(event) => setContentNegativePrompt(event.target.value)} placeholder="例如：不要编造事实或案例；不要使用夸张的标题；不要隐去证据不足之处。" /></label><p>将由已配置的大模型结合所选节点与 Wiki 生成草稿。</p>{contentJob && <div className={`research-progress ${contentJob.status}`}><div className="progress-heading"><div><small>实时生成进展</small><strong>{contentJob.phase}</strong></div><b>{contentJob.progress}%</b></div><div className="progress-track"><i style={{ width: `${contentJob.progress}%` }} /></div><p>{contentJob.detail}{contentJob.error ? `：${contentJob.error}` : ""}</p></div>}<div className="composer-actions"><span>选中 {selectedIds.length} 个节点，并继承 {inheritedIds.length} 个上游节点</span>{contentJob?.status === "completed" ? <button className="primary large" onClick={() => setComposerOpen(false)}>完成，返回白板</button> : <button className="primary large" disabled={busy} onClick={generateDraft}>{busy ? "正在生成…" : contentJob?.status === "failed" ? "重新生成" : "生成到白板"}</button>}</div></section></div>}
+    {composerOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setComposerOpen(false); }}><section className="content-composer" role="dialog" aria-modal="true" aria-label="在白板生成新内容"><div className="composer-head"><div><small>白板内容工坊</small><h2>从选中节点生成可编辑草稿</h2><p>草稿先留在白板，修改满意后再保存到内容资产。</p></div><button className="icon-button" disabled={busy} onClick={() => setComposerOpen(false)}>关闭</button></div><div className="composer-grid"><label>内容形态<select disabled={busy} value={contentFormat} onChange={(event) => setContentFormat(event.target.value as typeof contentFormat)}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label><label>标题（可选）<input disabled={busy} value={contentTitle} onChange={(event) => setContentTitle(event.target.value)} placeholder="留空则自动生成" /></label></div>{contentFormat === "video_script" && <label>目标时长（秒）<input disabled={busy} type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<label>正向 Prompt（要做的事情）<textarea disabled={busy} value={contentInstruction} onChange={(event) => setContentInstruction(event.target.value)} placeholder="例如：用真实场景切入，补充有证据支持的案例，结尾给出三条行动建议。" /></label><label>负向 Prompt（不要做的事情）<textarea disabled={busy} value={contentNegativePrompt} onChange={(event) => setContentNegativePrompt(event.target.value)} placeholder="例如：不要编造事实或案例；不要使用夸张的标题；不要隐去证据不足之处。" /></label><p>将结合所选节点、Wiki 和“设置”中该形态的默认 Prompt 生成草稿。</p>{contentJob && <div className={`research-progress ${contentJob.status}`}><div className="progress-heading"><div><small>实时生成进展</small><strong>{contentJob.phase}</strong></div><b>{contentJob.progress}%</b></div><div className="progress-track"><i style={{ width: `${contentJob.progress}%` }} /></div><p>{contentJob.detail}{contentJob.error ? `：${contentJob.error}` : ""}</p></div>}<div className="composer-actions"><span>选中 {selectedIds.length} 个节点，并继承 {inheritedIds.length} 个上游节点</span>{contentJob?.status === "completed" ? <button className="primary large" onClick={() => setComposerOpen(false)}>完成，返回白板</button> : <button className="primary large" disabled={busy || !contentFormat} onClick={generateDraft}>{busy ? "正在生成…" : contentJob?.status === "failed" ? "重新生成" : "生成到白板"}</button>}</div></section></div>}
   </div>;
 }

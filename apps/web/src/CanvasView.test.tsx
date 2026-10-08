@@ -2,6 +2,7 @@ import { act, createElement, useEffect } from "react";
 import { create, ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import CanvasView from "./CanvasView";
+import { api } from "./api";
 import type { CanvasData, Project } from "./api";
 
 vi.mock("@xyflow/react", () => ({
@@ -46,6 +47,23 @@ const canvas: CanvasData = {
 };
 
 describe("白板进入与节点编辑", () => {
+  it("AI 共创内选择自定义输出形态，并按配置生成下游内容节点", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    vi.spyOn(api, "listContentFormats").mockResolvedValue([{ id: "podcast", name: "播客提纲", positive_prompt: "问答", negative_prompt: "不编造" }]);
+    const start = vi.spyOn(api, "startContentGeneration").mockResolvedValue({ job_id: "j1", project_id: "p1", status: "completed", phase: "完成", progress: 100, detail: "完成", result: { node: { ...canvas.nodes[0], id: "output", type: "output" }, asset: null, run_id: "run", used_llm: true, message: "完成" } });
+    vi.spyOn(api, "saveCanvas").mockResolvedValue(canvas);
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: ["idea"], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() })); });
+    const selector = renderer.root.findAllByType("select").find((item) => item.findAllByProps({ value: "output" }).length);
+    expect(selector).toBeDefined();
+    await act(async () => { selector!.props.onChange({ target: { value: "output" } }); });
+    expect(renderer.root.findAllByType("option").some((item) => item.children.includes("播客提纲"))).toBe(true);
+    await act(async () => { renderer.root.findByProps({ children: "生成内容输出节点" }).props.onClick(); });
+    expect(start).toHaveBeenCalledWith("p1", ["idea"], "podcast", "", 90, true, "", false, "");
+    await act(async () => { renderer.unmount(); });
+  });
+
   it("曲线有向边只在端点节点激活时呈现流动状态，并显示两组输出 Prompt", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });

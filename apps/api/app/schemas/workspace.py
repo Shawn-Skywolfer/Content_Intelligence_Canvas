@@ -22,7 +22,7 @@ class ProjectUpdateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     idea: str | None = Field(default=None, max_length=2000)
     brief: str | None = Field(default=None, max_length=5000)
-    status: str | None = None
+    status: Literal["active", "archived"] | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -139,7 +139,7 @@ class ConceptRequest(BaseModel):
 
 class ContentGenerateRequest(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=30)
-    format: Literal["wechat", "video_script", "poster_campaign"]
+    format: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     title: str = ""
     duration_seconds: int = Field(default=90, ge=15, le=600)
     use_llm: bool = True
@@ -148,9 +148,26 @@ class ContentGenerateRequest(BaseModel):
     save_as_asset: bool = True
 
 
+class ContentFormatConfig(BaseModel):
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = Field(min_length=1, max_length=60)
+    positive_prompt: str = Field(default="", max_length=3000)
+    negative_prompt: str = Field(default="", max_length=3000)
+
+
+class ContentFormatsRequest(BaseModel):
+    formats: list[ContentFormatConfig] = Field(min_length=1, max_length=20)
+
+
+class ContentAssetUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=50000)
+
+
 class ContentAssetResponse(BaseModel):
     id: str
     project_id: str
+    node_id: str | None = None
     format: str
     title: str
     body: str

@@ -236,6 +236,13 @@ class WorkspaceRepository:
             )
         return self.get_project(project_id)
 
+    def delete_project(self, project_id: str) -> bool:
+        with self._connect() as db:
+            deleted = db.execute("DELETE FROM projects WHERE id=?", (project_id,)).rowcount > 0
+            if deleted:
+                db.execute("DELETE FROM app_settings WHERE key=?", (f"starter_edges_checked:{project_id}",))
+        return deleted
+
     def _canvas_id(self, project_id: str) -> str:
         with self._connect() as db:
             row = db.execute("SELECT id FROM canvases WHERE project_id=?", (project_id,)).fetchone()
@@ -798,7 +805,42 @@ class WorkspaceRepository:
             rows = db.execute(
                 "SELECT * FROM content_assets WHERE project_id=? ORDER BY created_at DESC", (project_id,)
             ).fetchall()
-        return [self._decode(row, "evidence_json") or {} for row in rows]
+            linked = db.execute(
+                "SELECT id,metadata_json FROM canvas_nodes WHERE project_id=? AND type='output'",
+                (project_id,),
+            ).fetchall()
+        node_by_asset = {str(asset_id): row["id"] for row in linked
+                         if (asset_id := read_metadata(row["metadata_json"]).get("asset_id"))}
+        return [{**(self._decode(row, "evidence_json") or {}), "node_id": node_by_asset.get(row["id"])} for row in rows]
+
+    def edit_asset(self, project_id: str, asset_id: str, title: str, body: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            asset = db.execute("SELECT * FROM content_assets WHERE id=? AND project_id=?", (asset_id, project_id)).fetchone()
+            if not asset:
+                return None
+            nodes = db.execute("SELECT id,locked,metadata_json FROM canvas_nodes WHERE project_id=? AND type='output'", (project_id,)).fetchall()
+            linked = [node for node in nodes if read_metadata(node["metadata_json"]).get("asset_id") == asset_id]
+            if any(node["locked"] for node in linked):
+                raise ValueError("关联的白板节点已锁定，请先解锁再修改资产")
+            now = utc_now()
+            db.execute("UPDATE content_assets SET title=?,body=?,version=version+1,updated_at=? WHERE id=?", (title, body, now, asset_id))
+            for node in linked:
+                db.execute("UPDATE canvas_nodes SET title=?,body=?,summary=NULL,summary_model=NULL,updated_at=? WHERE id=?", (title, body, now, node["id"]))
+        return next((item for item in self.list_assets(project_id) if item["id"] == asset_id), None)
+
+    def delete_asset(self, project_id: str, asset_id: str) -> bool:
+        with self._connect() as db:
+            asset = db.execute("SELECT 1 FROM content_assets WHERE id=? AND project_id=?", (asset_id, project_id)).fetchone()
+            if not asset:
+                return False
+            nodes = db.execute("SELECT id,metadata_json FROM canvas_nodes WHERE project_id=? AND type='output'", (project_id,)).fetchall()
+            for node in nodes:
+                metadata = read_metadata(node["metadata_json"])
+                if metadata.get("asset_id") == asset_id:
+                    metadata.pop("asset_id")
+                    db.execute("UPDATE canvas_nodes SET metadata_json=? WHERE id=?", (json.dumps(metadata, ensure_ascii=False), node["id"]))
+            db.execute("DELETE FROM content_assets WHERE id=? AND project_id=?", (asset_id, project_id))
+        return True
 
     def update_asset(
         self, asset_id: str, title: str, body: str, evidence: list[dict[str, Any]], status: str = "draft"

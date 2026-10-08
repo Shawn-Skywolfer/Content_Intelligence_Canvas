@@ -51,4 +51,30 @@ describe("历史研究与项目入口", () => {
     expect(view.queryByText("白板未能正确初始化")).toBeNull();
     view.unmount();
   });
+
+  it("项目可归档、恢复与删除，内容资产页只管理当前项目稿件", async () => {
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([project]);
+    vi.spyOn(api, "listSources").mockResolvedValue([]);
+    vi.spyOn(api, "getCanvas").mockResolvedValue(canvas);
+    vi.spyOn(api, "listAssets").mockResolvedValue([{ id: "a1", project_id: project.id, node_id: nodes[0].id, format: "wechat", title: "已确认稿件", body: "## 完整正文", evidence: [], status: "draft", version: 1, created_at: project.created_at, updated_at: project.updated_at }]);
+    vi.spyOn(api, "listContentFormats").mockResolvedValue([{ id: "wechat", name: "公众号", positive_prompt: "", negative_prompt: "" }]);
+    vi.spyOn(api, "updateProject").mockImplementation(async (_id, values) => ({ ...project, ...values }));
+    const deleted = vi.spyOn(api, "deleteProject").mockResolvedValue();
+    vi.stubGlobal("confirm", () => true);
+    const view = render(<App />);
+    await waitFor(() => expect(view.getByRole("button", { name: "归档" })).toBeTruthy());
+    expect(view.queryByRole("button", { name: "知识检索" })).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "内容资产" }));
+    await waitFor(() => expect(view.getByText("已确认稿件")).toBeTruthy());
+    expect(view.queryByText("生成新内容")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "项目" }));
+    fireEvent.click(view.getByRole("button", { name: "归档" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "恢复项目" })).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "恢复项目" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "归档" })).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(project.id));
+    view.unmount();
+  });
 });

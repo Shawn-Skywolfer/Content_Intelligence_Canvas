@@ -16,6 +16,8 @@ from app.schemas.workspace import (
     CanvasSaveRequest,
     ConceptRequest,
     ContentAssetResponse,
+    ContentAssetUpdateRequest,
+    ContentFormatsRequest,
     ContentGenerateRequest,
     MagicRequest,
     NodeGenerateRequest,
@@ -28,6 +30,7 @@ from app.schemas.workspace import (
     QuickResearchRequest,
     WorkflowResponse,
 )
+from app.services.content_formats import list_content_formats
 
 
 router = APIRouter(prefix="/api", tags=["workspace"])
@@ -138,6 +141,13 @@ def update_project(project_id: str, request: ProjectUpdateRequest) -> dict[str, 
     _project(project_id)
     values = request.model_dump(exclude_none=True)
     return get_container().workspace.update_project(project_id, values) or _project(project_id)
+
+
+@router.delete("/projects/{project_id}", status_code=204)
+def delete_project(project_id: str) -> Response:
+    if not get_container().workspace.delete_project(project_id):
+        raise HTTPException(404, "项目不存在")
+    return Response(status_code=204)
 
 
 @router.get("/projects/{project_id}/canvas", response_model=CanvasResponse)
@@ -349,6 +359,40 @@ def create_concept(project_id: str, request: ConceptRequest) -> WorkflowResponse
 def list_assets(project_id: str) -> list[dict[str, Any]]:
     _project(project_id)
     return get_container().workspace.list_assets(project_id)
+
+
+@router.patch("/projects/{project_id}/assets/{asset_id}", response_model=ContentAssetResponse)
+def update_asset(project_id: str, asset_id: str, request: ContentAssetUpdateRequest) -> dict[str, Any]:
+    _project(project_id)
+    try:
+        asset = get_container().workspace.edit_asset(project_id, asset_id, request.title.strip(), request.body.strip())
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not asset:
+        raise HTTPException(404, "内容资产不存在")
+    return asset
+
+
+@router.delete("/projects/{project_id}/assets/{asset_id}", status_code=204)
+def delete_asset(project_id: str, asset_id: str) -> Response:
+    _project(project_id)
+    if not get_container().workspace.delete_asset(project_id, asset_id):
+        raise HTTPException(404, "内容资产不存在")
+    return Response(status_code=204)
+
+
+@router.get("/content-formats")
+def content_formats() -> list[dict[str, Any]]:
+    return list_content_formats(get_container().workspace)
+
+
+@router.put("/content-formats")
+def save_content_formats(request: ContentFormatsRequest) -> list[dict[str, Any]]:
+    items = [item.model_dump() for item in request.formats]
+    if len({item["id"] for item in items}) != len(items):
+        raise HTTPException(422, "输出形态标识不可重复")
+    get_container().workspace.set_setting("content_formats", items)
+    return items
 
 
 @router.post("/projects/{project_id}/content/generate")

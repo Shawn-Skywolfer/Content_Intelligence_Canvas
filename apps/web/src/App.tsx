@@ -1,16 +1,15 @@
 import { Component, ErrorInfo, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import CanvasView from "./CanvasView";
+import AssetView from "./AssetView";
 import {
-  api, CanvasData, CanvasEdge, CanvasNode, ChunkDetail, ContentAsset, downloadUrl,
-  Evidence, Hit, Project, Provider, ResearchJob, ResearchRun, SearchOptions, Source,
+  api, CanvasData, CanvasEdge, CanvasNode, ContentAsset, ContentFormat,
+  Project, Provider, ResearchJob, ResearchRun, Source,
 } from "./api";
 
-type View = "home" | "search" | "research" | "canvas" | "content" | "settings";
+type View = "home" | "research" | "canvas" | "content" | "settings";
 
 const NAV: Array<{ id: View; label: string; icon: string }> = [
   { id: "home", label: "项目", icon: "项" },
-  { id: "search", label: "知识检索", icon: "检" },
   { id: "research", label: "快速研究", icon: "研" },
   { id: "canvas", label: "内容白板", icon: "板" },
   { id: "content", label: "内容资产", icon: "产" },
@@ -24,13 +23,6 @@ const NODE_LABELS: Record<string, string> = {
 };
 const STATUS_LABELS: Record<string, string> = {
   exploring: "探索中", candidate: "候选", approved: "已批准", locked: "已锁定",
-};
-const REASON_LABELS: Record<string, string> = {
-  fts: "关键词", semantic: "语义", wikilink: "知识关联", title_or_heading_match: "标题匹配",
-  entity_title_match: "实体匹配", reference_section_penalty: "参考区降权",
-};
-const FORMAT_LABELS: Record<string, string> = {
-  wechat: "微信公众号", video_script: "视频号/短视频脚本", poster_campaign: "海报/营销活动",
 };
 const PROVIDER_PRESETS = {
   deepseek: { name: "DeepSeek", base_url: "https://api.deepseek.com", model_name: "deepseek-flash" },
@@ -105,7 +97,8 @@ export default function App() {
       .then(([, projectItems, sourceItems]) => {
         setProjects(projectItems);
         setSources(sourceItems);
-        if (projectItems[0]) setProjectId(projectItems[0].id);
+        const active = projectItems.find((item) => item.status !== "archived");
+        if (active) setProjectId(active.id);
         setStatus("工作台已就绪");
       })
       .catch((error) => setStatus(`无法连接后端：${errorText(error)}`));
@@ -157,11 +150,20 @@ export default function App() {
   }
 
   async function openCanvas(id: string) {
-    if (id !== projectId) { ++saveSequence.current; setCanvas(null); setSelectedIds([]); setProjectId(id); }
+    if (id !== projectId) {
+      try { await flushCanvas(); } catch (error) { setStatus(`切换项目前保存失败：${errorText(error)}`); return; }
+      ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id);
+    }
     setView("canvas");
     if (id === projectId && canvasError) {
       try { await refreshCanvas(); } catch (error) { setCanvasError(errorText(error)); setStatus(`白板加载失败：${errorText(error)}`); }
     }
+  }
+
+  async function switchProject(id: string) {
+    if (id === projectId) return;
+    try { await flushCanvas(); ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id); }
+    catch (error) { setStatus(`切换项目前保存失败：${errorText(error)}`); }
   }
 
   async function createProject(idea: string, name: string, brief: string) {
@@ -176,26 +178,48 @@ export default function App() {
     finally { setBusy(false); }
   }
 
+  async function archiveProject(project: Project) {
+    try {
+      if (project.id === projectId) await flushCanvas();
+      const updated = await api.updateProject(project.id, { status: project.status === "archived" ? "active" : "archived" });
+      setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
+      if (project.id === projectId && updated.status === "archived") { setProjectId(projects.find((item) => item.id !== project.id && item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); }
+      setStatus(updated.status === "archived" ? `项目“${project.name}”已归档` : `项目“${project.name}”已恢复`);
+    } catch (error) { setStatus(errorText(error)); }
+  }
+
+  async function deleteProject(project: Project) {
+    if (!window.confirm(`确定永久删除项目“${project.name}”及其研究、白板和内容资产吗？此操作不能撤销。建议先导出项目备份。`)) return;
+    try {
+      ++saveSequence.current;
+      if (saveInFlight.current) await saveInFlight.current;
+      await api.deleteProject(project.id);
+      const remaining = projects.filter((item) => item.id !== project.id);
+      setProjects(remaining);
+      if (project.id === projectId) { setProjectId(remaining.find((item) => item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); setDirty(false); }
+      setStatus(`项目“${project.name}”已删除`);
+    } catch (error) { setStatus(errorText(error)); }
+  }
+
   const content = (() => {
-    if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} />;
-    if (view === "search") return <SearchView sources={sources} project={activeProject} beforeAdd={flushCanvas} onAdded={() => refreshCanvas(true)} setStatus={setStatus} />;
+    if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} onArchive={archiveProject} onDelete={deleteProject} />;
     if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
     if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>白板加载失败</strong><p>{canvasError}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>重新读取白板</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} beforeGenerate={flushCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
-    if (view === "content") return <ContentView project={activeProject} canvas={canvas} assets={assets} selectedIds={selectedIds} setSelectedIds={setSelectedIds} busy={busy} setBusy={setBusy} setStatus={setStatus} onDone={refreshCanvas} />;
+    if (view === "content") return <AssetView project={activeProject} assets={assets} onChanged={() => refreshCanvas(true)} onOpenNode={(id) => { setSelectedIds([id]); void openCanvas(projectId); }} setStatus={setStatus} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
   })();
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">智</span><div><strong>内容智能白板</strong><small>可信知识驱动的内容工作台</small></div></div>
-      <nav aria-label="主要导航">{NAV.map((item) => <button className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "canvas" && projectId ? openCanvas(projectId) : setView(item.id)}>
+      <nav aria-label="主要导航">{NAV.map((item) => <button className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
         <span aria-hidden="true">{item.icon}</span><b>{item.label}</b>
       </button>)}</nav>
       <div className="sidebar-project">
         <label>当前项目</label>
-        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+        <select value={projectId} onChange={(event) => { void switchProject(event.target.value); }}>
           <option value="">尚未选择</option>
-          {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
+          {projects.filter((project) => project.status !== "archived").map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
         </select>
       </div>
       <div className="system-status"><i className={status.includes("失败") || status.includes("无法") ? "bad" : ""} />{status}</div>
@@ -212,9 +236,10 @@ function EmptyProject() {
   return <div className="empty-state"><strong>请先创建或选择一个项目</strong><p>项目会保存想法、研究、白板节点和最终内容资产。</p></div>;
 }
 
-function HomeView({ projects, activeId, busy, onCreate, onOpen }: {
+function HomeView({ projects, activeId, busy, onCreate, onOpen, onArchive, onDelete }: {
   projects: Project[]; activeId: string; busy: boolean;
   onCreate: (idea: string, name: string, brief: string) => void; onOpen: (id: string) => void;
+  onArchive: (project: Project) => void; onDelete: (project: Project) => void;
 }) {
   const [idea, setIdea] = useState(""); const [name, setName] = useState(""); const [brief, setBrief] = useState("");
   return <>
@@ -224,62 +249,13 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen }: {
       <div className="create-details"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="项目名称（可选）" /><input value={brief} onChange={(event) => setBrief(event.target.value)} placeholder="受众、目标或限制条件（可选）" /></div>
       <button className="primary large" disabled={busy || idea.trim().length < 2} onClick={() => onCreate(idea, name, brief)}>创建项目并开始探索</button>
     </section>
-    <section className="section-block"><div className="section-title"><h2>最近项目</h2><span>{projects.length} 个长期内容资产</span></div>
-      <div className="project-grid">{projects.length ? projects.map((project) => <button className={`project-card ${activeId === project.id ? "current" : ""}`} key={project.id} onClick={() => onOpen(project.id)}>
-        <span className="project-state">{project.status === "active" ? "进行中" : project.status}</span><h3>{project.name}</h3><p>{project.idea}</p><small>更新于 {new Date(project.updated_at).toLocaleString("zh-CN")}</small>
-      </button>) : <div className="empty-state"><strong>还没有项目</strong><p>上方输入一句想法即可创建。</p></div>}</div>
+    <section className="section-block"><div className="section-title"><h2>最近项目</h2><span>{projects.filter((item) => item.status !== "archived").length} 个进行中 · {projects.filter((item) => item.status === "archived").length} 个已归档</span></div>
+      <div className="project-grid">{projects.filter((item) => item.status !== "archived").map((project) => <article className={`project-card ${activeId === project.id ? "current" : ""}`} key={project.id}>
+        <button className="project-card-main" onClick={() => onOpen(project.id)}><span className="project-state">进行中</span><h3>{project.name}</h3><p>{project.idea}</p><small>更新于 {new Date(project.updated_at).toLocaleString("zh-CN")}</small></button>
+        <div className="project-card-actions"><button className="secondary" onClick={() => onArchive(project)}>归档</button><button className="text-button danger" onClick={() => onDelete(project)}>删除</button></div>
+      </article>)}{!projects.length && <div className="empty-state"><strong>还没有项目</strong><p>上方输入一句想法即可创建。</p></div>}</div>
+      {projects.some((item) => item.status === "archived") && <details className="archived-projects"><summary>已归档项目（{projects.filter((item) => item.status === "archived").length}）</summary><div className="project-grid">{projects.filter((item) => item.status === "archived").map((project) => <article className="project-card" key={project.id}><span className="project-state">已归档</span><h3>{project.name}</h3><p>{project.idea}</p><div className="project-card-actions"><button className="secondary" onClick={() => onArchive(project)}>恢复项目</button><button className="text-button danger" onClick={() => onDelete(project)}>删除</button></div></article>)}</div></details>}
     </section>
-  </>;
-}
-
-function SearchView({ sources, project, beforeAdd, onAdded, setStatus }: { sources: Source[]; project: Project | null; beforeAdd: () => Promise<void>; onAdded: () => Promise<void>; setStatus: (value: string) => void }) {
-  const [sourceId, setSourceId] = useState(sources[0]?.id ?? "");
-  const [query, setQuery] = useState(project?.idea ?? "");
-  const [hits, setHits] = useState<Hit[]>([]); const [busy, setBusy] = useState(false);
-  const [answer, setAnswer] = useState(""); const [answerModel, setAnswerModel] = useState("");
-  const [answeredQuery, setAnsweredQuery] = useState(""); const [answeredSource, setAnsweredSource] = useState("");
-  const [expanded, setExpanded] = useState<Record<string, ChunkDetail>>({}); const [showConfig, setShowConfig] = useState(false);
-  const [options, setOptions] = useState<SearchOptions>({ top_k: 10, lexical_weight: 1, semantic_weight: 1, wikilink_enabled: true, wikilink_weight: .75, max_per_document: 2 });
-  useEffect(() => { if (!sourceId && sources[0]) setSourceId(sources[0].id); }, [sources, sourceId]);
-  useEffect(() => { if (!query && project) setQuery(project.idea); }, [project, query]);
-  async function search(event?: FormEvent) { event?.preventDefault(); if (!sourceId || !query.trim()) return; setBusy(true); setAnswer(""); setHits([]); setStatus("大模型正在理解问题、查阅 Wiki 并整理回答…");
-    try { const result = await api.search(sourceId, query, options); setHits(result.hits); setAnswer(result.answer); setAnswerModel(`${result.provider_name} · ${result.model_name}`); setAnsweredQuery(result.query); setAnsweredSource(sourceId); setStatus(`大模型已回答，并核对 ${result.hits.length} 条相关证据`); }
-    catch (error) { setAnswer(`未能完成模型检索：${errorText(error)}`); setAnswerModel(""); setStatus(errorText(error)); } finally { setBusy(false); }
-  }
-  async function toggleDetail(hit: Hit) { if (expanded[hit.chunk_id]) { const next = { ...expanded }; delete next[hit.chunk_id]; setExpanded(next); return; }
-    try { const detail = await api.chunkDetail(hit.chunk_id); setExpanded((current) => ({ ...current, [hit.chunk_id]: detail })); } catch (error) { setStatus(errorText(error)); }
-  }
-  async function addToCanvas(hit: Hit) { if (!project) { setStatus("请先创建项目，再把证据加入白板"); return; }
-    try { await beforeAdd(); await api.createNode(project.id, { type: "knowledge", title: hit.title, body: hit.excerpt, status: "candidate", x: 420, y: 160 + Math.random() * 360, metadata: { evidence: [{ chunk_id: hit.chunk_id, title: hit.title, path: hit.source_path, heading: hit.heading_path, excerpt: hit.excerpt, start_line: hit.start_line, end_line: hit.end_line, references: hit.original_references }] } }); await onAdded(); setStatus("已加入内容白板"); }
-    catch (error) { setStatus(errorText(error)); }
-  }
-  async function addAnswerToCanvas() { if (!project) { setStatus("请先创建项目，再把回答加入白板"); return; }
-    try { await beforeAdd(); await api.createNode(project.id, { type: "insight", title: answeredQuery.slice(0, 90), body: answer, status: "candidate", x: 840, y: 160, created_by: "ai", metadata: { model: answerModel, research_query: answeredQuery, research_source_id: answeredSource, evidence: hits.map((hit) => ({ chunk_id: hit.chunk_id, title: hit.title, path: hit.source_path, heading: hit.heading_path, excerpt: hit.excerpt, start_line: hit.start_line, end_line: hit.end_line, references: hit.original_references })) } }); await onAdded(); setStatus("模型回答与证据已加入白板"); }
-    catch (error) { setStatus(errorText(error)); }
-  }
-  return <>
-    <PageHeader eyebrow="内部知识问答" title="让大模型理解你的 Wiki" description="大模型先理解问题，再检索 Wiki、综合回答并标注引用；下面可核对原文和相邻上下文。" actions={<button className="secondary" onClick={() => setShowConfig(!showConfig)}>检索配置</button>} />
-    <section className="search-box card"><div className="field"><label>知识源</label><select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">请选择知识源</option>{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select></div>
-      <form onSubmit={search} className="search-row"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入要研究的问题、观点、产品或概念" /><button className="primary" disabled={busy || !sourceId}>{busy ? "正在查阅 Wiki…" : "提问并检索"}</button></form>
-      {showConfig && <div className="config-grid">
-        <label>结果数量<input type="number" min="1" max="30" value={options.top_k} onChange={(e) => setOptions({ ...options, top_k: Number(e.target.value) })} /></label>
-        <label>关键词权重<input type="number" step="0.1" min="0" max="3" value={options.lexical_weight} onChange={(e) => setOptions({ ...options, lexical_weight: Number(e.target.value) })} /></label>
-        <label>语义权重<input type="number" step="0.1" min="0" max="3" value={options.semantic_weight} onChange={(e) => setOptions({ ...options, semantic_weight: Number(e.target.value) })} /></label>
-        <label>单文档上限<input type="number" min="1" max="5" value={options.max_per_document} onChange={(e) => setOptions({ ...options, max_per_document: Number(e.target.value) })} /></label>
-        <label className="check"><input type="checkbox" checked={options.wikilink_enabled} onChange={(e) => setOptions({ ...options, wikilink_enabled: e.target.checked })} />启用知识链接扩展</label>
-        <label>关联权重<input type="number" step="0.05" min="0" max="2" value={options.wikilink_weight} onChange={(e) => setOptions({ ...options, wikilink_weight: Number(e.target.value) })} /></label>
-      </div>}
-    </section>
-    {answer && <section className="card wiki-answer" aria-live="polite"><div className="section-title"><h2>大模型解读</h2><span>{answerModel || "未完成"}</span></div><div className="wiki-answer-body"><ReactMarkdown>{answer}</ReactMarkdown></div>{!!answerModel && <div className="card-actions"><span>下方展示模型引用的 {hits.length} 条 Wiki 证据</span><button className="primary ghost" onClick={addAnswerToCanvas}>将回答和证据加入白板</button></div>}</section>}
-    <section className="result-list">{hits.map((hit, index) => <article className="result-card" key={hit.chunk_id}>
-      <div className="rank">{String(index + 1).padStart(2, "0")}</div><div className="result-main"><div className="result-head"><div><h2>{hit.title}</h2><p>{hit.source_path} · 第 {hit.start_line}–{hit.end_line} 行</p></div><strong>{hit.score.toFixed(4)}</strong></div>
-      <p className="heading-path">{hit.heading_path.join(" › ") || "文档开头"}</p><p className="result-excerpt">{hit.excerpt}</p>
-      <div className="tag-row">{hit.retrieval_reasons.map((reason) => <span key={reason}>{REASON_LABELS[reason] ?? reason}</span>)}</div>
-      <div className="card-actions"><button className="secondary" onClick={() => toggleDetail(hit)}>{expanded[hit.chunk_id] ? "收起完整内容" : "展开完整内容"}</button><button className="primary ghost" onClick={() => addToCanvas(hit)}>加入白板</button></div>
-      {expanded[hit.chunk_id] && <div className="full-detail"><div className="detail-meta"><strong>完整证据段落</strong><span>{expanded[hit.chunk_id].document_type}</span></div><MarkdownText text={expanded[hit.chunk_id].full_text} />
-        <details><summary>查看前后文（{expanded[hit.chunk_id].context.length} 段）</summary>{expanded[hit.chunk_id].context.map((part) => <div className={part.is_current ? "context current" : "context"} key={part.chunk_id}><small>第 {part.start_line}–{part.end_line} 行</small><MarkdownText text={part.text} /></div>)}</details>
-        {!!expanded[hit.chunk_id].original_references.length && <div className="references"><strong>原始参考来源</strong>{expanded[hit.chunk_id].original_references.map((url) => <a href={url} target="_blank" rel="noreferrer" key={url}>{url}</a>)}</div>}
-      </div>}</div></article>)}</section>
   </>;
 }
 
@@ -381,29 +357,14 @@ function LegacyCanvasView({ project, canvas, selectedIds, setSelectedIds, onChan
   </div>;
 }
 
-function ContentView({ project, canvas, assets, selectedIds, setSelectedIds, busy, setBusy, setStatus, onDone }: {
-  project: Project | null; canvas: CanvasData | null; assets: ContentAsset[]; selectedIds: string[]; setSelectedIds: (ids: string[]) => void;
-  busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; onDone: () => Promise<void>;
-}) {
-  const [format, setFormat] = useState<"wechat" | "video_script" | "poster_campaign">("wechat"); const [title, setTitle] = useState(""); const [duration, setDuration] = useState(90); const [openAsset, setOpenAsset] = useState<string | null>(assets[0]?.id ?? null);
-  if (!project || !canvas) return <><PageHeader eyebrow="内容资产" title="从同一内容概念生成多形态内容" description="微信公众号、视频号和营销活动共享核心观点与证据，但各自采用独立叙事结构。" /><EmptyProject /></>;
-  const activeProject = project;
-  const eligible = canvas.nodes.filter((node) => node.type !== "frame");
-  async function generate() { if (!selectedIds.length) { setStatus("请至少选择一个白板节点或内容概念"); return; } setBusy(true);
-    try { const result = await api.generateContent(activeProject.id, selectedIds, format, title, duration, true); setStatus(result.message); if (result.asset) setOpenAsset(result.asset.id); await onDone(); }
-    catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
-  }
-  return <><PageHeader eyebrow="内容资产" title="生成、审阅并导出内容" description="事实内容保留知识库证据；项目导出不包含任何模型接口密钥。" actions={<><a className="button secondary" href={downloadUrl(`/api/projects/${activeProject.id}/export?format=markdown`)}>导出项目（Markdown）</a><a className="button secondary" href={downloadUrl(`/api/projects/${activeProject.id}/export?format=json`)}>导出项目（JSON）</a></>} />
-    <div className="content-layout"><section className="card generator"><h2>生成新内容</h2><label>输出形态<select value={format} onChange={(e) => setFormat(e.target.value as typeof format)}><option value="wechat">微信公众号</option><option value="video_script">视频号 / 短视频脚本</option><option value="poster_campaign">海报 / 营销活动</option></select></label><label>标题（可选）<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="留空则自动生成" /></label>{format === "video_script" && <label>视频时长（秒）<input type="number" min="15" max="600" value={duration} onChange={(e) => setDuration(Number(e.target.value))} /></label>}
-      <p>由已配置的大模型结合 Wiki 和所选节点生成内容。</p><h3>选择内容依据</h3><div className="node-picker">{eligible.map((node) => <label key={node.id}><input type="checkbox" checked={selectedIds.includes(node.id)} onChange={(e) => setSelectedIds(e.target.checked ? [...selectedIds, node.id] : selectedIds.filter((id) => id !== node.id))} /><span><b>{NODE_LABELS[node.type] ?? node.type}</b>{node.title}</span></label>)}</div><button className="primary large" disabled={busy || !selectedIds.length} onClick={generate}>{busy ? "正在生成…" : `生成${FORMAT_LABELS[format]}`}</button></section>
-      <section className="asset-list"><div className="section-title"><h2>已生成内容</h2><span>{assets.length} 项</span></div>{assets.length ? assets.map((asset) => <article className={`asset-card ${openAsset === asset.id ? "open" : ""}`} key={asset.id}><button className="asset-summary" onClick={() => setOpenAsset(openAsset === asset.id ? null : asset.id)}><div><span>{FORMAT_LABELS[asset.format] ?? asset.format}</span><h3>{asset.title}</h3><small>版本 {asset.version} · {asset.evidence.length} 条证据</small></div><b>{openAsset === asset.id ? "收起" : "展开"}</b></button>{openAsset === asset.id && <div className="asset-body"><MarkdownText text={asset.body} /><div className="asset-actions"><a className="button primary ghost" href={downloadUrl(`/api/assets/${asset.id}/export`)}>导出（Markdown）</a></div></div>}</article>) : <div className="empty-state"><strong>还没有内容资产</strong><p>选择白板节点后，可生成三种独立叙事形态。</p></div>}</section></div>
-  </>;
-}
-
 function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; setSources: (sources: Source[]) => void; setStatus: (value: string) => void }) {
   const [providers, setProviders] = useState<Provider[]>([]); const [selectedProvider, setSelectedProvider] = useState(""); const [protect, setProtect] = useState(true); const [sourceName, setSourceName] = useState("本地知识库"); const [sourcePath, setSourcePath] = useState(""); const [busy, setBusy] = useState(false); const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [formats, setFormats] = useState<ContentFormat[]>([]);
   const [form, setForm] = useState({ name: "自定义模型", protocol: "openai_compatible", base_url: "", api_key: "", model_name: "", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, network_mode: "auto", proxy_url: "", proxy_username: "", proxy_password: "" });
   useEffect(() => { Promise.all([api.listProviders(), api.getSecurity()]).then(([items, security]) => { setProviders(items); setProtect(security.protect_internal_data); if (items[0]) { setSelectedProvider(items[0].id); setFormFromProvider(items[0]); } }).catch((error) => setStatus(errorText(error))); }, []);
+  useEffect(() => { api.listContentFormats().then(setFormats).catch((error) => setStatus(errorText(error))); }, []);
+  function changeFormat(id: string, values: Partial<ContentFormat>) { setFormats((current) => current.map((item) => item.id === id ? { ...item, ...values } : item)); }
+  async function saveFormats() { setBusy(true); try { setFormats(await api.saveContentFormats(formats)); setStatus("输出形态与 Prompt 已保存，后续生成将使用新配置"); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   function setFormFromProvider(provider: Provider) { setAvailableModels([]); setForm({ name: provider.name, protocol: provider.protocol, base_url: provider.base_url, api_key: "", model_name: provider.model_name, enabled: provider.enabled, is_external: provider.is_external, temperature: provider.temperature, max_tokens: provider.max_tokens, timeout_seconds: provider.timeout_seconds, network_mode: typeof provider.extra.network_mode === "string" ? provider.extra.network_mode : "auto", proxy_url: typeof provider.extra.proxy_url === "string" ? provider.extra.proxy_url : "", proxy_username: typeof provider.extra.proxy_username === "string" ? provider.extra.proxy_username : "", proxy_password: "" }); }
   function applyProviderPreset(key: keyof typeof PROVIDER_PRESETS) { const preset = PROVIDER_PRESETS[key]; setSelectedProvider(""); setAvailableModels([]); setForm({ ...form, ...preset, protocol: "openai_compatible", api_key: "", enabled: true, is_external: true }); }
   async function saveProvider(event: FormEvent) { event.preventDefault(); setBusy(true); try { const { network_mode, proxy_url, proxy_username, proxy_password, ...providerForm } = form; const saved = await api.saveProvider({ ...(selectedProvider ? { id: selectedProvider } : {}), ...providerForm, api_key: form.api_key || null, extra: { network_mode, proxy_url: proxy_url || null, proxy_username: proxy_username || null, proxy_password: proxy_password || null } }); const items = await api.listProviders(); setProviders(items); setSelectedProvider(saved.id); setFormFromProvider(saved); setStatus("大模型与企业代理配置已保存，密钥和代理密码未写入普通数据库"); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
@@ -414,7 +375,7 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
   async function removeSource(source: Source) { if (!window.confirm(`确定移除知识源“${source.name}”及其本地索引吗？源文件不会被删除。`)) return; setBusy(true); try { await api.deleteSource(source.id); setSources(await api.listSources()); setStatus(`已移除知识源“${source.name}”，源文件未被修改`); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function refreshSource(id: string) { setBusy(true); setStatus("正在扫描并增量更新知识库索引…"); try { const report = await api.refresh(id); setStatus(`索引完成：扫描 ${report.discovered ?? 0} 个文件，写入 ${report.chunks_written ?? 0} 个分块`); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function saveProtect(value: boolean) { setProtect(value); try { await api.saveSecurity(value); setStatus(value ? "内部数据保护已开启" : "内部数据保护已关闭，请确认模型服务的数据边界"); } catch (error) { setStatus(errorText(error)); } }
-  return <><PageHeader eyebrow="设置" title="知识源、大模型与数据边界" description="提问、检索和快速研究需要已启用的模型；内部 Wiki 内容发送给外部模型前需确认数据保护设置。" />
+  return <><PageHeader eyebrow="设置" title="知识源、大模型与内容形态" description="快速研究与白板共创需要已启用的模型；内部 Wiki 内容发送给外部模型前需确认数据保护设置。" />
     <div className="settings-grid"><section className="card settings-card"><div className="section-title"><h2>本地知识源</h2><span>只读，不修改源文件</span></div><form onSubmit={addSource}><label>知识源名称<input value={sourceName} onChange={(e) => setSourceName(e.target.value)} /></label><label>本地知识库文件夹路径<div className="folder-picker"><input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} placeholder="例如 D:\\Knowledge\\wiki" /><button type="button" className="secondary" disabled={busy} onClick={browseSource}>浏览文件夹</button></div></label><button className="primary" disabled={busy || !sourcePath.trim()}>添加知识源</button></form><p className="source-help">选择你自己的 Wiki 或 Markdown 文件夹；应用不会自动创建或添加 “Real Wiki”。</p><div className="source-list">{sources.map((source) => <div key={source.id}><div><strong>{source.name}</strong><small>{source.root_path}</small></div><div className="source-actions"><button className="secondary" disabled={busy} onClick={() => refreshSource(source.id)}>刷新索引</button><button className="text-button danger" disabled={busy} onClick={() => removeSource(source)}>移除</button></div></div>)}</div></section>
       <section className="card settings-card">
         <div className="section-title"><h2>自定义大模型</h2><button className="text-button" onClick={() => applyProviderPreset("custom")}>新建配置</button></div>
@@ -432,6 +393,10 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
           <label className="check"><input type="checkbox" checked={form.is_external} onChange={(e) => setForm({ ...form, is_external: e.target.checked })} />这是外部模型服务</label>
           <div className="form-actions"><button className="primary" disabled={busy || !form.base_url || !form.model_name}>保存配置</button><button type="button" className="secondary" disabled={busy || !selectedProvider} onClick={testProvider}>测试连接</button></div>
         </form>
+      </section>
+      <section className="card settings-card format-settings"><div className="section-title"><div><h2>内容输出形态与 Prompt</h2><p>这些要求会自动用于白板 AI 共创和内容工坊；节点中仍可填写本次特有的正向与负向 Prompt。</p></div><button className="secondary" disabled={busy || formats.length >= 20} onClick={() => setFormats([...formats, { id: `custom_${Date.now().toString(36)}`, name: "新内容形态", positive_prompt: "", negative_prompt: "" }])}>添加形态</button></div>
+        {formats.map((item) => <div className="format-setting-item" key={item.id}><div><label>形态标识<input value={item.id} disabled title="保存后的形态标识不可更改" /></label><label>显示名称<input value={item.name} maxLength={60} onChange={(event) => changeFormat(item.id, { name: event.target.value })} /></label><button className="text-button danger" disabled={busy || formats.length === 1} onClick={() => setFormats(formats.filter((format) => format.id !== item.id))}>移除</button></div><div className="format-prompts"><label>默认正向 Prompt<textarea value={item.positive_prompt} maxLength={3000} onChange={(event) => changeFormat(item.id, { positive_prompt: event.target.value })} /></label><label>默认负向 Prompt<textarea value={item.negative_prompt} maxLength={3000} onChange={(event) => changeFormat(item.id, { negative_prompt: event.target.value })} /></label></div></div>)}
+        <div className="form-actions"><button className="primary" disabled={busy || !formats.length || formats.some((item) => !item.name.trim())} onClick={saveFormats}>保存内容形态</button></div>
       </section>
       <section className="card settings-card security-card"><div><h2>内部数据保护</h2><p>开启时，内部知识库、研究发现和白板内容不会发送给标记为“外部”的模型。模型操作会明确报错，不再悄悄生成本地模板。</p></div><label className="big-switch"><input type="checkbox" checked={protect} onChange={(e) => saveProtect(e.target.checked)} /><span>{protect ? "已开启" : "已关闭"}</span></label></section>
     </div></>;
