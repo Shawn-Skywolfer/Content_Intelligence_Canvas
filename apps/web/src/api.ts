@@ -127,9 +127,9 @@ export const api = {
   listRuns: (projectId: string) => request<ResearchRun[]>(`/api/projects/${projectId}/runs`),
   deleteResearchRun: (projectId: string, runId: string) =>
     request<void>(`/api/projects/${projectId}/research/runs/${runId}`, { method: "DELETE" }),
-  magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight") =>
+  magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight", negativePrompt = "") =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt }),
     }),
   generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
@@ -140,13 +140,13 @@ export const api = {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, title, use_llm: useLlm }),
     }),
   listAssets: (projectId: string) => request<ContentAsset[]>(`/api/projects/${projectId}/assets`),
-  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true) =>
+  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true, negativePrompt = "") =>
     request<{ asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, save_as_asset: saveAsAsset }),
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
     }),
-  startContentGeneration: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false) =>
+  startContentGeneration: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false, negativePrompt = "") =>
     request<ContentJob>(`/api/projects/${projectId}/content/generate/start`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, save_as_asset: saveAsAsset }),
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
     }),
   contentJob: (jobId: string) => request<ContentJob>(`/api/content/jobs/${jobId}`),
   saveNodeAsAsset: (projectId: string, nodeId: string) =>

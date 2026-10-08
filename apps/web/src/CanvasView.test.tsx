@@ -5,14 +5,15 @@ import CanvasView from "./CanvasView";
 import type { CanvasData, Project } from "./api";
 
 vi.mock("@xyflow/react", () => ({
-  ReactFlow: ({ nodes, nodeTypes, onSelectionChange, onNodesChange }: {
+  ReactFlow: ({ nodes, edges, nodeTypes, onSelectionChange, onNodesChange }: {
     nodes: Array<{ id: string; data: unknown; selected?: boolean }>;
+    edges: Array<{ type: string; className: string; source: string; target: string; markerEnd: unknown }>;
     nodeTypes: Record<string, React.ComponentType<any>>;
     onSelectionChange?: (value: { nodes: Array<{ id: string }>; edges: unknown[] }) => void;
     onNodesChange: (changes: Array<{ id: string; type: string; selected?: boolean }>) => void;
   }) => {
     useEffect(() => { onSelectionChange?.({ nodes: nodes.filter((node) => node.selected), edges: [] }); }, [nodes, onSelectionChange]);
-    return createElement("div", { className: "mock-flow" },
+    return createElement("div", { className: "mock-flow", "data-edges": JSON.stringify(edges) },
       ...nodes.map((node) => createElement(nodeTypes.canvas, { key: node.id, data: node.data, selected: node.selected })),
       createElement("button", { className: "mock-select", onClick: () => onNodesChange([{ id: "brief", type: "select", selected: true }]) }, "模拟选中"));
   },
@@ -45,6 +46,27 @@ const canvas: CanvasData = {
 };
 
 describe("白板进入与节点编辑", () => {
+  it("曲线有向边只在端点节点激活时呈现流动状态，并显示两组输出 Prompt", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    let renderer!: ReactTestRenderer;
+    const props = { project, canvas, selectedIds: [] as string[], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() };
+    await act(async () => { renderer = create(createElement(CanvasView, props)); });
+    const edge = () => JSON.parse(renderer.root.findByProps({ className: "mock-flow" }).props["data-edges"])[0];
+    expect(edge().type).toBe("default");
+    expect(edge().className).toBe("");
+    expect(edge().source).toBe("idea");
+    expect(edge().target).toBe("brief");
+    expect(edge().markerEnd.type).toBe("arrowclosed");
+    await act(async () => { renderer.update(createElement(CanvasView, { ...props, selectedIds: ["idea"] })); });
+    expect(edge().className).toContain("edge-flowing");
+    await act(async () => { renderer.root.findAllByProps({ children: "生成新内容" })[0].props.onClick(); });
+    const textareas = renderer.root.findAllByType("textarea");
+    expect(textareas.some((field) => field.props.placeholder?.includes("用真实场景切入"))).toBe(true);
+    expect(textareas.some((field) => field.props.placeholder?.includes("不要编造事实"))).toBe(true);
+    await act(async () => { renderer.unmount(); });
+  });
+
   it("手动整理也生成三列双子列，不再创建内容生产示例列", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });

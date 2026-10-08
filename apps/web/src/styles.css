@@ -145,9 +145,12 @@ summary { cursor: pointer; font-weight: 750; }
 .connection-handle { width: 12px !important; height: 12px !important; border: 2px solid white !important; background: #c7000b !important; opacity: .32; transition: opacity .15s, transform .15s; }
 .flow-card:hover .connection-handle, .connection-handle:hover { opacity: 1; transform: scale(1.15); }
 .handle-top, .handle-bottom { left: 50% !important; }.handle-left, .handle-right { top: 50% !important; }
-.react-flow__edge-path { stroke: #7e8da2; stroke-width: 2.2; }
+.react-flow__edge-path { stroke: #7e8da2; stroke-width: 2.2; stroke-linecap: round; }
 .react-flow__edge.selected .react-flow__edge-path { stroke: #c7000b; stroke-width: 3; }
 .react-flow__edge.edge-related .react-flow__edge-path { stroke: #c7000b; stroke-width: 2.8; }
+.react-flow__edge.edge-flowing .react-flow__edge-path { stroke-dasharray: 5 8; animation: edge-flow-forward .7s linear infinite; }
+@keyframes edge-flow-forward { to { stroke-dashoffset: -13; } }
+@media (prefers-reduced-motion: reduce) { .react-flow__edge.edge-flowing .react-flow__edge-path { animation: none; stroke-dasharray: none; } }
 .react-flow__arrowhead polyline { stroke-linecap: round; stroke-linejoin: round; }
 .react-flow__controls { overflow: hidden; border: 1px solid #d8dde5; border-radius: 10px; box-shadow: 0 5px 18px rgba(40,50,65,.12); }
 .react-flow__minimap { border: 1px solid #d8dde5; border-radius: 10px; background: rgba(255,255,255,.92) !important; }

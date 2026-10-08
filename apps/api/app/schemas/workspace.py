@@ -123,6 +123,7 @@ class MagicRequest(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=20)
     instruction: str = Field(min_length=2, max_length=1000)
     output_type: str = "insight"
+    negative_prompt: str = Field(default="", max_length=2000)
 
 
 class NodeGenerateRequest(BaseModel):
@@ -143,6 +144,7 @@ class ContentGenerateRequest(BaseModel):
     duration_seconds: int = Field(default=90, ge=15, le=600)
     use_llm: bool = True
     instruction: str = Field(default="", max_length=2000)
+    negative_prompt: str = Field(default="", max_length=2000)
     save_as_asset: bool = True
 
 

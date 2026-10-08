@@ -91,6 +91,7 @@ def _run_content_job(job_id: str, project_id: str, request: ContentGenerateReque
             request.instruction,
             request.save_as_asset,
             progress,
+            negative_prompt=request.negative_prompt,
         )
         _set_content_job(
             job_id,
@@ -310,7 +311,8 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     _project(project_id)
     try:
         node, run_id, used_llm, message = get_container().workflow.magic(
-            project_id, request.node_ids, request.instruction, request.output_type
+            project_id, request.node_ids, request.instruction, request.output_type,
+            negative_prompt=request.negative_prompt,
         )
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -362,6 +364,7 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
             request.use_llm,
             request.instruction,
             request.save_as_asset,
+            negative_prompt=request.negative_prompt,
         )
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
