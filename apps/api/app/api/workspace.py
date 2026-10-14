@@ -165,6 +165,7 @@ def save_canvas(project_id: str, request: CanvasSaveRequest) -> dict[str, Any]:
             [node.model_dump(exclude_none=True) for node in request.nodes],
             [edge.model_dump(exclude_none=True) for edge in request.edges],
             request.viewport,
+            request.base_updated_at,
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -322,11 +323,66 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     try:
         node, run_id, used_llm, message = get_container().workflow.magic(
             project_id, request.node_ids, request.instruction, request.output_type,
-            negative_prompt=request.negative_prompt,
+            negative_prompt=request.negative_prompt, web_search=request.web_search,
         )
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
+
+
+def _run_magic_job(job_id: str, project_id: str, request: MagicRequest) -> None:
+    workspace = get_container().workspace
+    try:
+        def progress(percent: int, phase: str, detail: str) -> None:
+            workspace.update_magic_job(job_id, progress=percent, phase=phase, detail=detail)
+
+        if request.output_type == "output":
+            progress(18, "准备内容输出", "正在整理选中节点与 Wiki 上下文")
+            asset, node, run_id, used_llm, message = get_container().workflow.generate_content(
+                project_id, request.node_ids, request.format, "", request.duration_seconds,
+                True, request.instruction, False, progress, negative_prompt=request.negative_prompt,
+            )
+        else:
+            node, run_id, used_llm, message = get_container().workflow.magic(
+                project_id, request.node_ids, request.instruction, request.output_type,
+                negative_prompt=request.negative_prompt, web_search=request.web_search, progress=progress,
+            )
+        workspace.update_magic_job(job_id, status="completed", progress=100, phase="生成完成",
+                                   detail=message, result={"node": node, "run_id": run_id,
+                                                           "used_llm": used_llm, "message": message})
+    except Exception as exc:
+        workspace.update_magic_job(job_id, status="failed", phase="生成失败", detail=str(exc), error=str(exc))
+
+
+@router.post("/projects/{project_id}/magic/start")
+def start_magic_job(project_id: str, request: MagicRequest) -> dict[str, Any]:
+    _project(project_id)
+    workspace = get_container().workspace
+    if request.web_search and request.output_type != "insight":
+        raise HTTPException(422, "只有洞察节点可以启用网络检索")
+    if not request.node_ids or any(not (node := workspace.get_node(node_id)) or node["project_id"] != project_id for node_id in request.node_ids):
+        raise HTTPException(422, "部分输入节点不存在或不属于当前项目")
+    active = [job for job in workspace.list_magic_jobs(project_id) if job["status"] == "running"]
+    if any(set(job["node_ids"]) == set(request.node_ids) for job in active):
+        raise HTTPException(409, "这些节点已有正在运行的生成任务")
+    job = workspace.create_magic_job(project_id, request.node_ids)
+    threading.Thread(target=_run_magic_job, args=(job["job_id"], project_id, request),
+                     name=f"magic-{job['job_id'][-8:]}", daemon=True).start()
+    return job
+
+
+@router.get("/projects/{project_id}/magic/jobs")
+def list_magic_jobs(project_id: str) -> list[dict[str, Any]]:
+    _project(project_id)
+    return get_container().workspace.list_magic_jobs(project_id)
+
+
+@router.get("/magic/jobs/{job_id}")
+def get_magic_job(job_id: str) -> dict[str, Any]:
+    job = get_container().workspace.get_magic_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
 
 
 @router.post("/projects/{project_id}/nodes/{node_id}/generate", response_model=WorkflowResponse)

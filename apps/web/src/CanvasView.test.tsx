@@ -1,6 +1,6 @@
 import { act, createElement, useEffect } from "react";
 import { create, ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import CanvasView from "./CanvasView";
 import { api } from "./api";
 import type { CanvasData, Project } from "./api";
@@ -47,11 +47,31 @@ const canvas: CanvasData = {
 };
 
 describe("白板进入与节点编辑", () => {
+  beforeEach(() => { vi.spyOn(api, "listMagicJobs").mockResolvedValue([]); });
+  it("刷新后恢复节点生成进度，其他节点仍可启动独立任务", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const running = { job_id: "job-a", project_id: "p1", node_ids: ["idea"], status: "running" as const,
+      phase: "模型综合生成", progress: 68, detail: "正在写入内容", created_at: "" };
+    vi.spyOn(api, "listMagicJobs").mockResolvedValue([running]);
+    const start = vi.spyOn(api, "startMagic").mockResolvedValue({ ...running, job_id: "job-b", node_ids: ["brief"] });
+    vi.spyOn(api, "saveCanvas").mockResolvedValue(canvas);
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: ["brief"], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() })); });
+    expect(renderer.root.findByProps({ "aria-label": "AI 任务状态" }).findAllByType("strong")[0].children.join("")).toContain("正在生成 1");
+    const prompt = renderer.root.findAllByType("textarea").find((item) => item.props.placeholder?.includes("结合上游证据"));
+    await act(async () => { prompt!.props.onChange({ target: { value: "整理简报中的新洞察" } }); });
+    const button = renderer.root.findByProps({ children: "AI 加工并生成下游节点" });
+    expect(button.props.disabled).toBe(false);
+    await act(async () => { button.props.onClick(); });
+    expect(start).toHaveBeenCalledWith("p1", ["brief"], "整理简报中的新洞察", "insight", "", false, "wechat", 90);
+    await act(async () => { renderer.unmount(); });
+  });
   it("AI 共创内选择自定义输出形态，并按配置生成下游内容节点", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
     vi.spyOn(api, "listContentFormats").mockResolvedValue([{ id: "podcast", name: "播客提纲", positive_prompt: "问答", negative_prompt: "不编造" }]);
-    const start = vi.spyOn(api, "startContentGeneration").mockResolvedValue({ job_id: "j1", project_id: "p1", status: "completed", phase: "完成", progress: 100, detail: "完成", result: { node: { ...canvas.nodes[0], id: "output", type: "output" }, asset: null, run_id: "run", used_llm: true, message: "完成" } });
+    const start = vi.spyOn(api, "startMagic").mockResolvedValue({ job_id: "j1", project_id: "p1", node_ids: ["idea"], status: "running", phase: "准备生成", progress: 2, detail: "准备生成", created_at: "" });
     vi.spyOn(api, "saveCanvas").mockResolvedValue(canvas);
     let renderer!: ReactTestRenderer;
     await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: ["idea"], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() })); });
@@ -60,7 +80,7 @@ describe("白板进入与节点编辑", () => {
     await act(async () => { selector!.props.onChange({ target: { value: "output" } }); });
     expect(renderer.root.findAllByType("option").some((item) => item.children.includes("播客提纲"))).toBe(true);
     await act(async () => { renderer.root.findByProps({ children: "生成内容输出节点" }).props.onClick(); });
-    expect(start).toHaveBeenCalledWith("p1", ["idea"], "podcast", "", 90, true, "", false, "");
+    expect(start).toHaveBeenCalledWith("p1", ["idea"], "结合节点内容生成草稿", "output", "", false, "podcast", 90);
     await act(async () => { renderer.unmount(); });
   });
 
@@ -78,10 +98,11 @@ describe("白板进入与节点编辑", () => {
     expect(edge().markerEnd.type).toBe("arrowclosed");
     await act(async () => { renderer.update(createElement(CanvasView, { ...props, selectedIds: ["idea"] })); });
     expect(edge().className).toContain("edge-flowing");
-    await act(async () => { renderer.root.findAllByProps({ children: "生成新内容" })[0].props.onClick(); });
+    const selector = renderer.root.findAllByType("select").find((item) => item.findAllByProps({ value: "output" }).length);
+    await act(async () => { selector!.props.onChange({ target: { value: "output" } }); });
     const textareas = renderer.root.findAllByType("textarea");
-    expect(textareas.some((field) => field.props.placeholder?.includes("用真实场景切入"))).toBe(true);
-    expect(textareas.some((field) => field.props.placeholder?.includes("不要编造事实"))).toBe(true);
+    expect(textareas.some((field) => field.props.placeholder?.includes("结合上游证据"))).toBe(true);
+    expect(textareas.some((field) => field.props.placeholder?.includes("不要编造案例"))).toBe(true);
     await act(async () => { renderer.unmount(); });
   });
 

@@ -119,6 +119,20 @@ class WorkspaceRepository:
                     created_at TEXT NOT NULL,
                     completed_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS magic_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    node_ids_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    phase TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    error TEXT,
+                    result_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_magic_jobs_project ON magic_jobs(project_id,created_at);
                 CREATE TABLE IF NOT EXISTS content_assets (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -574,6 +588,7 @@ class WorkspaceRepository:
                     now,
                 ),
             )
+            db.execute("UPDATE canvases SET updated_at=? WHERE project_id=?", (now, project_id))
         if values.get("parent_id"):
             self.create_edge(project_id, values["parent_id"], node_id, "derived_from")
         return self.get_node(node_id) or {}
@@ -669,8 +684,12 @@ class WorkspaceRepository:
         nodes: list[dict[str, Any]],
         edges: list[dict[str, Any]],
         viewport: dict[str, Any],
+        base_updated_at: str | None = None,
     ) -> dict[str, Any]:
-        existing = {node["id"]: node for node in self.get_canvas(project_id)["nodes"]}
+        current_canvas = self.get_canvas(project_id)
+        existing = {node["id"]: node for node in current_canvas["nodes"]}
+        concurrent_nodes = {node_id for node_id, node in existing.items()
+                            if base_updated_at and node["created_at"] > base_updated_at and node_id not in {item.get("id") for item in nodes}}
         incoming_ids: set[str] = set()
         for node in nodes:
             node_id = node.get("id")
@@ -694,7 +713,9 @@ class WorkspaceRepository:
                 incoming_ids.add(created["id"])
         for node_id, node in existing.items():
             if node_id not in incoming_ids and not node["locked"]:
-                self.delete_node(project_id, node_id)
+                if node_id not in concurrent_nodes:
+                    self.delete_node(project_id, node_id)
+        incoming_ids.update(concurrent_nodes)
         with self._connect() as db:
             db.execute("DELETE FROM canvas_edges WHERE project_id=?", (project_id,))
         for edge in edges:
@@ -709,6 +730,9 @@ class WorkspaceRepository:
                     edge.get("metadata", {}),
                     edge.get("id"),
                 )
+        for edge in current_canvas["edges"]:
+            if (edge["source_node_id"] in concurrent_nodes or edge["target_node_id"] in concurrent_nodes) and edge["source_node_id"] in incoming_ids and edge["target_node_id"] in incoming_ids:
+                self.create_edge(project_id, edge["source_node_id"], edge["target_node_id"], edge["relation"], edge.get("metadata", {}), edge["id"])
         with self._connect() as db:
             db.execute(
                 "UPDATE canvases SET viewport_json=?,updated_at=? WHERE project_id=?",
@@ -716,6 +740,49 @@ class WorkspaceRepository:
             )
             db.execute("UPDATE projects SET updated_at=? WHERE id=?", (utc_now(), project_id))
         return self.get_canvas(project_id)
+
+    def create_magic_job(self, project_id: str, node_ids: list[str]) -> dict[str, Any]:
+        job_id = f"magic_{uuid.uuid4().hex}"
+        now = utc_now()
+        with self._connect() as db:
+            db.execute("""INSERT INTO magic_jobs(job_id,project_id,node_ids_json,status,progress,phase,detail,created_at,updated_at)
+                VALUES(?,?,?,'running',2,'准备生成','正在准备节点上下文',?,?)""",
+                (job_id, project_id, json.dumps(node_ids), now, now))
+        return self.get_magic_job(job_id) or {}
+
+    def update_magic_job(self, job_id: str, **changes: Any) -> None:
+        allowed = {"status", "progress", "phase", "detail", "error", "result"}
+        values = {key: value for key, value in changes.items() if key in allowed}
+        if "result" in values:
+            values["result_json"] = json.dumps(values.pop("result"), ensure_ascii=False)
+        if not values:
+            return
+        with self._connect() as db:
+            db.execute(f"UPDATE magic_jobs SET {','.join(key + '=?' for key in values)},updated_at=? WHERE job_id=?",
+                       (*values.values(), utc_now(), job_id))
+
+    def get_magic_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM magic_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return self._magic_job(row)
+
+    def list_magic_jobs(self, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM magic_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
+        return [self._magic_job(row) for row in rows]
+
+    @staticmethod
+    def _magic_job(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        job = dict(row)
+        job["node_ids"] = json.loads(job.pop("node_ids_json"))
+        job["result"] = json.loads(job.pop("result_json")) if job.get("result_json") else None
+        return job
+
+    def interrupt_magic_jobs(self) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE magic_jobs SET status='failed',phase='任务已中断',detail='应用重启后任务已中断，请重新提交',error='应用重启后任务已中断',updated_at=? WHERE status='running'", (utc_now(),))
 
     def create_run(self, project_id: str, action: str, prompt: str, input_ids: list[str]) -> str:
         run_id = f"run_{uuid.uuid4().hex}"

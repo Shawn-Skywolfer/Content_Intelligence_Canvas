@@ -11,10 +11,32 @@ from app.schemas.workspace import (
     ProviderModelDiscoveryRequest,
     SecuritySettingsRequest,
     SecuritySettingsResponse,
+    McpSearchConfig,
 )
 
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+
+@router.get("/settings/mcp-search")
+def get_mcp_search() -> dict[str, Any]:
+    return get_container().mcp_search.config()
+
+
+@router.put("/settings/mcp-search")
+def save_mcp_search(request: McpSearchConfig) -> dict[str, Any]:
+    try:
+        return get_container().mcp_search.save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/mcp-search/test")
+def test_mcp_search() -> dict[str, Any]:
+    try:
+        return get_container().mcp_search.test()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _provider_response(provider: dict[str, Any]) -> ProviderConfigResponse:

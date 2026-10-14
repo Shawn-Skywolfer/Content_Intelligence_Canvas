@@ -72,6 +72,7 @@ class CanvasSaveRequest(BaseModel):
     nodes: list[CanvasNode]
     edges: list[CanvasEdge]
     viewport: dict[str, float] = Field(default_factory=dict)
+    base_updated_at: str | None = None
 
 
 class CanvasResponse(BaseModel):
@@ -122,8 +123,23 @@ class WorkflowResponse(BaseModel):
 class MagicRequest(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=20)
     instruction: str = Field(min_length=2, max_length=1000)
-    output_type: str = "insight"
+    output_type: Literal["insight", "challenge", "creative_pattern", "note", "output"] = "insight"
     negative_prompt: str = Field(default="", max_length=2000)
+    web_search: bool = False
+    format: str = "wechat"
+    duration_seconds: int = Field(default=90, ge=15, le=600)
+
+
+class McpSearchConfig(BaseModel):
+    name: str = Field(default="Tavily", max_length=80)
+    url: str = Field(default="https://mcp.tavily.com/mcp/", max_length=2048)
+    api_key: str = Field(default="", max_length=2048)
+    tool_name: str = Field(default="tavily_search", max_length=120)
+    enabled: bool = False
+    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    proxy_url: str = Field(default="", max_length=2048)
+    proxy_username: str = Field(default="", max_length=256)
+    proxy_password: str = Field(default="", max_length=2048)
 
 
 class NodeGenerateRequest(BaseModel):

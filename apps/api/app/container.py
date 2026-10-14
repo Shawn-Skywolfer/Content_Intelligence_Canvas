@@ -15,6 +15,7 @@ from app.services.knowledge.wiki_reasoning import WikiReasoningService
 from app.services.retrieval.embedding import LocalHashEmbeddingProvider
 from app.services.retrieval.hybrid import HybridRetrievalService
 from app.services.workflow import ContentWorkflowService
+from app.services.mcp_search import McpSearchService
 
 
 class AppContainer:
@@ -24,6 +25,7 @@ class AppContainer:
         self.embeddings = LocalHashEmbeddingProvider(settings.retrieval.embedding_dimensions)
         self.manifest = KnowledgeManifestRepository(settings.data_dir / "app.db")
         self.workspace = WorkspaceRepository(settings.data_dir / "app.db")
+        self.workspace.interrupt_magic_jobs()
         self.secrets = LocalSecretStore(settings.data_dir / "secrets.json")
         self.chunk_store = LanceChunkStore(
             settings.data_dir / "lancedb", self.embeddings.dimensions
@@ -41,9 +43,11 @@ class AppContainer:
             self.manifest, self.chunk_store, self.embeddings, settings.retrieval
         )
         self.ai = AIProviderGateway(self.workspace, self.secrets)
+        self.mcp_search = McpSearchService(self.workspace, self.secrets)
         self.wiki_reasoning = WikiReasoningService(self.retrieval, self.chunk_store, self.ai)
         self.workflow = ContentWorkflowService(
-            self.workspace, self.retrieval, self.chunk_store, self.ai, self.wiki_reasoning
+            self.workspace, self.retrieval, self.chunk_store, self.ai, self.wiki_reasoning,
+            self.mcp_search,
         )
 
 

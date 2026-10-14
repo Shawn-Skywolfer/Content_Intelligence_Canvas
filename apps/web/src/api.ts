@@ -63,6 +63,12 @@ export type ContentJob = {
   progress: number; phase: string; detail: string; error?: string;
   result?: { asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string };
 };
+export type MagicJob = {
+  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed";
+  progress: number; phase: string; detail: string; error?: string | null; created_at: string;
+  result?: { node: CanvasNode; run_id: string; used_llm: boolean; message: string } | null;
+};
+export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy"; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -105,7 +111,7 @@ export const api = {
   deleteProject: (projectId: string) => request<void>(`/api/projects/${projectId}`, { method: "DELETE" }),
   getCanvas: (projectId: string) => request<CanvasData>(`/api/projects/${projectId}/canvas`),
   saveCanvas: (projectId: string, canvas: CanvasData) => request<CanvasData>(`/api/projects/${projectId}/canvas`, {
-    method: "PUT", body: JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, viewport: canvas.viewport }),
+    method: "PUT", body: JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, viewport: canvas.viewport, base_updated_at: canvas.updated_at }),
   }),
   createNode: (projectId: string, node: Partial<CanvasNode>) => request<CanvasNode>(`/api/projects/${projectId}/nodes`, {
     method: "POST", body: JSON.stringify(node),
@@ -133,6 +139,11 @@ export const api = {
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt }),
     }),
+  startMagic: (projectId: string, nodeIds: string[], instruction: string, outputType: string, negativePrompt: string, webSearch: boolean, format: string, durationSeconds: number) =>
+    request<MagicJob>(`/api/projects/${projectId}/magic/start`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt, web_search: webSearch, format, duration_seconds: durationSeconds }),
+    }),
+  listMagicJobs: (projectId: string) => request<MagicJob[]>(`/api/projects/${projectId}/magic/jobs`),
   generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
       method: "POST", body: JSON.stringify({ instruction, use_llm: useLlm }),
@@ -172,6 +183,9 @@ export const api = {
       method: "POST", body: JSON.stringify(values),
     }),
   getSecurity: () => request<{ protect_internal_data: boolean }>("/api/settings/security"),
+  getMcpSearch: () => request<McpSearchConfig>("/api/settings/mcp-search"),
+  saveMcpSearch: (config: McpSearchConfig) => request<McpSearchConfig>("/api/settings/mcp-search", { method: "PUT", body: JSON.stringify(config) }),
+  testMcpSearch: () => request<{ tools: string[]; message: string }>("/api/settings/mcp-search/test", { method: "POST" }),
   saveSecurity: (protect_internal_data: boolean) => request<{ protect_internal_data: boolean }>("/api/settings/security", {
     method: "PUT", body: JSON.stringify({ protect_internal_data }),
   }),
