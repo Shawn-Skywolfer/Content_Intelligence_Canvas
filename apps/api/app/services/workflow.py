@@ -47,8 +47,8 @@ class ContentWorkflowService:
         emit = progress or (lambda _percent, _phase, _detail: None)
         if not use_llm:
             raise ValueError("快速研究需要使用大模型，请在设置中配置模型")
-        emit(8, "理解研究问题", "正在让大模型规划 Wiki 检索词")
-        hits, trace = self.wiki_reasoning.gather(source_id, query, top_k=max(10, finding_count * 2))
+        emit(8, "阅读知识全貌", "大模型先阅读 overview.md、domain-map.md，再按问题检查关系资料")
+        hits, planning_trace = self.wiki_reasoning.gather(source_id, query, top_k=max(10, finding_count * 2))
         emit(30, "检索 Wiki", f"已按问题召回 {len(hits)} 个候选材料")
         emit(55, "理解与交叉分析", "大模型正在阅读 Wiki 材料并核对事实与来源")
         result, trace = self.ai.complete_json(
@@ -61,6 +61,7 @@ class ContentWorkflowService:
             json.dumps({
                 "research_question": query,
                 "finding_count": finding_count,
+                "agent_context": planning_trace.get("agent_context", {}),
                 "evidence": self.wiki_reasoning.evidence(hits[:16]),
             }, ensure_ascii=False),
         )

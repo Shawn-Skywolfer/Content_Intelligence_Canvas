@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -96,14 +97,16 @@ def select_folder() -> dict[str, str]:
 
 @router.post("/knowledge-sources/{source_id}/refresh")
 async def refresh_source(source_id: str) -> dict:
-    source = get_container().manifest.get_source(source_id)
+    container = get_container()
+    source = container.manifest.get_source(source_id)
     if not source:
         raise HTTPException(404, "Knowledge source not found")
+    context_status = await asyncio.to_thread(container.agent_context.prepare_refresh, source_id)
     try:
-        report = await get_container().indexer.refresh(source["name"], Path(source["root_path"]))
+        report = await container.indexer.refresh(source["name"], Path(source["root_path"]))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return report.to_dict()
+    return {**report.to_dict(), "agent_context": context_status}
 
 
 @router.post("/knowledge/search", response_model=SearchResponse)
@@ -112,7 +115,7 @@ def search(request: SearchRequest) -> SearchResponse:
         raise HTTPException(404, "Knowledge source not found")
     reasoning = get_container().wiki_reasoning
     try:
-        hits, _ = reasoning.gather(
+        hits, planning_trace = reasoning.gather(
             request.source_id,
             request.query,
             top_k=request.top_k,
@@ -124,7 +127,10 @@ def search(request: SearchRequest) -> SearchResponse:
                 "max_per_document": request.max_per_document,
             },
         )
-        answer, hits, trace = reasoning.answer(request.query, hits, top_k=request.top_k)
+        answer, hits, trace = reasoning.answer(
+            request.query, hits, top_k=request.top_k,
+            agent_context=planning_trace.get("agent_context"),
+        )
     except PermissionError as exc:
         raise HTTPException(403, f"模型尚未获准读取内部 Wiki：{exc}。请在设置中确认数据保护选项") from exc
     except ValueError as exc:

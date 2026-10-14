@@ -32,6 +32,8 @@ class LocalVaultConnector:
         def scan() -> list[KnowledgeDocumentRef]:
             refs: list[KnowledgeDocumentRef] = []
             for path in sorted(self.root.rglob("*.md")):
+                if "_agent_context" in path.relative_to(self.root).parts:
+                    continue
                 if not path.is_file() or path.is_symlink():
                     continue
                 resolved = path.resolve()

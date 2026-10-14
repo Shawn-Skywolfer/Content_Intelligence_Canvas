@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,33 @@ def test_research_creates_only_model_authored_and_cited_nodes(tmp_path: Path) ->
     assert all(node["created_by"] == "ai" for node in nodes)
     assert nodes[0]["metadata"]["evidence"][0]["chunk_id"] == "chk_real"
     assert repo.list_runs(project["id"])[0]["model_name"] == "mock-reasoner"
+
+
+def test_research_synthesis_receives_global_context_from_planning(tmp_path: Path) -> None:
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("供电研究", "AIDC 供电")
+    hit = KnowledgeHit("real", "doc", "供电", (), "原始事实", 1, ("fts",),
+                       "power.md", 1, 2, None, ())
+
+    class Wiki:
+        def gather(self, *_args, **_kwargs):
+            return [hit], {"agent_context": {"overview.md": "全局判断", "domain-map.md": "领域关系"}}
+
+        def evidence(self, _hits):
+            return [{"chunk_id": "real", "text": "原始事实"}]
+
+    class Model:
+        def complete_json(self, _system, prompt):
+            payload = json.loads(prompt)
+            assert payload["agent_context"] == {"overview.md": "全局判断", "domain-map.md": "领域关系"}
+            return {"findings": [{"type": "fact", "title": "供电", "body": "原始事实",
+                                  "evidence_chunk_ids": ["real"]}],
+                    "directions": [{"title": f"方向 {i}", "body": "依据供电事实",
+                                    "source_finding_indexes": [0]} for i in range(3)]}, {}
+
+    workflow = ContentWorkflowService(repo, None, None, Model(), Wiki())
+    nodes, *_ = workflow.quick_research(project["id"], "source", "AIDC 供电", 3, True)
+    assert len(nodes) == 4
 
 
 def test_model_error_leaves_no_fake_research_nodes(tmp_path: Path) -> None:
