@@ -128,6 +128,7 @@ class MagicRequest(BaseModel):
     web_search: bool = False
     format: str = "wechat"
     duration_seconds: int = Field(default=90, ge=15, le=600)
+    upstream_depth: int = Field(default=6, ge=0, le=12)
 
 
 class McpSearchConfig(BaseModel):

@@ -758,8 +758,16 @@ class WorkspaceRepository:
         if not values:
             return
         with self._connect() as db:
-            db.execute(f"UPDATE magic_jobs SET {','.join(key + '=?' for key in values)},updated_at=? WHERE job_id=?",
+            db.execute(f"UPDATE magic_jobs SET {','.join(key + '=?' for key in values)},updated_at=? WHERE job_id=? AND status='running'",
                        (*values.values(), utc_now(), job_id))
+
+    def cancel_magic_job(self, job_id: str) -> bool:
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE magic_jobs SET status='cancelled',phase='已取消',detail='任务已由用户取消',error=NULL,updated_at=? WHERE job_id=? AND status='running'",
+                (utc_now(), job_id),
+            )
+        return cursor.rowcount > 0
 
     def get_magic_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as db:
@@ -967,9 +975,11 @@ class WorkspaceRepository:
 
     def active_provider(self) -> dict[str, Any] | None:
         with self._connect() as db:
-            row = db.execute(
-                "SELECT * FROM provider_configs WHERE enabled=1 ORDER BY updated_at DESC LIMIT 1"
-            ).fetchone()
+            selected = db.execute("SELECT value_json FROM app_settings WHERE key='active_provider_id'").fetchone()
+            provider_id = json.loads(selected["value_json"]) if selected else None
+            row = db.execute("SELECT * FROM provider_configs WHERE id=? AND enabled=1", (provider_id,)).fetchone() if provider_id else None
+            if row is None:
+                row = db.execute("SELECT * FROM provider_configs WHERE enabled=1 ORDER BY updated_at DESC LIMIT 1").fetchone()
         return self._decode(row, "extra_json")
 
     def list_providers(self) -> list[dict[str, Any]]:

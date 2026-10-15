@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
 from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
+from app.services.ai.cancellation import check_cancelled, current_token
 
 
 class McpSearchService:
@@ -103,7 +105,7 @@ class McpSearchService:
     def _session(self, client: httpx.Client, url: str, headers: dict):
         init = client.post(url, headers=headers, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.15"}},
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.17"}},
         })
         if init.status_code in {400, 404, 405, 422} or (init.status_code == 200 and "application/json" in init.headers.get("content-type", "") and init.json().get("error", {}).get("code") == -32601):
             # MCP 2026-07-28 uses independent, stateless requests instead of initialize.
@@ -118,11 +120,12 @@ class McpSearchService:
 
     def _tools(self, client: httpx.Client, url: str, headers: dict) -> list[dict]:
         modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
-        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.15"}}} if modern else {}
+        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.17"}}} if modern else {}
         response = client.post(url, headers={**headers, **({"Mcp-Method": "tools/list"} if modern else {})}, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": params})
         return self._response(response).get("tools", [])
 
     def test(self) -> dict:
+        started = time.perf_counter()
         config, url, headers = self._connect()
         try:
             with httpx.Client(timeout=25, follow_redirects=True, **self._client_options(config, url)) as client:
@@ -131,35 +134,48 @@ class McpSearchService:
         except httpx.HTTPError as exc:
             raise ValueError(f"MCP 连接失败：{type(exc).__name__}；请检查网络和代理设置") from exc
         names = [item.get("name", "") for item in tools]
-        return {"tools": names, "message": f"已连接 {config.get('name')}，发现 {len(names)} 个工具"}
+        return {"tools": names, "message": f"已连接 {config.get('name')}，发现 {len(names)} 个工具",
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "endpoint": config.get("url"), "search_tool": config.get("tool_name"),
+                "search_tool_available": config.get("tool_name") in names,
+                "network_mode": config.get("network_mode", "auto")}
 
     def search(self, query: str) -> list[dict]:
         config, url, headers = self._connect()
+        token = current_token()
+        check_cancelled()
         try:
             with httpx.Client(timeout=50, follow_redirects=True, **self._client_options(config, url)) as client:
-                headers = self._session(client, url, headers)
-                tools = self._tools(client, url, headers)
-                requested = config.get("tool_name", "tavily_search")
-                tool = next((item for item in tools if item.get("name") == requested), None)
-                if not tool:
-                    raise ValueError(f"MCP 未提供搜索工具 {requested}；可用工具：{', '.join(item.get('name', '') for item in tools)}")
-                properties = (tool.get("inputSchema") or {}).get("properties") or {}
-                query_field = "query" if "query" in properties or not properties else "q" if "q" in properties else None
-                if not query_field:
-                    raise ValueError(f"搜索工具 {requested} 缺少 query 或 q 参数，请选择兼容的搜索工具")
-                arguments = {query_field: query[:400]}
-                if "max_results" in properties:
-                    arguments["max_results"] = 5
-                modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
-                params = {"name": requested, "arguments": arguments}
-                if modern:
-                    params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.15"}}
-                result = self._response(client.post(url, headers={**headers, **({"Mcp-Method": "tools/call", "Mcp-Name": requested} if modern else {})}, json={
-                    "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                    "params": params,
-                }))
+                if token:
+                    token.bind(client)
+                try:
+                    headers = self._session(client, url, headers)
+                    tools = self._tools(client, url, headers)
+                    requested = config.get("tool_name", "tavily_search")
+                    tool = next((item for item in tools if item.get("name") == requested), None)
+                    if not tool:
+                        raise ValueError(f"MCP 未提供搜索工具 {requested}；可用工具：{', '.join(item.get('name', '') for item in tools)}")
+                    properties = (tool.get("inputSchema") or {}).get("properties") or {}
+                    query_field = "query" if "query" in properties or not properties else "q" if "q" in properties else None
+                    if not query_field:
+                        raise ValueError(f"搜索工具 {requested} 缺少 query 或 q 参数，请选择兼容的搜索工具")
+                    arguments = {query_field: query[:400]}
+                    if "max_results" in properties:
+                        arguments["max_results"] = 5
+                    modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
+                    params = {"name": requested, "arguments": arguments}
+                    if modern:
+                        params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.17"}}
+                    result = self._response(client.post(url, headers={**headers, **({"Mcp-Method": "tools/call", "Mcp-Name": requested} if modern else {})}, json={
+                        "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": params,
+                    }))
+                finally:
+                    if token:
+                        token.unbind(client)
         except httpx.HTTPError as exc:
+            check_cancelled()
             raise ValueError(f"MCP 检索失败：{type(exc).__name__}；请检查网络和代理设置") from exc
+        check_cancelled()
         if result.get("isError"):
             raise ValueError("MCP 搜索工具返回错误：" + str(result.get("content", ""))[:300])
         structured = result.get("structuredContent")

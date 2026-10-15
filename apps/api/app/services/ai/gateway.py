@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
 
 import httpx
+from app.services.ai.cancellation import check_cancelled, current_token
 
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
@@ -185,9 +186,11 @@ class AIProviderGateway:
         proxy_password: str | None = None,
     ) -> httpx.Response:
         errors: list[str] = []
+        token = current_token()
         routes = cls._network_routes(url, network_mode, proxy_url, proxy_username, proxy_password)
         request_timeout = httpx.Timeout(float(timeout), connect=min(float(timeout), 12.0))
         for index, (label, proxy) in enumerate(routes):
+            check_cancelled()
             try:
                 with httpx.Client(
                     trust_env=False,
@@ -196,14 +199,23 @@ class AIProviderGateway:
                     follow_redirects=True,
                     verify=cls._ssl_verification(),
                 ) as client:
-                    response = client.request(method, url, headers=headers, json=json_payload)
+                    if token:
+                        token.bind(client)
+                    try:
+                        response = client.request(method, url, headers=headers, json=json_payload)
+                    finally:
+                        if token:
+                            token.unbind(client)
+                check_cancelled()
                 if response.status_code in {407, 502, 503, 504} and index + 1 < len(routes):
                     errors.append(f"{label}：HTTP {response.status_code}")
                     continue
                 response.extensions["cic_network_route"] = label
                 return response
             except (httpx.TransportError, ValueError, OSError) as exc:
+                check_cancelled()
                 errors.append(f"{label}：{cls._connection_error(exc)}")
+        check_cancelled()
         detail = "；".join(errors) or "没有可用连接方式"
         raise ProviderConnectionError(
             f"自动网络连接失败：{detail}。请在模型配置中切换网络连接方式或填写代理地址"
@@ -300,6 +312,10 @@ class AIProviderGateway:
                 "reachable": True,
                 "authenticated": True,
                 "capability_test": bool(content),
+                "http_status": response.status_code,
+                "route": self._route_label(response),
+                "tested_model": provider["model_name"],
+                "endpoint": self._chat_url(provider["base_url"]),
                 "latency_ms": latency,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "message": (
@@ -314,6 +330,10 @@ class AIProviderGateway:
                 "reachable": True,
                 "authenticated": status not in {401, 403},
                 "capability_test": False,
+                "http_status": status,
+                "route": self._route_label(exc.response),
+                "tested_model": provider["model_name"],
+                "endpoint": self._chat_url(provider["base_url"]),
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "message": self._http_error_message("模型调用失败", exc.response),
@@ -323,6 +343,9 @@ class AIProviderGateway:
                 "reachable": False,
                 "authenticated": False,
                 "capability_test": False,
+                "http_status": None,
+                "tested_model": provider["model_name"],
+                "endpoint": self._chat_url(provider["base_url"]),
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "message": f"连接失败：{exc}",

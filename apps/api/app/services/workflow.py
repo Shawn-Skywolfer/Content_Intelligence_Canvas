@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.repositories.workspace import WorkspaceRepository
 from app.services.content_formats import get_content_format
 from app.services.ai.gateway import AIProviderGateway
+from app.services.ai.cancellation import check_cancelled
 from app.services.knowledge.wiki_reasoning import WikiReasoningService
 from app.services.mcp_search import McpSearchService
 
@@ -144,10 +145,11 @@ class ContentWorkflowService:
         negative_prompt: str = "",
         web_search: bool = False,
         progress: Callable[[int, str, str], None] | None = None,
+        upstream_depth: int = 6,
     ) -> tuple[dict[str, Any], str, bool, str]:
         emit = progress or (lambda _percent, _phase, _detail: None)
         nodes = self._nodes(project_id, node_ids)
-        upstream = self.repository.upstream_nodes(project_id, node_ids)
+        upstream = self.repository.upstream_nodes(project_id, node_ids, max_depth=upstream_depth)
         context_nodes = [*nodes, *upstream]
         emit(18, "检索 Wiki", "正在分析选中节点与上游内容")
         wiki_evidence = self._wiki_context(instruction, context_nodes)
@@ -183,6 +185,7 @@ class ContentWorkflowService:
         except Exception as exc:
             self.repository.finish_run(run_id, [], None, None, error=str(exc))
             raise
+        check_cancelled()
         evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in context_nodes])
         created = self.repository.create_node(
             project_id,
@@ -202,6 +205,7 @@ class ContentWorkflowService:
                     "source_node_titles": [node["title"] for node in nodes],
                     "ai_run_id": run_id,
                     "inherited_upstream_ids": [node["id"] for node in upstream],
+                    "inherited_upstream_depth": upstream_depth,
                     "evidence": evidence,
                     "wiki_context_candidates": [item["chunk_id"] for item in wiki_evidence],
                     "web_sources": web_evidence,
@@ -269,6 +273,7 @@ class ContentWorkflowService:
                     "evidence": evidence,
                     "requires_approval": True,
                     "inherited_upstream_ids": [node["id"] for node in upstream],
+                    "inherited_upstream_depth": upstream_depth,
                     "wiki_context_candidates": [item["chunk_id"] for item in wiki_evidence],
                 },
             },
@@ -292,10 +297,11 @@ class ContentWorkflowService:
         save_as_asset: bool = True,
         progress: Callable[[int, str, str], None] | None = None,
         negative_prompt: str = "",
+        upstream_depth: int = 6,
     ) -> tuple[dict[str, Any] | None, dict[str, Any], str, bool, str]:
         format_config = get_content_format(self.repository, format_name)
         nodes = self._nodes(project_id, node_ids)
-        upstream = self.repository.upstream_nodes(project_id, node_ids)
+        upstream = self.repository.upstream_nodes(project_id, node_ids, max_depth=upstream_depth)
         context_nodes = [*nodes, *upstream]
         wiki_evidence = self._wiki_context(f"{title} {instruction}".strip() or nodes[0]["title"], context_nodes) if use_llm else []
         emit = progress or (lambda _percent, _phase, _detail: None)
@@ -345,6 +351,7 @@ class ContentWorkflowService:
         else:
             emit(45, "本地生成", "未调用外部模型，正在使用本地内容模板")
         emit(78, "生成白板草稿", "正在创建可继续修改的内容节点")
+        check_cancelled()
         evidence = self._merge_evidence([node.get("metadata", {}).get("evidence", []) for node in context_nodes])
         asset = (
             self.repository.create_asset(project_id, format_name, output_title, body, evidence)

@@ -57,6 +57,23 @@ def list_providers() -> list[ProviderConfigResponse]:
     return [_provider_response(item) for item in get_container().workspace.list_providers()]
 
 
+@router.get("/providers/active")
+def active_provider() -> dict[str, str | None]:
+    provider = get_container().workspace.active_provider()
+    return {"provider_id": provider["id"] if provider else None,
+            "model_name": provider["model_name"] if provider else None}
+
+
+@router.post("/providers/{provider_id}/activate")
+def activate_provider(provider_id: str) -> dict[str, str]:
+    repository = get_container().workspace
+    provider = repository.get_provider(provider_id)
+    if not provider or not provider["enabled"]:
+        raise HTTPException(422, "模型不存在或未启用")
+    repository.set_setting("active_provider_id", provider_id)
+    return {"provider_id": provider_id, "model_name": provider["model_name"]}
+
+
 @router.post("/providers", response_model=ProviderConfigResponse)
 def save_provider(request: ProviderConfigRequest) -> ProviderConfigResponse:
     container = get_container()

@@ -31,6 +31,39 @@ def test_parallel_jobs_survive_repository_reload_and_preserve_concurrent_node(tm
     assert all(job["status"] == "failed" for job in reloaded.list_magic_jobs(project["id"]))
 
 
+def test_cancelled_magic_job_cannot_be_completed_by_late_worker(tmp_path):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("测试", "概念", "")
+    job = repo.create_magic_job(project["id"], ["node-1"])
+    assert repo.cancel_magic_job(job["job_id"])
+    repo.update_magic_job(job["job_id"], status="completed", progress=100, phase="生成完成")
+    assert repo.get_magic_job(job["job_id"])["status"] == "cancelled"
+    assert not repo.cancel_magic_job(job["job_id"])
+
+
+def test_selected_upstream_depth_changes_model_context(tmp_path):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("测试", "概念", "")
+    names = ["第一层", "第二层", "第三层", "目标"]
+    nodes = [repo.create_node(project["id"], {"title": name, "body": name}) for name in names]
+    for left, right in zip(nodes, nodes[1:]):
+        repo.create_edge(project["id"], left["id"], right["id"], "context")
+    assert [node["title"] for node in repo.upstream_nodes(project["id"], [nodes[-1]["id"]], max_depth=2)] == ["第三层", "第二层"]
+    assert repo.upstream_nodes(project["id"], [nodes[-1]["id"]], max_depth=0) == []
+    prompts = []
+
+    class AI:
+        def complete(self, _system, prompt):
+            prompts.append(json.loads(prompt))
+            return "加工结果", {"provider": "mock", "model": "mock"}
+
+    workflow = ContentWorkflowService(repo, None, None, AI(), None)
+    workflow._wiki_context = lambda _question, _nodes: []
+    result, *_ = workflow.magic(project["id"], [nodes[-1]["id"]], "提炼观点", "insight", upstream_depth=2)
+    assert [node["title"] for node in prompts[0]["inherited_upstream_context"]] == ["第三层", "第二层"]
+    assert result["metadata"]["inherited_upstream_depth"] == 2
+
+
 def test_streamable_mcp_search_discovers_tool_and_redacts_key(tmp_path, monkeypatch):
     repo = WorkspaceRepository(tmp_path / "app.db")
     service = McpSearchService(repo, LocalSecretStore(tmp_path / "secrets.json"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from app.adapters.knowledge.local_vault import LocalVaultConnector
 from app.domain.knowledge import EmbeddingProvider
@@ -48,7 +49,8 @@ class WikiIndexService:
         self.chunker = chunker
         self.embeddings = embeddings
 
-    async def refresh(self, name: str, vault_path: Path) -> IndexReport:
+    async def refresh(self, name: str, vault_path: Path,
+                      progress: Callable[[dict[str, Any]], None] | None = None) -> IndexReport:
         connector = LocalVaultConnector(vault_path)
         health = await connector.health_check()
         if not health.healthy:
@@ -61,11 +63,19 @@ class WikiIndexService:
         current_paths = {ref.relative_path for ref in refs}
         report = IndexReport(source_id=source_id, discovered=len(refs), warnings=[], unresolved_wikilinks=[])
         parsed_by_path = {}
+        if progress:
+            progress({"phase": "扫描完成", "processed": 0, "total": len(refs), "current_path": "", "detail": f"发现 {len(refs)} 个原始词条"})
 
-        for ref in refs:
+        for ordinal, ref in enumerate(refs, start=1):
+            if progress:
+                progress({"phase": "处理词条", "processed": ordinal - 1, "total": len(refs),
+                          "current_path": ref.relative_path, "detail": f"正在检查 {ref.relative_path}"})
             previous = existing.get(ref.relative_path)
             if previous and previous["mtime_ns"] == ref.mtime_ns and previous["size"] == ref.size:
                 report.unchanged += 1
+                if progress:
+                    progress({"processed": ordinal, "total": len(refs), "unchanged": report.unchanged,
+                              "indexed": report.indexed, "warnings_count": len(report.warnings or [])})
                 continue
             try:
                 raw_document = await connector.read_document(ref)
@@ -83,8 +93,13 @@ class WikiIndexService:
                 report.chunks_written += len(chunks)
             except Exception as exc:  # per-file tolerance is deliberate
                 report.warnings.append({"path": ref.relative_path, "error": str(exc)})
+            if progress:
+                progress({"processed": ordinal, "total": len(refs), "indexed": report.indexed,
+                          "unchanged": report.unchanged, "warnings_count": len(report.warnings or [])})
 
         for deleted_path in sorted(set(existing) - current_paths):
+            if progress:
+                progress({"phase": "清理旧索引", "current_path": deleted_path, "detail": f"移除已删除词条 {deleted_path}"})
             document_id = self.manifest.delete_document(source_id, deleted_path)
             if document_id:
                 self.store.delete_document(document_id)

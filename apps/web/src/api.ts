@@ -1,6 +1,14 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
 export type Source = { id: string; name: string; connector_type: string; root_path: string; enabled: boolean };
+export type RefreshJob = {
+  job_id: string; source_id: string; status: "running" | "completed" | "failed";
+  phase: string; detail: string; current_path: string; processed: number; total: number;
+  indexed: number; unchanged: number; warnings_count: number; elapsed_seconds: number;
+  estimated_total_seconds: number | null; error: string | null;
+  agent_context: { status: string; message?: string; summary?: string; model?: string } | null;
+  report: { discovered: number; indexed: number; deleted: number; warnings: Array<{ path: string; error: string }> } | null;
+};
 export type Hit = {
   chunk_id: string; document_id: string; title: string; heading_path: string[]; excerpt: string;
   score: number; retrieval_reasons: string[]; source_path: string; start_line: number; end_line: number;
@@ -64,7 +72,7 @@ export type ContentJob = {
   result?: { asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string };
 };
 export type MagicJob = {
-  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed";
+  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed" | "cancelled";
   progress: number; phase: string; detail: string; error?: string | null; created_at: string;
   result?: { node: CanvasNode; run_id: string; used_llm: boolean; message: string } | null;
 };
@@ -96,6 +104,9 @@ export const api = {
   deleteSource: (sourceId: string) => request<void>(`/api/knowledge-sources/${sourceId}`, { method: "DELETE" }),
   selectFolder: () => request<{ path: string }>("/api/system/select-folder", { method: "POST" }),
   refresh: (sourceId: string) => request<Record<string, unknown>>(`/api/knowledge-sources/${sourceId}/refresh`, { method: "POST" }),
+  startRefresh: (sourceId: string) => request<RefreshJob>(`/api/knowledge-sources/${sourceId}/refresh/start`, { method: "POST" }),
+  getRefreshJob: (jobId: string) => request<RefreshJob>(`/api/knowledge-sources/refresh/jobs/${jobId}`),
+  latestRefresh: (sourceId: string) => request<RefreshJob | null>(`/api/knowledge-sources/${sourceId}/refresh/latest`),
   search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[]; answer: string; provider_name: string; model_name: string }>("/api/knowledge/search", {
     method: "POST", body: JSON.stringify({ source_id: sourceId, query, ...options }),
   }),
@@ -139,11 +150,12 @@ export const api = {
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt }),
     }),
-  startMagic: (projectId: string, nodeIds: string[], instruction: string, outputType: string, negativePrompt: string, webSearch: boolean, format: string, durationSeconds: number) =>
+  startMagic: (projectId: string, nodeIds: string[], instruction: string, outputType: string, negativePrompt: string, webSearch: boolean, format: string, durationSeconds: number, upstreamDepth = 6) =>
     request<MagicJob>(`/api/projects/${projectId}/magic/start`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt, web_search: webSearch, format, duration_seconds: durationSeconds }),
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt, web_search: webSearch, format, duration_seconds: durationSeconds, upstream_depth: upstreamDepth }),
     }),
   listMagicJobs: (projectId: string) => request<MagicJob[]>(`/api/projects/${projectId}/magic/jobs`),
+  cancelMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/cancel`, { method: "POST" }),
   generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
       method: "POST", body: JSON.stringify({ instruction, use_llm: useLlm }),
@@ -174,6 +186,8 @@ export const api = {
     request<{ asset: ContentAsset; node: CanvasNode; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/save-asset`, { method: "POST" }),
 
   listProviders: () => request<Provider[]>("/api/providers"),
+  activeProvider: () => request<{ provider_id: string | null; model_name: string | null }>("/api/providers/active"),
+  activateProvider: (id: string) => request<{ provider_id: string; model_name: string }>(`/api/providers/${id}/activate`, { method: "POST" }),
   saveProvider: (provider: Record<string, unknown>) => request<Provider>("/api/providers", {
     method: "POST", body: JSON.stringify(provider),
   }),
@@ -185,7 +199,7 @@ export const api = {
   getSecurity: () => request<{ protect_internal_data: boolean }>("/api/settings/security"),
   getMcpSearch: () => request<McpSearchConfig>("/api/settings/mcp-search"),
   saveMcpSearch: (config: McpSearchConfig) => request<McpSearchConfig>("/api/settings/mcp-search", { method: "PUT", body: JSON.stringify(config) }),
-  testMcpSearch: () => request<{ tools: string[]; message: string }>("/api/settings/mcp-search/test", { method: "POST" }),
+  testMcpSearch: () => request<{ tools: string[]; message: string; latency_ms: number; endpoint: string; search_tool: string; search_tool_available: boolean; network_mode: string }>("/api/settings/mcp-search/test", { method: "POST" }),
   saveSecurity: (protect_internal_data: boolean) => request<{ protect_internal_data: boolean }>("/api/settings/security", {
     method: "PUT", body: JSON.stringify({ protect_internal_data }),
   }),

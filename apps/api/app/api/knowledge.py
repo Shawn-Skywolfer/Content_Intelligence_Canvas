@@ -19,6 +19,7 @@ from app.schemas.knowledge import (
     SearchResponse,
 )
 from app.services.knowledge.indexer import source_id_for_path
+from app.services.knowledge.source_path import clean_local_path
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
@@ -40,9 +41,9 @@ def list_sources() -> list[KnowledgeSourceResponse]:
 
 @router.post("/knowledge-sources", response_model=KnowledgeSourceResponse)
 def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceResponse:
-    path = Path(request.root_path).expanduser().resolve()
+    path = Path(clean_local_path(request.root_path)).expanduser().resolve()
     if not path.is_dir():
-        raise HTTPException(422, "root_path must be an existing local directory")
+        raise HTTPException(422, f"知识库目录不存在或无法访问：{path}。请检查路径，或点击“浏览文件夹”选择目录")
     source_id = source_id_for_path(path)
     get_container().manifest.upsert_source(source_id, request.name, str(path))
     return KnowledgeSourceResponse(
@@ -107,6 +108,29 @@ async def refresh_source(source_id: str) -> dict:
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {**report.to_dict(), "agent_context": context_status}
+
+
+@router.post("/knowledge-sources/{source_id}/refresh/start")
+def start_refresh(source_id: str) -> dict:
+    try:
+        return get_container().refresh_jobs.start(source_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/knowledge-sources/{source_id}/refresh/latest")
+def latest_refresh(source_id: str) -> dict | None:
+    if not get_container().manifest.get_source(source_id):
+        raise HTTPException(404, "知识源不存在")
+    return get_container().refresh_jobs.latest_for_source(source_id)
+
+
+@router.get("/knowledge-sources/refresh/jobs/{job_id}")
+def get_refresh_job(job_id: str) -> dict:
+    job = get_container().refresh_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "刷新任务不存在或应用已重启")
+    return job
 
 
 @router.post("/knowledge/search", response_model=SearchResponse)

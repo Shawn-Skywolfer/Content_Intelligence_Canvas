@@ -13,6 +13,7 @@ from app.services.knowledge.indexer import WikiIndexService
 from app.services.knowledge.parser import WikiMarkdownParser
 from app.services.knowledge.wiki_reasoning import WikiReasoningService
 from app.services.knowledge.agent_context import AgentContextService
+from app.services.knowledge.refresh_jobs import KnowledgeRefreshJobs
 from app.services.retrieval.embedding import LocalHashEmbeddingProvider
 from app.services.retrieval.hybrid import HybridRetrievalService
 from app.services.workflow import ContentWorkflowService
@@ -45,6 +46,7 @@ class AppContainer:
         )
         self.ai = AIProviderGateway(self.workspace, self.secrets)
         self.agent_context = AgentContextService(self.manifest, self.ai)
+        self.refresh_jobs = KnowledgeRefreshJobs(self.manifest, self.indexer, self.agent_context)
         self.mcp_search = McpSearchService(self.workspace, self.secrets)
         self.wiki_reasoning = WikiReasoningService(self.retrieval, self.chunk_store, self.ai, self.agent_context)
         self.workflow = ContentWorkflowService(

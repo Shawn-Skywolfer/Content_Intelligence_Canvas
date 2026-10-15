@@ -140,7 +140,7 @@ summary { cursor: pointer; font-weight: 750; }
 .canvas-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: calc(100vh - 205px); min-height: 620px; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: white; box-shadow: 0 16px 42px rgba(30,40,55,.08); }
 .canvas-shortcuts { display: flex; flex-wrap: wrap; gap: 7px; margin: -12px 0 10px; }
 .canvas-shortcuts span { padding: 5px 9px; border: 1px solid #dfe3e9; border-radius: 999px; background: rgba(255,255,255,.8); color: #6e7887; font-size: 10px; }
-.flow-workspace { height: calc(100vh - 245px); min-height: 600px; }
+.flow-workspace { height: calc(100vh - 320px); min-height: 520px; }
 .flow-workspace .board-wrap { position: relative; display: block; }
 .flow-workspace .react-flow { background: #f7f8fa; }
 .react-flow__node-canvas { border-radius: 13px; }
@@ -284,7 +284,7 @@ summary { cursor: pointer; font-weight: 750; }
 .settings-tabs button:focus-visible { outline: 2px solid #cf001b; outline-offset: 2px; }
 .settings-tab-body { max-width: 1100px; display: block; }
 .settings-tab-body > .settings-card { width: 100%; }
-.canvas-task-monitor { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; background: #fff; border: 1px solid #dbe2ea; border-radius: 14px; padding: 11px 16px; margin: 0 0 12px; box-shadow: 0 4px 20px #1e2d4610; color: #293550; }
+.canvas-task-monitor { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; background: #fff; border: 1px solid #dbe2ea; border-radius: 14px; padding: 11px 16px; margin: 12px 0 0; box-shadow: 0 4px 20px #1e2d4610; color: #293550; max-height: 170px; overflow: auto; }
 .canvas-task-monitor > strong { min-width: 190px; padding: 6px 0; }
 .canvas-task-list { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
 .canvas-task { position: relative; min-width: min(260px, 100%); flex: 1 1 260px; max-width: 420px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #f5f7fb; border-radius: 10px; padding: 6px 10px 9px; font-size: 12px; }
@@ -300,6 +300,26 @@ summary { cursor: pointer; font-weight: 750; }
 .model-discovery button { margin-bottom: 0; }
 .source-list > div { align-items: flex-start; }
 .source-actions { flex-wrap: wrap; justify-content: flex-end; }
+.source-list > .source-entry { display: block; padding: 16px; background: #fff; border: 1px solid #dce2ea; }
+.source-entry-top { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+.source-entry-top > div:first-child { min-width: 0; }
+.settings-feedback, .settings-progress { margin-top: 14px; padding: 14px 16px; border: 1px solid #dce3ec; border-radius: 12px; background: #f8fafc; color: #34425b; text-align: left; line-height: 1.55; overflow-wrap: anywhere; }
+.settings-progress.running { border-color: #b8cde5; background: #f6f9fe; }
+.settings-progress.failed { border-color: #f1c0c4; background: #fff7f7; }
+.settings-progress.completed { border-color: #b9ddcd; background: #f6fbf8; }
+.settings-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-progress-head strong { color: #17253c; }
+.settings-progress-head span { flex-shrink: 0; font-variant-numeric: tabular-nums; color: #607088; font-size: 12px; }
+.settings-progress p { margin: 6px 0 0; font-size: 12px; }
+.settings-progress code { white-space: normal; word-break: break-all; }
+.settings-progress-track { height: 6px; margin: 10px 0; background: #e4eaf2; border-radius: 99px; overflow: hidden; }
+.settings-progress-track i { display: block; height: 100%; background: #c7000b; transition: width .4s ease; }
+.settings-progress.completed .settings-progress-track i { background: #168259; }
+.settings-progress .settings-error { color: #ad1d2a; font-weight: 650; }
+.settings-progress details { margin-top: 8px; }
+.model-option { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #dce3ec; border-radius: 10px; padding-right: 7px; background: #fff; }
+.model-option > button:first-child { border: 0; }
+.model-option .text-button { font-size: 11px; }
 .provider-presets button { height: 100%; align-items: flex-start; justify-content: center; flex-direction: column; }
 .content-layout { grid-template-columns: minmax(300px, 350px) minmax(0, 1fr); }
 .generator { top: 18px; }

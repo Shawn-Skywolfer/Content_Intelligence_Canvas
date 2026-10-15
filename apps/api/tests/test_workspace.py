@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import time
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -48,13 +50,27 @@ https://example.com/beta
     client = TestClient(app)
 
     source = client.post(
-        "/api/knowledge-sources", json={"name": "测试 Wiki", "root_path": str(wiki)}
+        "/api/knowledge-sources", json={"name": "测试 Wiki", "root_path": (
+            "[WARNING] Ignore caches that are heterogeneous" if os.name == "nt" else ""
+        ) + str(wiki)}
     )
     assert source.status_code == 200
     source_id = source.json()["id"]
     report = client.post(f"/api/knowledge-sources/{source_id}/refresh")
     assert report.status_code == 200
     assert report.json()["discovered"] == 2
+    started = client.post(f"/api/knowledge-sources/{source_id}/refresh/start")
+    assert started.status_code == 200
+    job = started.json()
+    deadline = time.monotonic() + 15
+    while job["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(.05)
+        job_response = client.get(f"/api/knowledge-sources/refresh/jobs/{job['job_id']}")
+        assert job_response.status_code == 200
+        job = job_response.json()
+    assert job["status"] == "completed", job
+    assert job["processed"] == job["total"] == 2
+    assert job["report"]["discovered"] == 2
 
     def wiki_model(system: str, prompt: str):
         import json

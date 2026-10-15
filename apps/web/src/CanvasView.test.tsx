@@ -48,6 +48,21 @@ const canvas: CanvasData = {
 
 describe("白板进入与节点编辑", () => {
   beforeEach(() => { vi.spyOn(api, "listMagicJobs").mockResolvedValue([]); });
+  it("AI 共创草稿按节点保存，切换时不串用 Prompt", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const props = { project, canvas, setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() };
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { ...props, selectedIds: ["idea"] })); });
+    const prompt = () => renderer.root.findAllByType("textarea").find((item) => item.props.placeholder?.includes("结合上游证据"));
+    await act(async () => { prompt()!.props.onChange({ target: { value: "只属于想法节点的草稿" } }); });
+    await act(async () => { renderer.update(createElement(CanvasView, { ...props, selectedIds: ["brief"] })); });
+    expect(prompt()!.props.value).toBe("");
+    await act(async () => { prompt()!.props.onChange({ target: { value: "简报节点草稿" } }); });
+    await act(async () => { renderer.update(createElement(CanvasView, { ...props, selectedIds: ["idea"] })); });
+    expect(prompt()!.props.value).toBe("只属于想法节点的草稿");
+    await act(async () => { renderer.unmount(); });
+  });
   it("刷新后恢复节点生成进度，其他节点仍可启动独立任务", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
@@ -64,7 +79,7 @@ describe("白板进入与节点编辑", () => {
     const button = renderer.root.findByProps({ children: "AI 加工并生成下游节点" });
     expect(button.props.disabled).toBe(false);
     await act(async () => { button.props.onClick(); });
-    expect(start).toHaveBeenCalledWith("p1", ["brief"], "整理简报中的新洞察", "insight", "", false, "wechat", 90);
+    expect(start).toHaveBeenCalledWith("p1", ["brief"], "整理简报中的新洞察", "insight", "", false, "wechat", 90, 6);
     await act(async () => { renderer.unmount(); });
   });
   it("AI 共创内选择自定义输出形态，并按配置生成下游内容节点", async () => {
@@ -80,7 +95,7 @@ describe("白板进入与节点编辑", () => {
     await act(async () => { selector!.props.onChange({ target: { value: "output" } }); });
     expect(renderer.root.findAllByType("option").some((item) => item.children.includes("播客提纲"))).toBe(true);
     await act(async () => { renderer.root.findByProps({ children: "生成内容输出节点" }).props.onClick(); });
-    expect(start).toHaveBeenCalledWith("p1", ["idea"], "结合节点内容生成草稿", "output", "", false, "podcast", 90);
+    expect(start).toHaveBeenCalledWith("p1", ["idea"], "结合节点内容生成草稿", "output", "", false, "podcast", 90, 6);
     await act(async () => { renderer.unmount(); });
   });
 

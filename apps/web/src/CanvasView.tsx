@@ -136,11 +136,11 @@ function rerouteEdges(board: CanvasData): CanvasData {
   };
 }
 
-function upstreamIds(board: CanvasData, targetIds: string[]): string[] {
+function upstreamIds(board: CanvasData, targetIds: string[], maxDepth = 6): string[] {
   const target = new Set(targetIds);
   const found = new Set<string>();
   let frontier = [...targetIds];
-  while (frontier.length) {
+  for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
     const next: string[] = [];
     for (const edge of board.edges) {
       if (!frontier.includes(edge.target_node_id) || target.has(edge.source_node_id) || found.has(edge.source_node_id)) continue;
@@ -174,18 +174,25 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   beforeGenerate?: () => Promise<void>;
   setStatus: (value: string) => void;
 }) {
-  const [magic, setMagic] = useState("");
-  const [magicNegativePrompt, setMagicNegativePrompt] = useState("");
-  const [magicType, setMagicType] = useState("insight");
+  type Draft = { magic: string; negative: string; type: string; web: boolean; format: string; duration: number; depth: number };
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const draftKey = `${project?.id ?? ""}:${[...selectedIds].sort().join("|")}`;
+  const [defaultFormat, setDefaultFormat] = useState("wechat");
+  const draft: Draft = drafts[draftKey] ?? { magic: "", negative: "", type: "insight", web: false, format: defaultFormat, duration: 90, depth: 6 };
+  const updateDraft = (changes: Partial<Draft>) => setDrafts((current) => ({ ...current, [draftKey]: { ...(current[draftKey] ?? draft), ...changes } }));
+  const magic = draft.magic;
+  const magicNegativePrompt = draft.negative;
+  const magicType = draft.type;
+  const webSearch = draft.web;
+  const contentFormat = draft.format;
+  const contentDuration = draft.duration;
+  const upstreamDepth = draft.depth;
   const [busy, setBusy] = useState(false);
-  const [webSearch, setWebSearch] = useState(false);
   const [magicJobs, setMagicJobs] = useState<MagicJob[]>([]);
   const completedJobsRef = useRef(new Set<string>());
   const [submittingMagic, setSubmittingMagic] = useState(false);
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
-  const [contentFormat, setContentFormat] = useState("wechat");
   const [contentFormats, setContentFormats] = useState<ContentFormat[]>([]);
-  const [contentDuration, setContentDuration] = useState(90);
   const [displayNodes, setDisplayNodes] = useState<FlowNode[]>([]);
   const [expandedNodeId, setExpandedNodeId] = useState("");
   const [summaryInFlight, setSummaryInFlight] = useState("");
@@ -230,7 +237,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     api.listContentFormats().then((formats) => {
       if (!active) return;
       setContentFormats(formats);
-      setContentFormat((current) => formats.some((item) => item.id === current) ? current : formats[0]?.id ?? "");
+      setDefaultFormat(formats[0]?.id ?? "");
     }).catch((error) => setStatus(`读取输出形态失败：${errorText(error)}`));
     return () => { active = false; };
   }, [setStatus]);
@@ -480,7 +487,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const board = canvas;
   const selected = board.nodes.filter((node) => selectedIds.includes(node.id));
   const primary = selected.length === 1 ? selected[0] : null;
-  const inheritedIds = upstreamIds(board, selectedIds);
+  const inheritedIds = upstreamIds(board, selectedIds, upstreamDepth);
   const flowEdges: Edge[] = board.edges.map((edge) => ({
     id: edge.id,
     source: edge.source_node_id,
@@ -635,15 +642,24 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       return node?.type === "frame" ? (Array.isArray(node.metadata.member_ids) ? node.metadata.member_ids as string[] : []) : [id];
     }))];
     if (!inputs.length) { setStatus("分组中没有可加工的节点"); return; }
+    const submittedDraftKey = draftKey;
     setSubmittingMagic(true);
     try {
       if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       const job = await api.startMagic(activeProject.id, inputs, magicType === "output" && !magic.trim() ? "结合节点内容生成草稿" : magic,
-        magicType, magicNegativePrompt, magicType === "insight" && webSearch, contentFormat, contentDuration);
+        magicType, magicNegativePrompt, magicType === "insight" && webSearch, contentFormat, contentDuration, upstreamDepth);
       setMagicJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
       setStatus(`已启动生成任务：${job.job_id}`);
-      setMagic(""); setMagicNegativePrompt("");
+      setDrafts((current) => { const next = { ...current }; delete next[submittedDraftKey]; return next; });
     } catch (error) { setStatus(errorText(error)); } finally { setSubmittingMagic(false); }
+  }
+
+  async function cancelMagic(jobId: string) {
+    try {
+      const cancelled = await api.cancelMagicJob(jobId);
+      setMagicJobs((current) => current.map((item) => item.job_id === jobId ? cancelled : item));
+      setStatus("任务已取消，不会生成下游节点");
+    } catch (error) { setStatus(`取消任务失败：${errorText(error)}`); }
   }
 
   async function saveAsAsset() {
@@ -666,17 +682,6 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       <button className="secondary" onClick={organizeConnections}>整理连线</button>
       <button className="secondary" onClick={organizeCanvas}>按类型整理</button>
     </>} />
-    <section className="canvas-task-monitor" aria-label="AI 任务状态">
-      <strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong>
-      <div className="canvas-task-list">{magicJobs.slice(0, 6).map((job) => <div className={`canvas-task ${job.status}`} key={job.job_id}>
-        <span>{job.node_ids.map((id) => board.nodes.find((node) => node.id === id)?.title || "节点已删除").join("、")}</span>
-        <span>{job.phase} · {job.progress}%</span>
-        {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node.id])}>定位结果</button>}
-        {job.status === "failed" && <small title={job.error || job.detail}>{job.error || job.detail}</small>}
-        <div className="canvas-task-track"><i style={{ width: `${job.progress}%` }} /></div>
-      </div>)}</div>
-      {!magicJobs.length && <span>暂无生成任务</span>}
-    </section>
     <div className="canvas-shortcuts"><span>卡片显示模型摘要，点击展开全文</span><span>双击正文编辑 Markdown</span><span>四向端口拖出有向连线</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
     <div className="canvas-workspace flow-workspace">
       <section className="board-wrap">
@@ -725,17 +730,30 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : selectedEdgeIds.length ? `已选择 ${selectedEdgeIds.length} 条连接` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以将多个节点综合为一个新的下游节点。" : "从任一节点的上下左右端口拖到另一个节点，即可创建有向连接。"}</p></div>}</div>
         {!!selectedIds.length && <section className="ai-copilot">
           <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 && primary?.type !== "frame" ? "由当前节点生成下游" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
-          <p className="context-note">{inheritedIds.length ? `将自动继承 ${inheritedIds.length} 个上游节点作为上下文。` : "有向连接的上游节点会自动作为上下文。"} 原节点保留；生成结果进入新的下游节点，并标注加工来源。框选多个节点可直接综合，或先创建分组再加工。</p>
-          <label>新节点类型<select value={magicType} onChange={(event) => setMagicType(event.target.value)}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
-          {magicType === "insight" && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} />检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）</label>}
-          {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => setContentFormat(event.target.value)}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => setContentDuration(Number(event.target.value))} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
-          <label>{magicType === "output" ? "正向 Prompt（要做的事情）" : "处理要求"}<textarea value={magic} onChange={(event) => setMagic(event.target.value)} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
-          {magicType === "output" && <label>负向 Prompt（不要做的事情）<textarea value={magicNegativePrompt} onChange={(event) => setMagicNegativePrompt(event.target.value)} placeholder="例如：不要编造案例；不要使用夸张标题；不要忽略证据不足的部分。" /></label>}
+          <label>可继承的上游节点层级<select value={upstreamDepth} onChange={(event) => updateDraft({ depth: Number(event.target.value) })}><option value={0}>不继承</option><option value={1}>仅上游一层</option><option value={2}>上游两层</option><option value={3}>上游三层</option><option value={6}>上游六层（默认）</option><option value={12}>上游十二层</option></select></label>
+          <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 原节点保留；结果进入新的下游节点并标注加工来源。</p>
+          <label>新节点类型<select value={magicType} onChange={(event) => updateDraft({ type: event.target.value })}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
+          {magicType === "insight" && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）</label>}
+          {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
+          <label>{magicType === "output" ? "正向 Prompt（要做的事情）" : "处理要求"}<textarea value={magic} onChange={(event) => updateDraft({ magic: event.target.value })} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
+          {magicType === "output" && <label>负向 Prompt（不要做的事情）<textarea value={magicNegativePrompt} onChange={(event) => updateDraft({ negative: event.target.value })} placeholder="例如：不要编造案例；不要使用夸张标题；不要忽略证据不足的部分。" /></label>}
           {magicJobs.filter((job) => job.status === "running" && job.node_ids.some((id) => selectedIds.includes(id))).map((job) => <div className="ai-progress" role="status" key={job.job_id}><span className="ai-progress-spinner" />{job.phase} · {job.progress}% · {job.detail}</div>)}
           <button className="primary ai-run" disabled={submittingMagic || (magicType === "output" ? !contentFormat : !magic.trim()) || magicJobs.some((job) => job.status === "running" && job.node_ids.length === selectedIds.length && job.node_ids.every((id) => selectedIds.includes(id)))} onClick={runMagic}>{submittingMagic ? "正在提交…" : magicType === "output" ? "生成内容输出节点" : "AI 加工并生成下游节点"}</button>
         </section>}
       </aside>
     </div>
+    <section className="canvas-task-monitor" aria-label="AI 任务状态">
+      <strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong>
+      <div className="canvas-task-list">{magicJobs.slice(0, 6).map((job) => <div className={`canvas-task ${job.status}`} key={job.job_id}>
+        <span>{job.node_ids.map((id) => board.nodes.find((node) => node.id === id)?.title || "节点已删除").join("、")}</span>
+        <span>{job.phase} · {job.progress}%</span>
+        {job.status === "running" && <button className="text-button danger" onClick={() => void cancelMagic(job.job_id)}>取消</button>}
+        {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node.id])}>定位结果</button>}
+        {job.status === "failed" && <small title={job.error || job.detail}>{job.error || job.detail}</small>}
+        <div className="canvas-task-track"><i style={{ width: `${job.progress}%` }} /></div>
+      </div>)}</div>
+      {!magicJobs.length && <span>暂无生成任务</span>}
+    </section>
     {expandedNodeId && (() => {
       const expanded = board.nodes.find((node) => node.id === expandedNodeId);
       return expanded ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setExpandedNodeId(""); }}>

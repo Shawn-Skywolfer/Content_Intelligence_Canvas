@@ -31,6 +31,26 @@ const run: ResearchRun = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("历史研究与项目入口", () => {
+  it("添加知识源时清理粘贴警告，并在设置页显示结果", async () => {
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([]);
+    vi.spyOn(api, "listSources").mockResolvedValue([]);
+    vi.spyOn(api, "listProviders").mockResolvedValue([]);
+    vi.spyOn(api, "activeProvider").mockResolvedValue({ provider_id: null, model_name: null });
+    vi.spyOn(api, "getSecurity").mockResolvedValue({ protect_internal_data: true });
+    vi.spyOn(api, "listContentFormats").mockResolvedValue([]);
+    vi.spyOn(api, "getMcpSearch").mockResolvedValue({ name: "Tavily", url: "https://example.org/mcp", tool_name: "search", enabled: false, has_api_key: false, network_mode: "auto", proxy_url: "", proxy_username: "", has_proxy_password: false });
+    const create = vi.spyOn(api, "createSource").mockResolvedValue({ id: "wiki", name: "本地知识库", root_path: "D:\\Wiki\\wiki", connector_type: "local_vault", enabled: true });
+    const view = render(<App />);
+    fireEvent.click(view.getByRole("button", { name: "设置" }));
+    const field = view.container.querySelector(".folder-picker input") as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "[WARNING] Ignore caches that are heterogeneousD:\\Wiki\\wiki" } });
+    expect(field.value).toBe("D:\\Wiki\\wiki");
+    fireEvent.click(view.getByRole("button", { name: "添加知识源" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith("本地知识库", "D:\\Wiki\\wiki"));
+    await waitFor(() => expect(view.getByText(/已添加，请点击刷新知识库/)).toBeTruthy());
+    view.unmount();
+  });
   it("从历史研究和项目卡片进入同一白板均正常显示", async () => {
     vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
     vi.spyOn(api, "listProjects").mockResolvedValue([project]);
