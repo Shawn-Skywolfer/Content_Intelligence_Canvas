@@ -7,6 +7,7 @@ from app.repositories.knowledge_manifest import KnowledgeManifestRepository
 from app.repositories.lance_chunk_store import LanceChunkStore
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.gateway import AIProviderGateway
+from app.services.ai.provider_tests import ProviderTestJobs
 from app.services.ai.secret_store import LocalSecretStore
 from app.services.knowledge.chunker import HeadingAwareChunker
 from app.services.knowledge.indexer import WikiIndexService
@@ -45,6 +46,7 @@ class AppContainer:
             self.manifest, self.chunk_store, self.embeddings, settings.retrieval
         )
         self.ai = AIProviderGateway(self.workspace, self.secrets)
+        self.provider_tests = ProviderTestJobs(self.ai)
         self.agent_context = AgentContextService(self.manifest, self.ai)
         self.refresh_jobs = KnowledgeRefreshJobs(self.manifest, self.indexer, self.agent_context)
         self.mcp_search = McpSearchService(self.workspace, self.secrets)

@@ -50,6 +50,7 @@ export type Provider = {
   is_external: boolean; temperature: number; max_tokens: number; timeout_seconds: number;
   extra: Record<string, unknown>; has_api_key: boolean; has_proxy_password: boolean; created_at: string; updated_at: string;
 };
+export type ProviderTestJob = { job_id: string; provider_id: string; status: "running" | "completed"; phase: string; started_at: number; elapsed_seconds: number; result: Record<string, unknown> | null };
 export type SearchOptions = {
   top_k: number; lexical_weight: number; semantic_weight: number; wikilink_enabled: boolean;
   wikilink_weight: number; max_per_document: number;
@@ -192,6 +193,12 @@ export const api = {
     method: "POST", body: JSON.stringify(provider),
   }),
   testProvider: (providerId: string) => request<Record<string, unknown>>(`/api/providers/${providerId}/test`, { method: "POST" }),
+  startProviderTest: (providerId: string) => request<ProviderTestJob>(`/api/providers/${providerId}/test/start`, { method: "POST" }),
+  providerTestJob: (jobId: string) => request<ProviderTestJob>(`/api/providers/test/jobs/${jobId}`),
+  deleteProvider: (providerId: string) => request<void>(`/api/providers/${providerId}`, { method: "DELETE" }),
+  queryProviderQuota: (providerId: string) => request<{ value: string | number; unit: string; route: string }>(`/api/providers/${providerId}/quota`),
+  exportSettings: () => request<Record<string, unknown>>("/api/settings/export"),
+  importSettings: (backup: Record<string, unknown>) => request<{ message: string; missing_paths: string[] }>("/api/settings/import", { method: "POST", body: JSON.stringify(backup) }),
   discoverModels: (values: { provider_id?: string; base_url: string; api_key?: string | null; timeout_seconds: number; network_mode: string; proxy_url?: string | null; proxy_username?: string | null; proxy_password?: string | null }) =>
     request<{ models: string[]; count: number; latency_ms: number; message: string }>("/api/providers/discover-models", {
       method: "POST", body: JSON.stringify(values),

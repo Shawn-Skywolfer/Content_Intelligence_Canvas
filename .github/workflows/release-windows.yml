@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.17
+      - release/v0.3.18
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.17"
+      RELEASE_TAG: "v0.3.18"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,16 +93,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.17_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.18_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.17.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.17.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.18.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.18.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.17.exe"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.18.exe"
           $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
           $oldRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.8"
           New-Item -ItemType Directory -Force -Path $oldRuntime | Out-Null
@@ -127,7 +127,7 @@ jobs:
           try {
             Start-Process -FilePath $exe | Out-Null
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.17"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.18"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -173,14 +173,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.17
+          name: Content Intelligence Canvas v0.3.18
           body: |
             Windows portable public test build.
 
             大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            v0.3.17 修复粘贴知识库路径时包含工具警告导致添加失败的问题。知识库刷新改为页面内实时显示当前词条、已处理数量、用时、预计总时长与错误；模型与 MCP 测试也在对应设置页展示连接、耗时、结果和排错信息。支持多模型候选及明确选择默认调用模型；“内部”标签可在数据保护开启时调用受信任模型。白板 AI 共创可选择继承上游层级，未提交 Prompt 按节点保留；任务监测移至白板下方并支持取消。
+            v0.3.18 支持删除已有模型配置，并在设置页一键导出、导入模型、知识库路径、MCP、内容形态与本机密钥。模型设置增加可选思考模式与强度、独立短文本测试模型及超时、额度查询接口。真实模型测试实时显示连接线路和阶段，明确区分 HTTP 可达与模型成功返回文本，空文本、仅思考内容都判为失败，并展示响应与 token 用量。设置页标题不再重复。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.17.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.18.exe
           generate_release_notes: true

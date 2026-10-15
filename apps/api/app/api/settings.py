@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
+from pydantic import ValidationError
 
 from fastapi import APIRouter, HTTPException
 
@@ -12,7 +16,10 @@ from app.schemas.workspace import (
     SecuritySettingsRequest,
     SecuritySettingsResponse,
     McpSearchConfig,
+    ContentFormatsRequest,
 )
+from app.services.content_formats import list_content_formats
+from app.services.knowledge.indexer import source_id_for_path
 
 
 router = APIRouter(prefix="/api", tags=["settings"])
@@ -105,6 +112,112 @@ def test_provider(provider_id: str) -> dict[str, Any]:
     if not provider:
         raise HTTPException(404, "模型配置不存在")
     return get_container().ai.health_check(provider)
+
+
+@router.post("/providers/{provider_id}/test/start")
+def start_provider_test(provider_id: str) -> dict[str, Any]:
+    provider = get_container().workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    return get_container().provider_tests.start(provider)
+
+
+@router.get("/providers/test/jobs/{job_id}")
+def get_provider_test(job_id: str) -> dict[str, Any]:
+    job = get_container().provider_tests.get(job_id)
+    if not job:
+        raise HTTPException(404, "模型测试任务不存在")
+    return job
+
+
+@router.get("/providers/{provider_id}/quota")
+def query_provider_quota(provider_id: str) -> dict[str, Any]:
+    provider = get_container().workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    try:
+        return get_container().ai.query_quota(provider)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.delete("/providers/{provider_id}", status_code=204)
+def delete_provider(provider_id: str) -> None:
+    container = get_container()
+    provider = container.workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    if container.workspace.delete_provider(provider_id):
+        container.secrets.delete(provider.get("secret_ref"))
+        container.secrets.delete((provider.get("extra") or {}).get("proxy_password_ref"))
+
+
+@router.get("/settings/export")
+def export_settings() -> dict[str, Any]:
+    container = get_container()
+    providers = []
+    for provider in container.workspace.list_providers():
+        item = _provider_response(provider).model_dump()
+        item["api_key"] = container.secrets.get(provider.get("secret_ref")) or ""
+        item["extra"]["proxy_password"] = container.secrets.get((provider.get("extra") or {}).get("proxy_password_ref")) or ""
+        providers.append(item)
+    mcp = container.mcp_search.config()
+    saved_mcp = container.workspace.get_setting("mcp_search", {}) or {}
+    mcp["api_key"] = container.secrets.get(saved_mcp.get("secret_ref")) or ""
+    mcp["proxy_password"] = container.secrets.get(saved_mcp.get("proxy_password_ref")) or ""
+    active = container.workspace.active_provider()
+    return {
+        "backup_type": "content-intelligence-canvas-settings", "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "includes_plaintext_secrets": True,
+        "providers": providers, "active_provider_id": active["id"] if active else None,
+        "knowledge_sources": [{"name": s["name"], "root_path": s["root_path"]} for s in container.manifest.list_sources()],
+        "mcp_search": mcp,
+        "security": {"protect_internal_data": container.workspace.get_setting("protect_internal_data", True)},
+        "content_formats": list_content_formats(container.workspace),
+    }
+
+
+@router.post("/settings/import")
+def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
+    if backup.get("backup_type") != "content-intelligence-canvas-settings" or backup.get("version") != 1:
+        raise HTTPException(422, "不是此应用支持的设置备份文件")
+    try:
+        raw_providers = backup["providers"]
+        raw_sources = backup["knowledge_sources"]
+        if not isinstance(raw_providers, list) or len(raw_providers) > 100 or not isinstance(raw_sources, list) or len(raw_sources) > 100:
+            raise ValueError("配置数量超过限制")
+        providers = [ProviderConfigRequest.model_validate(item) for item in raw_providers]
+        formats = ContentFormatsRequest.model_validate({"formats": backup["content_formats"]}).formats
+        mcp = McpSearchConfig.model_validate(backup["mcp_search"])
+        mcp_parts = urlsplit(mcp.url)
+        if mcp_parts.scheme not in {"http", "https"} or not mcp_parts.hostname:
+            raise ValueError("搜索 MCP 地址无效")
+        protect = backup["security"]["protect_internal_data"]
+        if not isinstance(protect, bool):
+            raise ValueError("内部数据保护设置无效")
+        sources = [(str(item["name"]).strip(), Path(str(item["root_path"])).expanduser()) for item in raw_sources]
+        if any(not name or len(name) > 100 for name, _ in sources):
+            raise ValueError("知识源名称无效")
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(422, f"导入文件校验失败：{exc}") from exc
+    container = get_container()
+    for provider in providers:
+        save_provider(provider)
+    container.mcp_search.save(mcp.model_dump())
+    container.workspace.set_setting("content_formats", [item.model_dump() for item in formats])
+    container.workspace.set_setting("protect_internal_data", protect)
+    missing_paths = []
+    for name, path in sources:
+        if path.is_dir():
+            path = path.resolve()
+            container.manifest.upsert_source(source_id_for_path(path), name, str(path))
+        else:
+            missing_paths.append(str(path))
+    active_id = backup.get("active_provider_id")
+    if active_id and container.workspace.get_provider(str(active_id)):
+        container.workspace.set_setting("active_provider_id", str(active_id))
+    return {"message": f"已导入 {len(providers)} 项模型配置及设置；未找到的知识库路径 {len(missing_paths)} 项", "missing_paths": missing_paths}
 
 
 @router.post("/providers/discover-models")

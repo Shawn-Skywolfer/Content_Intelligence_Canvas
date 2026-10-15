@@ -267,7 +267,7 @@ https://example.com/beta
     health = client.post(f"/api/providers/{provider.json()['id']}/test")
     assert health.status_code == 200
     assert health.json()["capability_test"] is True
-    assert health.json()["message"] == "连接成功（自动网络）"
+    assert health.json()["message"] == "模型已返回文本"
 
     class MockModelsResponse:
         status_code = 200

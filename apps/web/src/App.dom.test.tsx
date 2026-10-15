@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
-import type { CanvasData, CanvasNode, Project, ResearchRun } from "./api";
+import type { CanvasData, CanvasNode, Project, ResearchRun, Provider } from "./api";
 
 vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
 
@@ -31,6 +31,30 @@ const run: ResearchRun = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("历史研究与项目入口", () => {
+  it("模型配置可删除，真实测试的空文本被明确判为失败", async () => {
+    const provider: Provider = { id: "p1", name: "DeepSeek", protocol: "openai_compatible", base_url: "https://example.org/v1", model_name: "reasoner", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, extra: {}, has_api_key: true, has_proxy_password: false, created_at: "", updated_at: "" };
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([]);
+    vi.spyOn(api, "listSources").mockResolvedValue([]);
+    vi.spyOn(api, "listProviders").mockResolvedValueOnce([provider]).mockResolvedValueOnce([]);
+    vi.spyOn(api, "activeProvider").mockResolvedValueOnce({ provider_id: provider.id, model_name: provider.model_name }).mockResolvedValueOnce({ provider_id: null, model_name: null });
+    vi.spyOn(api, "getSecurity").mockResolvedValue({ protect_internal_data: true });
+    vi.spyOn(api, "listContentFormats").mockResolvedValue([]);
+    vi.spyOn(api, "getMcpSearch").mockResolvedValue({ name: "Tavily", url: "https://example.org/mcp", tool_name: "search", enabled: false, has_api_key: false, network_mode: "auto", proxy_url: "", proxy_username: "", has_proxy_password: false });
+    vi.spyOn(api, "startProviderTest").mockResolvedValue({ job_id: "job", provider_id: "p1", status: "running", phase: "正在连接", started_at: Date.now() / 1000, elapsed_seconds: 0, result: null });
+    vi.spyOn(api, "providerTestJob").mockResolvedValue({ job_id: "job", provider_id: "p1", status: "completed", phase: "真实模型测试失败", started_at: Date.now() / 1000, elapsed_seconds: 1, result: { status: "failed", capability_test: false, reachable: true, http_status: 200, message: "只有思考内容", finish_reason: "length" } });
+    const deleted = vi.spyOn(api, "deleteProvider").mockResolvedValue();
+    vi.stubGlobal("confirm", () => true);
+    const view = render(<App />);
+    fireEvent.click(view.getByRole("button", { name: "设置" }));
+    fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "短文本实测" })).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "短文本实测" }));
+    await waitFor(() => expect(view.getByText(/失败：模型未返回可用文本/)).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "删除配置" }));
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith("p1"));
+    view.unmount();
+  });
   it("添加知识源时清理粘贴警告，并在设置页显示结果", async () => {
     vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
     vi.spyOn(api, "listProjects").mockResolvedValue([]);

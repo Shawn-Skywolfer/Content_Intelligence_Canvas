@@ -987,6 +987,15 @@ class WorkspaceRepository:
             rows = db.execute("SELECT * FROM provider_configs ORDER BY updated_at DESC").fetchall()
         return [self._decode(row, "extra_json") or {} for row in rows]
 
+    def delete_provider(self, provider_id: str) -> bool:
+        with self._connect() as db:
+            removed = db.execute("DELETE FROM provider_configs WHERE id=?", (provider_id,)).rowcount
+            if removed:
+                selected = db.execute("SELECT value_json FROM app_settings WHERE key='active_provider_id'").fetchone()
+                if selected and json.loads(selected["value_json"]) == provider_id:
+                    db.execute("DELETE FROM app_settings WHERE key='active_provider_id'")
+        return bool(removed)
+
     def set_setting(self, key: str, value: Any) -> None:
         with self._connect() as db:
             db.execute(

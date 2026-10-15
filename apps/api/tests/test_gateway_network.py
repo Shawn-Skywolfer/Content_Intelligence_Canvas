@@ -68,3 +68,36 @@ def test_cancel_token_closes_active_connection_and_blocks_late_results():
         assert closed.wait(1)
         with pytest.raises(OperationCancelled):
             check_cancelled()
+
+
+def test_short_text_probe_reports_reasoning_only_as_failure(tmp_path, monkeypatch):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    provider = repo.upsert_provider({"name": "推理模型", "base_url": "https://example.org/v1", "model_name": "reasoner", "extra": {"test_timeout_seconds": 15}})
+    gateway = AIProviderGateway(repo, LocalSecretStore(tmp_path / "secrets.json"))
+    captured = {}
+
+    def fake_request(*args, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(200, request=httpx.Request("POST", args[1]), json={
+            "choices": [{"message": {"content": "", "reasoning_content": "思考中"}, "finish_reason": "length"}],
+            "usage": {"completion_tokens": 128},
+        })
+
+    monkeypatch.setattr(gateway, "_request", fake_request)
+    result = gateway.health_check(provider)
+    assert result["reachable"] is True and result["capability_test"] is False
+    assert result["status"] == "failed" and result["finish_reason"] == "length"
+    assert result["usage"]["completion_tokens"] == 128
+    assert captured["json_payload"]["messages"][0]["content"] == "请只回复 OK"
+    assert captured["json_payload"]["max_tokens"] >= 128
+    assert captured["timeout"] == 15
+
+
+def test_deleting_active_provider_removes_selection(tmp_path):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    first = repo.upsert_provider({"name": "甲", "base_url": "https://a.example/v1", "model_name": "a"})
+    second = repo.upsert_provider({"name": "乙", "base_url": "https://b.example/v1", "model_name": "b"})
+    repo.set_setting("active_provider_id", first["id"])
+    assert repo.delete_provider(first["id"])
+    assert repo.get_setting("active_provider_id") is None
+    assert repo.active_provider()["id"] == second["id"]
