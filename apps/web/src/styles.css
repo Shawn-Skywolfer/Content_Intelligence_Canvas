@@ -284,15 +284,38 @@ summary { cursor: pointer; font-weight: 750; }
 .settings-tabs button:focus-visible { outline: 2px solid #cf001b; outline-offset: 2px; }
 .settings-tab-body { max-width: 1100px; display: block; }
 .settings-tab-body > .settings-card { width: 100%; }
-.canvas-task-monitor { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; background: #fff; border: 1px solid #dbe2ea; border-radius: 14px; padding: 11px 16px; margin: 12px 0 0; box-shadow: 0 4px 20px #1e2d4610; color: #293550; max-height: 170px; overflow: auto; }
+.canvas-task-monitor { display: block; background: #fff; border: 1px solid #dbe2ea; border-radius: 14px; padding: 16px; margin: 12px 0 0; box-shadow: 0 4px 20px #1e2d4610; color: #293550; }
 .canvas-task-monitor > strong { min-width: 190px; padding: 6px 0; }
-.canvas-task-list { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
-.canvas-task { position: relative; min-width: min(260px, 100%); flex: 1 1 260px; max-width: 420px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: #f5f7fb; border-radius: 10px; padding: 6px 10px 9px; font-size: 12px; }
+.canvas-task-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 10px; max-height: 360px; overflow: auto; }
+.canvas-task { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 7px; background: #f5f7fb; border: 1px solid #e4e9f1; border-radius: 10px; padding: 12px; font-size: 12px; }
 .canvas-task span:first-child { font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 160px; }
 .canvas-task small { color: #ba0015; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 230px; }
 .canvas-task-track { height: 3px; width: 100%; background: #dfe6ee; border-radius: 3px; overflow: hidden; }
 .canvas-task-track i { display: block; height: 100%; background: #d00124; transition: width .3s; }
 .canvas-task.completed .canvas-task-track i { background: #15815d; }
+.task-manager-heading, .task-manager-toolbar, .task-row-actions, .task-detail-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.task-manager-heading { justify-content: space-between; }
+.task-manager-heading > span, .task-default-model { color: #67768b; font-size: 12px; }
+.task-manager-toolbar { padding: 12px 0; border-top: 1px solid #e5eaf0; }
+.task-manager-toolbar label { display: flex; flex-direction: row; align-items: center; gap: 10px; margin: 0; }
+.task-manager-toolbar select { width: auto; min-width: 130px; }
+.task-manager-message { padding: 10px; background: #f6f8fb; border-radius: 8px; }
+.task-row-title { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.task-row-title input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
+.task-row-title span { flex-shrink: 0; }
+.task-open { background: transparent; border: 0; color: #17263f; font-weight: 750; text-align: left; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; cursor: pointer; }
+.canvas-task p { margin: 0; color: #4f6078; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 4.5em; overflow: hidden; }
+.canvas-task small { max-width: none; font-size: 11px; color: #67768b; }
+.canvas-task .task-error { color: #ba0015; }
+.task-details-dialog { width: min(900px, 100%); max-height: calc(100vh - 60px); overflow: auto; border-radius: 18px; padding: 26px; background: #fff; box-shadow: 0 25px 85px #08132360; text-align: left; overflow-wrap: anywhere; }
+.task-details-dialog header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.task-details-dialog h2 { margin: 5px 0 12px; }.task-details-dialog h3 { margin: 24px 0 12px; }
+.task-details-dialog label { margin: 12px 0; }.task-details-dialog textarea { min-height: 110px; }
+.task-details-dialog details { padding: 12px 0; border-bottom: 1px solid #e3e8ef; }
+.task-detail-summary { padding: 14px; background: #f5f7fb; border-radius: 10px; white-space: pre-wrap; }
+.task-details-dialog .settings-error { color: #ad1d2a; }
+.task-event-list { padding-left: 22px; }.task-event-list li { margin: 10px 0; }.task-event-list small { display: block; color: #6b788c; }.task-event-list p { margin: 4px 0; }
+.model-default-notice { padding: 12px 16px; border: 1px solid #d8e2ed; border-radius: 10px; background: #f7f9fc; color: #42546d; line-height: 1.6; }
 .settings-card form > label { display: block; width: 100%; }
 .folder-picker, .model-discovery { align-items: end; }
 .folder-picker button, .model-discovery button { min-height: 44px; margin: 0; white-space: nowrap; }

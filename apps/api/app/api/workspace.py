@@ -32,6 +32,7 @@ from app.schemas.workspace import (
 )
 from app.services.content_formats import list_content_formats
 from app.services.ai.cancellation import CancellationToken, cancellation_scope
+from app.services.ai.gateway import provider_scope
 
 
 router = APIRouter(prefix="/api", tags=["workspace"])
@@ -334,15 +335,21 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
 
-def _run_magic_job(job_id: str, project_id: str, request: MagicRequest) -> None:
+def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
+                   token: CancellationToken, provider: dict[str, Any] | None, attempt: int) -> None:
     workspace = get_container().workspace
-    token = _magic_tokens[job_id]
     node: dict[str, Any] | None = None
     try:
-        with cancellation_scope(token):
+        with cancellation_scope(token), provider_scope(provider):
             def progress(percent: int, phase: str, detail: str) -> None:
                 token.check()
-                workspace.update_magic_job(job_id, progress=percent, phase=phase, detail=detail)
+                workspace.update_magic_job(job_id, expected_attempt=attempt, progress=percent, phase=phase, detail=detail)
+
+            def network_report(detail: str) -> None:
+                token.check()
+                workspace.update_magic_job(job_id, expected_attempt=attempt, detail=detail)
+
+            token.on_network = network_report
 
             if request.output_type == "output":
                 progress(18, "准备内容输出", "正在整理选中节点与 Wiki 上下文")
@@ -359,7 +366,7 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest) -> None:
                 )
             with _magic_lock:
                 token.check()
-                workspace.update_magic_job(job_id, status="completed", progress=100, phase="生成完成",
+                workspace.update_magic_job(job_id, expected_attempt=attempt, status="completed", progress=100, phase="生成完成",
                                            detail=message, result={"node": node, "run_id": run_id,
                                                                    "used_llm": used_llm, "message": message})
     except Exception as exc:
@@ -367,10 +374,28 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest) -> None:
             if node is not None:
                 workspace.delete_node(project_id, node["id"])
             return
-        workspace.update_magic_job(job_id, status="failed", phase="生成失败", detail=str(exc), error=str(exc))
+        workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=str(exc), error=str(exc))
     finally:
         with _magic_lock:
-            _magic_tokens.pop(job_id, None)
+            if _magic_tokens.get(job_id) is token:
+                _magic_tokens.pop(job_id, None)
+
+
+def _provider_summary(provider: dict[str, Any] | None) -> dict[str, Any]:
+    return {key: provider.get(key) for key in ("id", "name", "model_name", "base_url")} | {
+        "network_mode": (provider.get("extra") or {}).get("network_mode", "auto")
+    } if provider else {}
+
+
+def _launch_magic_job(job: dict[str, Any], request: MagicRequest, provider: dict[str, Any] | None) -> None:
+    token = CancellationToken()
+    with _magic_lock:
+        current = get_container().workspace.get_magic_job(job["job_id"])
+        if not current or current["status"] != "running" or current["attempt"] != job["attempt"]:
+            return
+        _magic_tokens[job["job_id"]] = token
+    threading.Thread(target=_run_magic_job, args=(job["job_id"], job["project_id"], request, token, provider, job["attempt"]),
+                     name=f"magic-{job['job_id'][-8:]}", daemon=True).start()
 
 
 @router.post("/projects/{project_id}/magic/start")
@@ -381,14 +406,13 @@ def start_magic_job(project_id: str, request: MagicRequest) -> dict[str, Any]:
         raise HTTPException(422, "只有洞察节点可以启用网络检索")
     if not request.node_ids or any(not (node := workspace.get_node(node_id)) or node["project_id"] != project_id for node_id in request.node_ids):
         raise HTTPException(422, "部分输入节点不存在或不属于当前项目")
-    active = [job for job in workspace.list_magic_jobs(project_id) if job["status"] == "running"]
-    if any(set(job["node_ids"]) == set(request.node_ids) for job in active):
-        raise HTTPException(409, "这些节点已有正在运行的生成任务")
-    job = workspace.create_magic_job(project_id, request.node_ids)
     with _magic_lock:
-        _magic_tokens[job["job_id"]] = CancellationToken()
-    threading.Thread(target=_run_magic_job, args=(job["job_id"], project_id, request),
-                     name=f"magic-{job['job_id'][-8:]}", daemon=True).start()
+        active = [job for job in workspace.list_magic_jobs(project_id) if job["status"] == "running"]
+        if any(set(job["node_ids"]) == set(request.node_ids) for job in active):
+            raise HTTPException(409, "这些节点已有正在运行的生成任务")
+        provider = workspace.active_provider()
+        job = workspace.create_magic_job(project_id, request.node_ids, request.model_dump(), _provider_summary(provider))
+    _launch_magic_job(job, request, provider)
     return job
 
 
@@ -408,19 +432,56 @@ def get_magic_job(job_id: str) -> dict[str, Any]:
 
 @router.post("/magic/jobs/{job_id}/cancel")
 def cancel_magic_job(job_id: str) -> dict[str, Any]:
+    return _stop_magic_job(job_id, "cancelled")
+
+
+def _stop_magic_job(job_id: str, status: str) -> dict[str, Any]:
     workspace = get_container().workspace
     with _magic_lock:
         job = workspace.get_magic_job(job_id)
         if not job:
             raise HTTPException(404, "任务不存在")
-        if not workspace.cancel_magic_job(job_id):
-            raise HTTPException(409, "任务已结束，无法取消")
+        if not workspace.stop_magic_job(job_id, status):
+            raise HTTPException(409, "当前任务状态不支持该操作")
         token = _magic_tokens.get(job_id)
         if token:
             token.event.set()
     if token:
         token.cancel()
     return workspace.get_magic_job(job_id) or {}
+
+
+@router.post("/magic/jobs/{job_id}/pause")
+def pause_magic_job(job_id: str) -> dict[str, Any]:
+    return _stop_magic_job(job_id, "paused")
+
+
+@router.post("/magic/jobs/{job_id}/resume")
+def resume_magic_job(job_id: str, request: MagicRequest | None = None) -> dict[str, Any]:
+    workspace = get_container().workspace
+    job = workspace.get_magic_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    if request is None:
+        if not job.get("request"):
+            raise HTTPException(422, "旧版任务没有保存创作要求，请在任务详情中填写 Prompt 后重试")
+        request = MagicRequest.model_validate(job["request"])
+    if set(request.node_ids) != set(job["node_ids"]):
+        raise HTTPException(422, "重试任务必须使用原输入节点")
+    if any(not (node := workspace.get_node(node_id)) or node["project_id"] != job["project_id"] for node_id in request.node_ids):
+        raise HTTPException(422, "输入节点已删除，无法重新执行")
+    if request.web_search and request.output_type != "insight":
+        raise HTTPException(422, "只有洞察节点可以启用网络检索")
+    with _magic_lock:
+        if any(other["job_id"] != job_id and other["status"] == "running" and set(other["node_ids"]) == set(job["node_ids"])
+               for other in workspace.list_magic_jobs(job["project_id"])):
+            raise HTTPException(409, "这些节点已有其他运行中的任务")
+        provider = workspace.active_provider()
+        if not workspace.restart_magic_job(job_id, request.model_dump(), _provider_summary(provider)):
+            raise HTTPException(409, "只有暂停、失败或取消的任务可以继续或重试")
+        updated = workspace.get_magic_job(job_id) or {}
+    _launch_magic_job(updated, request, provider)
+    return updated
 
 
 @router.post("/projects/{project_id}/nodes/{node_id}/generate", response_model=WorkflowResponse)

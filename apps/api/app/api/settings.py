@@ -68,7 +68,9 @@ def list_providers() -> list[ProviderConfigResponse]:
 def active_provider() -> dict[str, str | None]:
     provider = get_container().workspace.active_provider()
     return {"provider_id": provider["id"] if provider else None,
-            "model_name": provider["model_name"] if provider else None}
+            "model_name": provider["model_name"] if provider else None,
+            "name": provider["name"] if provider else None,
+            "network_mode": (provider.get("extra") or {}).get("network_mode", "auto") if provider else None}
 
 
 @router.post("/providers/{provider_id}/activate")

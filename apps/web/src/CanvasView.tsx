@@ -164,6 +164,41 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
   return <header className="page-header"><div><small>内容白板</small><h1>{title}</h1><p>{description}</p></div>{actions && <div className="page-actions">{actions}</div>}</header>;
 }
 
+const TASK_STATUS: Record<string, string> = { running: "运行中", paused: "已暂停", failed: "失败", cancelled: "已取消", completed: "已完成" };
+const NETWORK_LABELS: Record<string, string> = { auto: "自动（系统代理优先）", direct: "直连", system_proxy: "系统代理", custom_proxy: "企业代理" };
+
+function TaskDetails({ job, nodes, formats, controls, pending, message, onClose, onResume }: {
+  job: MagicJob; nodes: CanvasNode[]; formats: ContentFormat[]; controls: React.ReactNode; pending: boolean; message: string;
+  onClose: () => void; onResume: (request: Record<string, unknown>) => void;
+}) {
+  const [instruction, setInstruction] = useState(String(job.request?.instruction ?? ""));
+  const [negative, setNegative] = useState(String(job.request?.negative_prompt ?? ""));
+  const [outputType, setOutputType] = useState(String(job.request?.output_type ?? "insight"));
+  const [format, setFormat] = useState(String(job.request?.format ?? "wechat"));
+  const editable = ["paused", "failed", "cancelled"].includes(job.status);
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="task-details-dialog" role="dialog" aria-modal="true" aria-label="任务完整详情">
+      <header><div><small>{TASK_STATUS[job.status]} · 第 {job.attempt ?? 1} 次执行</small><h2>AI 任务详情</h2></div><button className="secondary" onClick={onClose}>关闭详情</button></header>
+      {message && <p className="settings-feedback" role="status">{message}</p>}
+      <p>{job.job_id}</p><p>创建于 {new Date(job.created_at).toLocaleString()} · 更新于 {job.updated_at ? new Date(job.updated_at).toLocaleString() : "未记录"}</p>
+      <div className="task-detail-summary"><strong>{job.phase} · {job.progress}%</strong><p>{job.detail}</p>{job.error && <p className="settings-error">完整错误：{job.error}</p>}</div>
+      <p>本次调用：{job.provider?.name || "旧版未记录"} · {job.provider?.model_name || "模型未记录"} · {NETWORK_LABELS[job.provider?.network_mode || ""] || "网络未记录"}</p>
+      {job.provider?.base_url && <p>接口：{job.provider.base_url}</p>}
+      <div className="task-detail-actions">{controls}</div>
+      <h3>创作要求与输入</h3>
+      {!job.request?.instruction && <p>旧版任务没有保存原始 Prompt，请补充要求后重新执行。</p>}
+      <label>正向 Prompt<textarea value={instruction} maxLength={1000} disabled={!editable} onChange={(event) => setInstruction(event.target.value)} placeholder="输入本任务需要完成的事情" /></label>
+      <label>负向 Prompt<textarea value={negative} maxLength={2000} disabled={!editable} onChange={(event) => setNegative(event.target.value)} /></label>
+      <div className="advanced-grid"><label>输出节点类型<select disabled={!editable} value={outputType} onChange={(event) => setOutputType(event.target.value)}>{["insight", "challenge", "creative_pattern", "note", "output"].map((type) => <option key={type} value={type}>{NODE_LABELS[type]}</option>)}</select></label>{outputType === "output" && <label>内容形态<select disabled={!editable} value={format} onChange={(event) => setFormat(event.target.value)}>{formats.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}</div>
+      <p>继承上游层级：{String(job.request?.upstream_depth ?? 6)} · 网络搜索：{job.request?.web_search ? "开启" : "关闭"}</p>
+      {editable && <><p>继续或重试将使用当前默认模型重新执行；已发送给供应商的请求可能仍会计费。</p><button className="primary" disabled={pending || instruction.trim().length < 2} onClick={() => onResume({ ...job.request, node_ids: job.node_ids, instruction: instruction.trim(), negative_prompt: negative, output_type: outputType, format, web_search: outputType === "insight" && Boolean(job.request?.web_search) })}>按以上要求{job.status === "paused" ? "继续" : "重试"}</button></>}
+      <h3>输入节点（当前内容）</h3>{job.node_ids.map((id) => { const node = nodes.find((item) => item.id === id); return <details key={id}><summary>{node?.title || `已删除节点 ${id}`}</summary><Markdown>{node?.body || "节点内容已不存在"}</Markdown></details>; })}
+      <h3>执行进展</h3>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次</small><strong>{event.phase}</strong><p>{event.detail}</p></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
+      {job.result?.node && <><h3>生成结果：{job.result.node.title}</h3><Markdown>{job.result.node.body}</Markdown></>}
+    </section>
+  </div>;
+}
+
 export default function CanvasView({ project, canvas, selectedIds, setSelectedIds, onChange, onRefresh, beforeGenerate, setStatus }: {
   project: Project | null;
   canvas: CanvasData | null;
@@ -189,6 +224,12 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const upstreamDepth = draft.depth;
   const [busy, setBusy] = useState(false);
   const [magicJobs, setMagicJobs] = useState<MagicJob[]>([]);
+  const [taskDetailId, setTaskDetailId] = useState("");
+  const [taskFilter, setTaskFilter] = useState("all");
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [taskMessage, setTaskMessage] = useState("");
+  const [taskOperations, setTaskOperations] = useState<string[]>([]);
+  const [defaultModel, setDefaultModel] = useState<{ name?: string; model_name: string | null; network_mode?: string } | null>(null);
   const completedJobsRef = useRef(new Set<string>());
   const [submittingMagic, setSubmittingMagic] = useState(false);
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
@@ -220,6 +261,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     const projectId = project.id;
     const poll = async () => {
       try {
+        api.activeProvider().then((value) => { if (active) setDefaultModel(value); }).catch(() => {});
         const jobs = await api.listMagicJobs(projectId);
         if (!active) return;
         setMagicJobs(jobs);
@@ -654,12 +696,34 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     } catch (error) { setStatus(errorText(error)); } finally { setSubmittingMagic(false); }
   }
 
-  async function cancelMagic(jobId: string) {
+  async function taskAction(jobId: string, action: "pause" | "cancel" | "resume", values?: Record<string, unknown>) {
+    const original = magicJobs.find((job) => job.job_id === jobId);
+    if (action === "resume" && !values && !original?.request?.instruction) {
+      setTaskDetailId(jobId); setTaskMessage("旧版任务没有保存 Prompt，请在详情中补充创作要求再重试。"); return;
+    }
+    setTaskOperations((current) => [...current, jobId]);
     try {
-      const cancelled = await api.cancelMagicJob(jobId);
-      setMagicJobs((current) => current.map((item) => item.job_id === jobId ? cancelled : item));
-      setStatus("任务已取消，不会生成下游节点");
-    } catch (error) { setStatus(`取消任务失败：${errorText(error)}`); }
+      const updated = action === "pause" ? await api.pauseMagicJob(jobId) : action === "cancel" ? await api.cancelMagicJob(jobId) : await api.resumeMagicJob(jobId, values);
+      setMagicJobs((current) => current.map((item) => item.job_id === jobId ? updated : item));
+      const message = action === "pause" ? "任务已暂停，继续时会重新执行模型调用" : action === "cancel" ? "任务已取消" : "任务已重新启动，使用当前默认模型";
+      setTaskMessage(message); setStatus(message);
+    } catch (error) { const message = `任务操作失败：${errorText(error)}`; setTaskMessage(message); setStatus(message); }
+    finally { setTaskOperations((current) => current.filter((id) => id !== jobId)); }
+  }
+
+  function taskControls(job: MagicJob) {
+    const pending = taskOperations.includes(job.job_id);
+    return <>{job.status === "running" && <button className="text-button" disabled={pending} onClick={() => void taskAction(job.job_id, "pause")}>暂停</button>}
+      {["running", "paused", "failed"].includes(job.status) && <button className="text-button danger" disabled={pending} onClick={() => void taskAction(job.job_id, "cancel")}>取消</button>}
+      {["paused", "failed", "cancelled"].includes(job.status) && <button className="text-button" disabled={pending} onClick={() => void taskAction(job.job_id, "resume")}>{job.status === "paused" ? "继续" : "重试"}</button>}
+      <button className="text-button" onClick={() => { setTaskMessage(""); setTaskDetailId(job.job_id); }}>查看详情</button>
+      {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node.id])}>定位结果</button>}</>;
+  }
+
+  async function batchTaskAction(action: "pause" | "cancel" | "resume") {
+    const valid = magicJobs.filter((job) => selectedTaskIds.includes(job.job_id) && (action === "pause" ? job.status === "running" : action === "resume" ? ["paused", "failed", "cancelled"].includes(job.status) : ["running", "paused", "failed"].includes(job.status)));
+    if (!valid.length) { setTaskMessage("请先勾选支持该操作的任务"); return; }
+    await Promise.all(valid.map((job) => taskAction(job.job_id, action)));
   }
 
   async function saveAsAsset() {
@@ -673,7 +737,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   return <div className="canvas-page">
-    <PageHeader title={activeProject.name} description="用有向连接组织上下文；下游生成会自动继承全部上游内容。" actions={<>
+    <PageHeader title={activeProject.name} description="用有向连接组织上下文，按所选层级继承上游内容。" actions={<>
       <button className="secondary" disabled={!undoStack.current.length} onClick={undo} title="Ctrl+Z">撤回</button>
       <button className="secondary" disabled={!redoStack.current.length} onClick={redo} title="Ctrl+Shift+Z / Ctrl+Y">重做</button>
       <button className="secondary" onClick={addNote} title="N">添加节点</button>
@@ -743,17 +807,21 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       </aside>
     </div>
     <section className="canvas-task-monitor" aria-label="AI 任务状态">
-      <strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong>
-      <div className="canvas-task-list">{magicJobs.slice(0, 6).map((job) => <div className={`canvas-task ${job.status}`} key={job.job_id}>
-        <span>{job.node_ids.map((id) => board.nodes.find((node) => node.id === id)?.title || "节点已删除").join("、")}</span>
-        <span>{job.phase} · {job.progress}%</span>
-        {job.status === "running" && <button className="text-button danger" onClick={() => void cancelMagic(job.job_id)}>取消</button>}
-        {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node.id])}>定位结果</button>}
-        {job.status === "failed" && <small title={job.error || job.detail}>{job.error || job.detail}</small>}
+      <div className="task-manager-heading"><strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong><span>暂停 {magicJobs.filter((job) => job.status === "paused").length} · 失败 {magicJobs.filter((job) => job.status === "failed").length} · 共 {magicJobs.length} 项</span></div>
+      <p className="task-default-model">后续任务默认模型：{defaultModel ? `${defaultModel.name || "未配置"} · ${defaultModel.model_name || "无模型"} · ${NETWORK_LABELS[defaultModel.network_mode || ""] || "自动"}` : "正在读取"}。可在设置中“保存并设为默认”。</p>
+      <div className="task-manager-toolbar"><label>任务状态<select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}><option value="all">全部任务</option>{Object.entries(TASK_STATUS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><span>已选 {selectedTaskIds.length} 项</span><button className="secondary" onClick={() => void batchTaskAction("pause")}>暂停选中</button><button className="secondary" onClick={() => void batchTaskAction("resume")}>继续 / 重试选中</button><button className="secondary danger" onClick={() => void batchTaskAction("cancel")}>取消选中</button></div>
+      {taskMessage && <p className="task-manager-message" role="status">{taskMessage}</p>}
+      <div className="canvas-task-list">{magicJobs.filter((job) => taskFilter === "all" || job.status === taskFilter).map((job) => <article className={`canvas-task ${job.status}`} key={job.job_id}>
+        <div className="task-row-title"><input type="checkbox" aria-label={`选择任务 ${job.job_id}`} checked={selectedTaskIds.includes(job.job_id)} onChange={(event) => setSelectedTaskIds((current) => event.target.checked ? [...current, job.job_id] : current.filter((id) => id !== job.job_id))} /><button className="task-open" onClick={() => { setTaskMessage(""); setTaskDetailId(job.job_id); }}>{job.node_ids.map((id) => board.nodes.find((node) => node.id === id)?.title || "节点已删除").join("、")}</button><span>{TASK_STATUS[job.status]} · {job.progress}%</span></div>
+        <p>{job.phase} · {job.detail}</p>
+        <small>{job.provider?.name || "旧版未记录模型"} · {job.provider?.model_name || ""} · {NETWORK_LABELS[job.provider?.network_mode || ""] || ""}</small>
+        {job.error && <small className="task-error">{job.error}</small>}
+        <div className="task-row-actions">{taskControls(job)}</div>
         <div className="canvas-task-track"><i style={{ width: `${job.progress}%` }} /></div>
-      </div>)}</div>
+      </article>)}</div>
       {!magicJobs.length && <span>暂无生成任务</span>}
     </section>
+    {taskDetailId && (() => { const job = magicJobs.find((item) => item.job_id === taskDetailId); return job ? <TaskDetails key={job.job_id} job={job} nodes={board.nodes} formats={contentFormats} controls={taskControls(job)} pending={taskOperations.includes(job.job_id)} message={taskMessage} onClose={() => setTaskDetailId("")} onResume={(values) => void taskAction(job.job_id, "resume", values)} /> : null; })()}
     {expandedNodeId && (() => {
       const expanded = board.nodes.find((node) => node.id === expandedNodeId);
       return expanded ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setExpandedNodeId(""); }}>

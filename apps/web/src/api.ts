@@ -73,8 +73,11 @@ export type ContentJob = {
   result?: { asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string };
 };
 export type MagicJob = {
-  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed" | "cancelled";
+  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed" | "cancelled" | "paused";
   progress: number; phase: string; detail: string; error?: string | null; created_at: string;
+  updated_at?: string; attempt?: number; request?: Record<string, unknown>;
+  provider?: { id?: string; name?: string; model_name?: string; base_url?: string; network_mode?: string };
+  events?: Array<{ at: string; attempt: number; phase: string; detail: string }>;
   result?: { node: CanvasNode; run_id: string; used_llm: boolean; message: string } | null;
 };
 export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy"; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
@@ -87,11 +90,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const raw = await response.text();
     let message = raw || `请求失败（${response.status}）`;
-    try { message = JSON.parse(raw).detail || message; } catch { /* 保留原始错误 */ }
+    try { const data = JSON.parse(raw); message = formatApiError(data.detail ?? data.message ?? data); } catch { /* 保留原始错误 */ }
     throw new Error(message);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+export function formatApiError(value: unknown): string {
+  const labels: Record<string, string> = { name: "配置名称", base_url: "接口地址", api_key: "API Key", model_name: "模型 ID", protocol: "接口协议", temperature: "温度", max_tokens: "最大输出 token", timeout_seconds: "请求超时" };
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((item) => {
+    if (item && typeof item === "object" && "msg" in item) {
+      const error = item as { loc?: (string | number)[]; msg: string; type?: string; ctx?: Record<string, unknown> };
+      const field = error.loc?.filter((part) => part !== "body").map((part) => labels[String(part)] ?? String(part)).join(" / ");
+      const messages: Record<string, string> = { greater_than_equal: `不得小于 ${error.ctx?.ge}`, less_than_equal: `不得大于 ${error.ctx?.le}`, int_parsing: "请输入整数", float_parsing: "请输入数字", missing: "此项不能为空", string_too_short: `至少输入 ${error.ctx?.min_length} 个字符`, string_too_long: `最多输入 ${error.ctx?.max_length} 个字符`, literal_error: "选项无效，请重新选择" };
+      return `${field ? `${field}：` : ""}${messages[error.type ?? ""] ?? error.msg}`;
+    }
+    return formatApiError(item);
+  }).join("；");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "请求失败");
 }
 
 export const downloadUrl = (path: string) => `${API_BASE}${path}`;
@@ -157,6 +176,8 @@ export const api = {
     }),
   listMagicJobs: (projectId: string) => request<MagicJob[]>(`/api/projects/${projectId}/magic/jobs`),
   cancelMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/cancel`, { method: "POST" }),
+  pauseMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/pause`, { method: "POST" }),
+  resumeMagicJob: (jobId: string, values?: Record<string, unknown>) => request<MagicJob>(`/api/magic/jobs/${jobId}/resume`, { method: "POST", ...(values ? { body: JSON.stringify(values) } : {}) }),
   generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
       method: "POST", body: JSON.stringify({ instruction, use_llm: useLlm }),
@@ -187,7 +208,7 @@ export const api = {
     request<{ asset: ContentAsset; node: CanvasNode; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/save-asset`, { method: "POST" }),
 
   listProviders: () => request<Provider[]>("/api/providers"),
-  activeProvider: () => request<{ provider_id: string | null; model_name: string | null }>("/api/providers/active"),
+  activeProvider: () => request<{ provider_id: string | null; model_name: string | null; name?: string; network_mode?: string }>("/api/providers/active"),
   activateProvider: (id: string) => request<{ provider_id: string; model_name: string }>(`/api/providers/${id}/activate`, { method: "POST" }),
   saveProvider: (provider: Record<string, unknown>) => request<Provider>("/api/providers", {
     method: "POST", body: JSON.stringify(provider),

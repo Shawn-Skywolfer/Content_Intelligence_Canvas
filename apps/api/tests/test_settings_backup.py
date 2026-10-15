@@ -8,6 +8,12 @@ from app.services.mcp_search import McpSearchService
 from app.schemas.workspace import ProviderConfigRequest
 
 
+def test_large_output_limit_can_be_saved_with_matching_ui_bounds():
+    for limit in (200000, 256000, 262144):
+        request = ProviderConfigRequest(name="大输出模型", base_url="https://example.org/v1", model_name="model", max_tokens=limit)
+        assert request.max_tokens == limit
+
+
 def test_settings_round_trip_includes_local_keys_but_no_wiki_contents(tmp_path, monkeypatch):
     vault = tmp_path / "wiki"
     vault.mkdir()

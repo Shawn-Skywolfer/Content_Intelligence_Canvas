@@ -48,6 +48,24 @@ const canvas: CanvasData = {
 
 describe("白板进入与节点编辑", () => {
   beforeEach(() => { vi.spyOn(api, "listMagicJobs").mockResolvedValue([]); });
+  it("历史失败任务可查看完整错误、补充 Prompt 后重试，任务列表不截断到六项", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const jobs = Array.from({ length: 8 }, (_, index) => ({ job_id: `failed-${index}`, project_id: "p1", node_ids: ["idea"], status: "failed" as const, phase: "生成失败", progress: 18, detail: "详细的网络连接错误", error: "完整错误：系统代理 503，直连超时", created_at: "2026-10-15T00:00:00Z" }));
+    vi.spyOn(api, "listMagicJobs").mockResolvedValue(jobs);
+    const resume = vi.spyOn(api, "resumeMagicJob").mockResolvedValue({ ...jobs[0], status: "running" });
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: [], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() })); });
+    expect(renderer.root.findAllByType("article").filter((item) => item.props.className?.includes("canvas-task"))).toHaveLength(8);
+    await act(async () => { renderer.root.findAllByProps({ children: "查看详情" })[0].props.onClick(); });
+    const dialog = renderer.root.findByProps({ "aria-label": "任务完整详情" });
+    expect(dialog.findAllByType("p").flatMap((item) => item.children.filter((child) => typeof child === "string")).join(" ")).toContain("系统代理 503");
+    const prompt = dialog.findAllByType("textarea")[0];
+    await act(async () => { prompt.props.onChange({ target: { value: "重新梳理供电方案" } }); });
+    await act(async () => { renderer.root.findAllByType("button").find((item) => item.children.join("") === "按以上要求重试")!.props.onClick(); });
+    expect(resume).toHaveBeenCalledWith("failed-0", expect.objectContaining({ instruction: "重新梳理供电方案", node_ids: ["idea"] }));
+    await act(async () => { renderer.unmount(); });
+  });
   it("AI 共创草稿按节点保存，切换时不串用 Prompt", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });

@@ -5,6 +5,8 @@ import os
 import re
 import ssl
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -18,6 +20,16 @@ from app.services.ai.secret_store import LocalSecretStore
 
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_task_provider: ContextVar[dict[str, Any] | None] = ContextVar("task_provider", default=None)
+
+
+@contextmanager
+def provider_scope(provider: dict[str, Any] | None):
+    marker = _task_provider.set(provider)
+    try:
+        yield
+    finally:
+        _task_provider.reset(marker)
 
 
 class ProviderConnectionError(RuntimeError):
@@ -192,6 +204,8 @@ class AIProviderGateway:
         request_timeout = httpx.Timeout(float(timeout), connect=min(float(timeout), 12.0))
         for index, (label, proxy) in enumerate(routes):
             check_cancelled()
+            if token and token.on_network:
+                token.on_network(f"正在通过{label}连接模型接口：{url}")
             if progress:
                 progress(f"正在通过{label}连接并等待模型响应（第 {index + 1}/{len(routes)} 条线路）")
             try:
@@ -210,6 +224,8 @@ class AIProviderGateway:
                         if token:
                             token.unbind(client)
                 check_cancelled()
+                if token and token.on_network:
+                    token.on_network(f"{label}已返回 HTTP {response.status_code}")
                 if progress:
                     progress(f"收到 HTTP {response.status_code}，正在解析模型结果")
                 if response.status_code in {407, 502, 503, 504} and index + 1 < len(routes):
@@ -413,7 +429,7 @@ class AIProviderGateway:
         *,
         provider: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, str]]:
-        provider = provider or self.repository.active_provider()
+        provider = provider or _task_provider.get() or self.repository.active_provider()
         if not provider:
             raise RuntimeError("尚未配置可用的大模型")
         if self.repository.get_setting("protect_internal_data", True) and provider.get("is_external"):

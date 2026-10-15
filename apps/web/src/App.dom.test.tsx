@@ -31,6 +31,31 @@ const run: ResearchRun = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("历史研究与项目入口", () => {
+  it("最大输出可清空后输入 256000，并以数值提交保存", async () => {
+    const provider: Provider = { id: "p1", name: "DeepSeek", protocol: "openai_compatible", base_url: "https://example.org/v1", model_name: "deepseek-flash", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, extra: {}, has_api_key: true, has_proxy_password: false, created_at: "", updated_at: "" };
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([]);
+    vi.spyOn(api, "listSources").mockResolvedValue([]);
+    vi.spyOn(api, "listProviders").mockResolvedValue([provider]);
+    vi.spyOn(api, "activeProvider").mockResolvedValue({ provider_id: "p1", model_name: provider.model_name });
+    vi.spyOn(api, "getSecurity").mockResolvedValue({ protect_internal_data: true });
+    vi.spyOn(api, "listContentFormats").mockResolvedValue([]);
+    vi.spyOn(api, "getMcpSearch").mockResolvedValue({ name: "Tavily", url: "https://example.org/mcp", tool_name: "search", enabled: false, has_api_key: false, network_mode: "auto", proxy_url: "", proxy_username: "", has_proxy_password: false });
+    const save = vi.spyOn(api, "saveProvider").mockResolvedValue({ ...provider, max_tokens: 256000 });
+    const view = render(<App />);
+    fireEvent.click(view.getByRole("button", { name: "设置" }));
+    fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
+    await waitFor(() => expect(view.getByDisplayValue("3000")).toBeTruthy());
+    const input = view.getByLabelText("最大输出 token") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input.value).toBe("");
+    fireEvent.change(input, { target: { value: "256000" } });
+    expect(input.value).toBe("256000");
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 256000 })));
+    await waitFor(() => expect(view.getByText("配置已保存")).toBeTruthy());
+    view.unmount();
+  });
   it("模型配置可删除，真实测试的空文本被明确判为失败", async () => {
     const provider: Provider = { id: "p1", name: "DeepSeek", protocol: "openai_compatible", base_url: "https://example.org/v1", model_name: "reasoner", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, extra: {}, has_api_key: true, has_proxy_password: false, created_at: "", updated_at: "" };
     vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
@@ -51,6 +76,10 @@ describe("历史研究与项目入口", () => {
     await waitFor(() => expect(view.getByRole("button", { name: "短文本实测" })).toBeTruthy());
     fireEvent.click(view.getByRole("button", { name: "短文本实测" }));
     await waitFor(() => expect(view.getByText(/失败：模型未返回可用文本/)).toBeTruthy());
+    vi.spyOn(api, "saveProvider").mockRejectedValue(new Error("最大输出 token：不得大于 262144"));
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(view.getByText("最大输出 token：不得大于 262144")).toBeTruthy());
+    expect(view.queryByText(/测试文本：请只回复 OK/)).toBeNull();
     fireEvent.click(view.getByRole("button", { name: "删除配置" }));
     await waitFor(() => expect(deleted).toHaveBeenCalledWith("p1"));
     view.unmount();
