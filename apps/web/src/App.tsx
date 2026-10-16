@@ -231,7 +231,7 @@ export default function App() {
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar" id="global-sidebar">
       <div className="sidebar-tools"><button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"} title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)}><span aria-hidden="true">{sidebarCollapsed ? "»" : "«"}</span></button></div>
-      <div className="brand"><span className="brand-mark">智</span><div><strong>内容智能白板</strong><small>可信知识驱动的内容工作台</small></div></div>
+      <div className="brand"><span className="brand-mark">智</span><div><strong>内容智能工作台</strong><small>可信知识驱动的内容工作台</small></div></div>
       <nav aria-label="主要导航">{NAV.map((item) => <button aria-label={item.label} title={sidebarCollapsed ? item.label : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "research" ? void openResearch() : item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
         <span aria-hidden="true">{item.icon}</span><b>{item.label}</b>
       </button>)}</nav>

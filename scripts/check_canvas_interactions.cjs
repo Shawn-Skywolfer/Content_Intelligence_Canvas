@@ -50,7 +50,7 @@ async function run() {
   launch(process.execPath, [path.join(root, 'apps/web/node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', '5178', '--strictPort'], path.join(root, 'apps/web'), { VITE_API_BASE: apiUrl });
   await until(() => api('/api/health'), '后端启动');
   await until(async () => (await fetch(webUrl)).ok, '前端启动');
-  const project = await api('/api/projects', 'POST', { name: '交互回归项目', idea: '研究供电方案', brief: '原始简报' });
+  const project = await api('/api/projects', 'POST', { name: '交互回归项目：人工智能数据中心（AIDC），会给储能企业带来哪些大机会？', idea: '研究供电方案', brief: '原始简报' });
   let canvas = await api(`/api/projects/${project.id}/canvas`);
   const group = canvas.nodes.find((node) => node.type === 'frame' && node.metadata.group_key === 'input');
   const brief = canvas.nodes.find((node) => node.type === 'brief');
@@ -69,6 +69,37 @@ async function run() {
   await groupNode.waitFor();
   await until(async () => (await groupNode.boundingBox())?.width > 100, '白板适应视口');
   await page.waitForTimeout(300);
+  assert.equal(await page.locator('.brand strong').textContent(), '内容智能工作台');
+  const toolbox = page.locator('.canvas-toolbox');
+  const boardBounds = await page.locator('.board-wrap').boundingBox();
+  const headerBounds = await page.locator('.canvas-page .page-header').boundingBox();
+  assert.ok(headerBounds.y + headerBounds.height < boardBounds.y, '工具栏不再挤占标题区');
+  for (const [dock, x, y, layout] of [
+    ['left', boardBounds.x + 5, boardBounds.y + boardBounds.height / 2, 'vertical'],
+    ['bottom', boardBounds.x + boardBounds.width / 2, boardBounds.y + boardBounds.height - 5, 'horizontal'],
+    ['right', boardBounds.x + boardBounds.width - 5, boardBounds.y + boardBounds.height / 2, 'vertical'],
+    ['top', boardBounds.x + boardBounds.width / 2, boardBounds.y + 5, 'horizontal'],
+  ]) {
+    const grip = await page.getByRole('button', { name: '拖动工具栏' }).boundingBox();
+    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+    await page.mouse.down(); await page.mouse.move(x, y, { steps: 8 }); await page.mouse.up();
+    assert.equal(await toolbox.getAttribute('data-dock'), dock);
+    assert.equal(await toolbox.getAttribute('data-layout'), layout);
+    const box = await toolbox.boundingBox();
+    assert.ok(box.x >= boardBounds.x && box.y >= boardBounds.y && box.x + box.width <= boardBounds.x + boardBounds.width + 1 && box.y + box.height <= boardBounds.y + boardBounds.height + 1, '停靠工具栏应完整留在画布内');
+  }
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.getByRole('button', { name: '纵向', exact: true }).click();
+  assert.equal(await toolbox.getAttribute('data-layout'), 'vertical');
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.screenshot({ path: path.join(temporary, 'toolbar-vertical.png') });
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.getByRole('button', { name: '横向', exact: true }).click();
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.getByRole('button', { name: '折叠任务监测' }).click();
+  assert.equal(await page.getByRole('button', { name: '暂停选中' }).count(), 0);
+  assert.ok((await page.locator('.canvas-task-monitor').innerText()).includes('正在生成'));
+  await page.getByRole('button', { name: '展开任务监测' }).click();
   let bounds = await groupNode.boundingBox();
   await page.mouse.click(bounds.x + 25, bounds.y + 25);
   assert.equal(await groupNode.evaluate((element) => getComputedStyle(element).zIndex), '-10');
@@ -117,8 +148,39 @@ async function run() {
   assert.ok((await page.getByRole('dialog').innerText()).includes('比较可靠性与 TCO'));
   await page.getByRole('button', { name: '收起全文' }).click();
   await page.screenshot({ path: path.join(temporary, 'canvas.png') });
+  const briefCard = page.locator(`.react-flow__node[data-id="${brief.id}"]`);
+  await briefCard.click();
+  for (const type of ['insight', 'challenge', 'creative_pattern', 'note']) {
+    await page.getByLabel('新节点类型').selectOption(type);
+    const web = page.getByLabel('检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）');
+    await web.check(); assert.equal(await web.isChecked(), true);
+  }
+  await page.screenshot({ path: path.join(temporary, 'mcp-options.png') });
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.getByRole('button', { name: '右边缘', exact: true }).click();
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  await page.getByRole('button', { name: '折叠任务监测' }).click();
+  await page.reload();
+  await page.getByRole('button', { name: /交互回归项目/ }).click();
+  assert.equal(await page.locator('.canvas-toolbox').getAttribute('data-dock'), 'right');
+  assert.equal(await page.getByRole('button', { name: '展开任务监测' }).count(), 1);
+  await page.screenshot({ path: path.join(temporary, 'persistent-dock.png') });
+  await page.setViewportSize({ width: 940, height: 900 });
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '工具栏设置' }).click();
+  for (const edge of ['上边缘', '左边缘', '下边缘', '右边缘']) {
+    await page.getByRole('button', { name: edge, exact: true }).click();
+    for (const direction of ['横向', '纵向']) {
+      await page.getByRole('button', { name: direction, exact: true }).click();
+      const boardBox = await page.locator('.board-wrap').boundingBox();
+      const popup = await page.locator('.canvas-toolbar-settings').boundingBox();
+      const toolsBox = await page.locator('.canvas-toolbox').boundingBox();
+      for (const box of [popup, toolsBox]) assert.ok(box.x >= boardBox.x && box.y >= boardBox.y && box.x + box.width <= boardBox.x + boardBox.width + 1 && box.y + box.height <= boardBox.y + boardBox.height + 1, '窄窗口下工具栏和设置面板应完整显示');
+    }
+  }
+  await page.screenshot({ path: path.join(temporary, 'narrow-toolbar-settings.png') });
   assert.deepEqual(pageErrors, []);
-  console.log(JSON.stringify({ passed: true, checks: ['锁定分组层级与尺寸保护', '锁定/未锁定分组右键平移', '浏览器右键菜单抑制', '侧栏折叠', '平移缩放后 N 在鼠标处创建', '简报保存与白板全文同步'], screenshots: temporary }));
+  console.log(JSON.stringify({ passed: true, checks: ['锁定分组层级与尺寸保护', '锁定/未锁定分组右键平移', '浏览器右键菜单抑制', '侧栏折叠', '平移缩放后 N 在鼠标处创建', '简报保存与白板全文同步', '四边拖动吸附与方向切换', '任务栏折叠并刷新保留', '四种加工类型 MCP 选项'], screenshots: temporary }));
 }
 
 run().catch((error) => { console.error(error); console.error(logs.join('').slice(-5000)); process.exitCode = 1; }).finally(async () => {

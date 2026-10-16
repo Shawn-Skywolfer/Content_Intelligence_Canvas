@@ -110,6 +110,23 @@ describe("白板进入与节点编辑", () => {
     expect(resume).toHaveBeenCalledWith("failed-0", expect.objectContaining({ instruction: "重新梳理供电方案", node_ids: ["idea"] }));
     await act(async () => { renderer.unmount(); });
   });
+  it.each(["insight", "challenge", "creative_pattern", "note"])("%s 节点可启用搜索 MCP 并提交联网加工", async (type) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const start = vi.spyOn(api, "startMagic").mockResolvedValue({ job_id: "web-job", project_id: "p1", node_ids: ["idea"], status: "running", phase: "网络检索", progress: 40, detail: "MCP", created_at: "" });
+    vi.spyOn(api, "saveCanvas").mockResolvedValue(canvas);
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: ["idea"], setSelectedIds: vi.fn(), onChange: vi.fn(), onRefresh: async () => {}, setStatus: vi.fn() })); });
+    const selector = renderer.root.findAllByType("select").find((item) => item.findAllByProps({ value: "output" }).length)!;
+    await act(async () => { selector.props.onChange({ target: { value: type } }); });
+    const web = renderer.root.findAllByType("label").find((item) => item.children.some((child) => typeof child === "string" && child.includes("检索网络资料")))!.findByType("input");
+    await act(async () => { web.props.onChange({ target: { checked: true } }); });
+    const prompt = renderer.root.findAllByType("textarea").find((item) => item.props.placeholder?.includes("结合上游证据"))!;
+    await act(async () => { prompt.props.onChange({ target: { value: "综合内外证据" } }); });
+    await act(async () => { renderer.root.findByProps({ children: "AI 加工并生成下游节点" }).props.onClick(); });
+    expect(start).toHaveBeenLastCalledWith("p1", ["idea"], "综合内外证据", type, "", true, "wechat", 90, 6);
+    await act(async () => { renderer.unmount(); });
+  });
   it("AI 共创草稿按节点保存，切换时不串用 Prompt", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
@@ -198,7 +215,7 @@ describe("白板进入与节点编辑", () => {
         onRefresh: async () => {}, setStatus: vi.fn(),
       }));
     });
-    await act(async () => { renderer.root.findByProps({ children: "按类型整理" }).props.onClick(); });
+    await act(async () => { renderer.root.findByProps({ "aria-label": "按类型整理" }).props.onClick(); });
     const frames = next.nodes.filter((node) => node.type === "frame");
     expect(frames.map((frame) => frame.title)).toEqual(["01 输入与简报", "02 研究与证据", "03 洞察与策略"]);
     for (const node of next.nodes.filter((item) => item.type !== "frame")) {

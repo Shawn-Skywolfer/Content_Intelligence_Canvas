@@ -158,6 +158,54 @@ summary { cursor: pointer; font-weight: 750; }
 .canvas-shortcuts span { padding: 5px 9px; border: 1px solid #dfe3e9; border-radius: 999px; background: rgba(255,255,255,.8); color: #6e7887; font-size: 10px; }
 .flow-workspace { height: calc(100vh - 320px); min-height: 520px; }
 .flow-workspace .board-wrap { position: relative; display: block; }
+.canvas-toolbox { position: absolute; z-index: 8; max-width: calc(100% - 28px); max-height: calc(100% - 28px); color: #465369; }
+.canvas-toolbox.dock-top { top: 14px; left: 50%; transform: translateX(-50%); }
+.canvas-toolbox.dock-bottom { bottom: 14px; left: 50%; transform: translateX(-50%); }
+.canvas-toolbox.dock-left { left: 14px; top: 50%; transform: translateY(-50%); }
+.canvas-toolbox.dock-right { right: 14px; top: 50%; transform: translateY(-50%); }
+.canvas-tool-strip { display: flex; align-items: center; gap: 3px; padding: 5px; border: 1px solid #d9e0e9; border-radius: 13px; background: #fffffff5; box-shadow: 0 5px 22px #26344b18, 0 1px 3px #26344b0a; }
+.layout-vertical .canvas-tool-strip { flex-direction: column; }
+.layout-horizontal .canvas-tool-strip { flex-wrap: wrap; justify-content: center; }
+.board-wrap:has(.canvas-toolbox.dock-left.layout-vertical) .react-flow__controls { left: 76px; }
+.board-wrap:has(.canvas-toolbox.dock-right.layout-vertical) .react-flow__minimap { right: 76px; }
+.board-wrap:has(.canvas-toolbox.dock-bottom.layout-horizontal) .react-flow__controls,
+.board-wrap:has(.canvas-toolbox.dock-bottom.layout-horizontal) .react-flow__minimap { bottom: 72px; }
+.canvas-tool-strip button { flex: 0 0 auto; position: relative; display: grid; place-items: center; width: 36px; height: 36px; min-height: 36px; padding: 0; background: transparent; border: 0; border-radius: 8px; color: #465369; }
+.canvas-tool-strip button:hover:not(:disabled), .canvas-tool-strip button[aria-expanded="true"] { background: #edf1f6; color: #15253c; }
+.canvas-tool-strip button:focus-visible { outline: 2px solid #c7000b; outline-offset: 1px; }
+.canvas-tool-strip button.tool-add { background: #c7000b; color: white; }
+.canvas-tool-strip button.tool-add:hover { background: #ab0009; color: white; }
+.canvas-tool-strip button.tool-delete:hover:not(:disabled) { color: #c7000b; background: #fff0f1; }
+.canvas-tool-strip button.tool-grip { width: 23px; cursor: grab; color: #98a2b2; touch-action: none; }
+.canvas-tool-strip button.tool-grip:active { cursor: grabbing; }
+.tool-separator { width: 1px; height: 22px; margin: 0 3px; background: #e2e7ee; }
+.layout-vertical .tool-separator { width: 22px; height: 1px; margin: 3px 0; }
+.tool-tooltip { display: none; position: absolute; top: calc(100% + 10px); left: 50%; transform: translateX(-50%); padding: 5px 8px; border-radius: 6px; color: #fff; background: #29364a; white-space: nowrap; font-size: 11px; pointer-events: none; }
+.canvas-tool:hover:not(:disabled) .tool-tooltip, .canvas-tool:focus-visible .tool-tooltip { display: block; }
+.dock-bottom .tool-tooltip { top: auto; bottom: calc(100% + 10px); }
+.layout-vertical .tool-tooltip { top: 50%; bottom: auto; left: calc(100% + 12px); transform: translateY(-50%); }
+.dock-right.layout-vertical .tool-tooltip { left: auto; right: calc(100% + 12px); }
+.canvas-toolbar-settings { position: absolute; width: 226px; padding: 16px; border: 1px solid #dbe2eb; border-radius: 12px; background: white; box-shadow: 0 12px 38px #26344b22; text-align: left; }
+.canvas-toolbar-settings p { margin: 12px 0 6px; font-size: 12px; color: #6e7b8d; }
+.canvas-toolbar-settings > div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.canvas-toolbar-settings button { padding: 7px; border: 1px solid #dce3ed; border-radius: 7px; background: #fff; color: #465369; font-size: 12px; }
+.canvas-toolbar-settings button[aria-pressed="true"] { border-color: #e5a1a8; background: #fff1f2; color: #b1000a; }
+.canvas-toolbar-settings small { display: block; margin-top: 12px; color: #7a8697; font-size: 11px; line-height: 1.6; }
+.dock-top .canvas-toolbar-settings { top: calc(100% + 10px); left: 50%; transform: translateX(-50%); }
+.dock-bottom .canvas-toolbar-settings { bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); }
+.layout-vertical .canvas-toolbar-settings { top: 0; bottom: auto; left: calc(100% + 10px); transform: none; }
+.dock-bottom.layout-vertical .canvas-toolbar-settings { top: auto; bottom: 0; }
+.dock-right.layout-vertical .canvas-toolbar-settings { left: auto; right: calc(100% + 10px); }
+.dock-left.layout-horizontal .canvas-toolbar-settings { top: calc(100% + 10px); left: 0; }
+.dock-right.layout-horizontal .canvas-toolbar-settings { top: calc(100% + 10px); right: 0; }
+.toolbar-dock-preview { position: absolute; z-index: 7; pointer-events: none; background: #c7000b13; border: 2px dashed #c7000b66; border-radius: 10px; }
+.toolbar-dock-preview.dock-top { left: 8px; right: 8px; top: 8px; height: 54px; }
+.toolbar-dock-preview.dock-bottom { left: 8px; right: 8px; bottom: 8px; height: 54px; }
+.toolbar-dock-preview.dock-left { left: 8px; top: 8px; bottom: 8px; width: 54px; }
+.toolbar-dock-preview.dock-right { right: 8px; top: 8px; bottom: 8px; width: 54px; }
+.task-monitor-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #e0e6ee; border-radius: 8px; background: #f7f9fc; color: #526277; font-size: 12px; }
+.task-manager-heading .task-monitor-toggle { margin-left: auto; }
+.canvas-task-monitor.collapsed { padding-block: 10px; }
 .flow-workspace .react-flow { background: #f7f8fa; }
 .react-flow__node-canvas { border-radius: 13px; }
 .react-flow__node.flow-node-frame-locked { z-index: -10 !important; }

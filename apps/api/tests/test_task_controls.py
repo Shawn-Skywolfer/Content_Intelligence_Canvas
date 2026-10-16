@@ -86,3 +86,19 @@ def test_generation_uses_task_provider_even_if_default_changes(tmp_path, monkeyp
     with provider_scope(a):
         assert gateway.complete("系统", "测试")[1]["model"] == "A"
     assert captured == [("https://a.example/v1/chat/completions", "system_proxy")]
+
+
+def test_mcp_enabled_for_all_research_node_types_on_start_and_retry(tmp_path, monkeypatch):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("联网加工", "问题", "")
+    node = repo.create_node(project["id"], {"title": "输入"})
+    monkeypatch.setattr(routes, "get_container", lambda: SimpleNamespace(workspace=repo))
+    monkeypatch.setattr(routes, "_launch_magic_job", lambda *args: None)
+    for output_type in ("insight", "challenge", "creative_pattern", "note"):
+        request = MagicRequest(node_ids=[node["id"]], instruction="综合内外资料", output_type=output_type, web_search=True)
+        job = routes.start_magic_job(project["id"], request)
+        assert job["request"]["web_search"] is True
+        routes.pause_magic_job(job["job_id"])
+        retried = routes.resume_magic_job(job["job_id"])
+        assert retried["request"]["output_type"] == output_type and retried["request"]["web_search"] is True
+        routes.cancel_magic_job(job["job_id"])

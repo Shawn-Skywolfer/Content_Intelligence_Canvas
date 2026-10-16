@@ -1,11 +1,15 @@
 import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import CanvasToolbar from "./CanvasToolbar";
+
 import {
   applyNodeChanges, Background, Connection, ConnectionMode, Controls, Edge, EdgeChange, Handle,
   MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow, ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api, CanvasData, CanvasEdge, CanvasNode, ContentFormat, MagicJob, Project } from "./api";
+
+const WEB_SEARCH_TYPES = new Set(["insight", "challenge", "creative_pattern", "note"]);
 
 const NODE_LABELS: Record<string, string> = {
   idea: "想法", brief: "简报", note: "笔记", knowledge: "知识", fact: "事实",
@@ -192,7 +196,7 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       <label>负向 Prompt<textarea value={negative} maxLength={2000} disabled={!editable} onChange={(event) => setNegative(event.target.value)} /></label>
       <div className="advanced-grid"><label>输出节点类型<select disabled={!editable} value={outputType} onChange={(event) => setOutputType(event.target.value)}>{["insight", "challenge", "creative_pattern", "note", "output"].map((type) => <option key={type} value={type}>{NODE_LABELS[type]}</option>)}</select></label>{outputType === "output" && <label>内容形态<select disabled={!editable} value={format} onChange={(event) => setFormat(event.target.value)}>{formats.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}</div>
       <p>继承上游层级：{String(job.request?.upstream_depth ?? 6)} · 网络搜索：{job.request?.web_search ? "开启" : "关闭"}</p>
-      {editable && <><p>继续或重试将使用当前默认模型重新执行；已发送给供应商的请求可能仍会计费。</p><button className="primary" disabled={pending || instruction.trim().length < 2} onClick={() => onResume({ ...job.request, node_ids: job.node_ids, instruction: instruction.trim(), negative_prompt: negative, output_type: outputType, format, web_search: outputType === "insight" && Boolean(job.request?.web_search) })}>按以上要求{job.status === "paused" ? "继续" : "重试"}</button></>}
+      {editable && <><p>继续或重试将使用当前默认模型重新执行；已发送给供应商的请求可能仍会计费。</p><button className="primary" disabled={pending || instruction.trim().length < 2} onClick={() => onResume({ ...job.request, node_ids: job.node_ids, instruction: instruction.trim(), negative_prompt: negative, output_type: outputType, format, web_search: WEB_SEARCH_TYPES.has(outputType) && Boolean(job.request?.web_search) })}>按以上要求{job.status === "paused" ? "继续" : "重试"}</button></>}
       <h3>输入节点（当前内容）</h3>{job.node_ids.map((id) => { const node = nodes.find((item) => item.id === id); return <details key={id}><summary>{node?.title || `已删除节点 ${id}`}</summary><Markdown>{node?.body || "节点内容已不存在"}</Markdown></details>; })}
       <h3>执行进展</h3>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次</small><strong>{event.phase}</strong><p>{event.detail}</p></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
       {job.result?.node && <><h3>生成结果：{job.result.node.title}</h3><Markdown>{job.result.node.body}</Markdown></>}
@@ -227,6 +231,8 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const [magicJobs, setMagicJobs] = useState<MagicJob[]>([]);
   const [taskDetailId, setTaskDetailId] = useState("");
   const [taskFilter, setTaskFilter] = useState("all");
+  const [tasksCollapsed, setTasksCollapsed] = useState(() => { try { return localStorage.getItem("cic.canvas.tasks.collapsed") === "true"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("cic.canvas.tasks.collapsed", String(tasksCollapsed)); } catch { /* 当前页面仍可使用 */ } }, [tasksCollapsed]);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [taskMessage, setTaskMessage] = useState("");
   const [taskOperations, setTaskOperations] = useState<string[]>([]);
@@ -437,7 +443,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   function startRightPan(event: ReactPointerEvent<HTMLElement>) {
-    if (event.button !== 2 || !flowInstanceRef.current || (event.target as HTMLElement).closest("input,textarea,select,[contenteditable='true'],.react-flow__controls,.react-flow__minimap")) return;
+    if (event.button !== 2 || !flowInstanceRef.current || (event.target as HTMLElement).closest("input,textarea,select,[contenteditable='true'],.react-flow__controls,.react-flow__minimap,.canvas-toolbox")) return;
     event.preventDefault(); event.stopPropagation();
     const viewport = flowInstanceRef.current.getViewport();
     rightPanRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origin: viewport, current: viewport };
@@ -447,7 +453,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   function moveBoardPointer(event: ReactPointerEvent<HTMLElement>) {
-    cursorRef.current = { x: event.clientX, y: event.clientY };
+    if (!(event.target as Element | null)?.closest(".canvas-toolbox")) cursorRef.current = { x: event.clientX, y: event.clientY };
     const pan = rightPanRef.current;
     if (!pan || pan.pointerId !== event.pointerId) return;
     event.preventDefault(); event.stopPropagation();
@@ -732,7 +738,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     try {
       if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       const job = await api.startMagic(activeProject.id, inputs, magicType === "output" && !magic.trim() ? "结合节点内容生成草稿" : magic,
-        magicType, magicNegativePrompt, magicType === "insight" && webSearch, contentFormat, contentDuration, upstreamDepth);
+        magicType, magicNegativePrompt, WEB_SEARCH_TYPES.has(magicType) && webSearch, contentFormat, contentDuration, upstreamDepth);
       setMagicJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
       setStatus(`已启动生成任务：${job.job_id}`);
       setDrafts((current) => { const next = { ...current }; delete next[submittedDraftKey]; return next; });
@@ -780,15 +786,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }
 
   return <div className="canvas-page">
-    <PageHeader title={activeProject.name} description="用有向连接组织上下文，按所选层级继承上游内容。" actions={<>
-      <button className="secondary" disabled={!undoStack.current.length} onClick={undo} title="Ctrl+Z">撤回</button>
-      <button className="secondary" disabled={!redoStack.current.length} onClick={redo} title="Ctrl+Shift+Z / Ctrl+Y">重做</button>
-      <button className="secondary" onClick={addNote} title="N">添加节点</button>
-      <button className="secondary" disabled={!selectedIds.length && !selectedEdgeIds.length} onClick={deleteSelection} title="Delete">删除</button>
-      <button className="secondary" disabled={selected.length < 2} onClick={createGroup}>创建分组</button>
-      <button className="secondary" onClick={organizeConnections}>整理连线</button>
-      <button className="secondary" onClick={organizeCanvas}>按类型整理</button>
-    </>} />
+    <PageHeader title={activeProject.name} description="用有向连接组织上下文，按所选层级继承上游内容。" />
     <div className="canvas-shortcuts"><span>卡片显示模型摘要，点击展开全文</span><span>双击正文编辑 Markdown</span><span>四向端口拖出有向连线</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
     <div className="canvas-workspace flow-workspace">
       <section className={`board-wrap${panningRight ? " panning-right" : ""}`} ref={boardElementRef}
@@ -796,6 +794,15 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         onPointerUpCapture={finishRightPan} onPointerCancelCapture={finishRightPan} onLostPointerCapture={finishRightPan}
         onPointerLeave={() => { if (!rightPanRef.current) cursorRef.current = null; }}
         onContextMenuCapture={(event) => { if (!(event.target as HTMLElement).closest("input,textarea,[contenteditable='true']")) event.preventDefault(); }}>
+        <CanvasToolbar tools={[
+          { icon: "undo", label: "撤回", shortcut: "Ctrl+Z", disabled: !undoStack.current.length, onClick: undo },
+          { icon: "redo", label: "重做", shortcut: "Ctrl+Shift+Z / Ctrl+Y", disabled: !redoStack.current.length, onClick: redo },
+          { icon: "add", label: "添加节点", shortcut: "N", onClick: addNote },
+          { icon: "delete", label: "删除", shortcut: "Delete", disabled: !selectedIds.length && !selectedEdgeIds.length, onClick: deleteSelection },
+          { icon: "group", label: "创建分组", disabled: selected.length < 2, onClick: createGroup },
+          { icon: "connections", label: "整理连线", onClick: organizeConnections },
+          { icon: "organize", label: "按类型整理", onClick: organizeCanvas },
+        ]} />
         <ReactFlow
           onInit={(instance) => { flowInstanceRef.current = instance; }}
           nodes={displayNodes}
@@ -846,7 +853,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           <label>可继承的上游节点层级<select value={upstreamDepth} onChange={(event) => updateDraft({ depth: Number(event.target.value) })}><option value={0}>不继承</option><option value={1}>仅上游一层</option><option value={2}>上游两层</option><option value={3}>上游三层</option><option value={6}>上游六层（默认）</option><option value={12}>上游十二层</option></select></label>
           <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 原节点保留；结果进入新的下游节点并标注加工来源。</p>
           <label>新节点类型<select value={magicType} onChange={(event) => updateDraft({ type: event.target.value })}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
-          {magicType === "insight" && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）</label>}
+          {WEB_SEARCH_TYPES.has(magicType) && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）</label>}
           {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
           <label>{magicType === "output" ? "正向 Prompt（要做的事情）" : "处理要求"}<textarea value={magic} onChange={(event) => updateDraft({ magic: event.target.value })} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
           {magicType === "output" && <label>负向 Prompt（不要做的事情）<textarea value={magicNegativePrompt} onChange={(event) => updateDraft({ negative: event.target.value })} placeholder="例如：不要编造案例；不要使用夸张标题；不要忽略证据不足的部分。" /></label>}
@@ -855,8 +862,9 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         </section>}
       </aside>
     </div>
-    <section className="canvas-task-monitor" aria-label="AI 任务状态">
-      <div className="task-manager-heading"><strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong><span>暂停 {magicJobs.filter((job) => job.status === "paused").length} · 失败 {magicJobs.filter((job) => job.status === "failed").length} · 共 {magicJobs.length} 项</span></div>
+    <section className={`canvas-task-monitor${tasksCollapsed ? " collapsed" : ""}`} aria-label="AI 任务状态">
+      <div className="task-manager-heading"><strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong><span>暂停 {magicJobs.filter((job) => job.status === "paused").length} · 失败 {magicJobs.filter((job) => job.status === "failed").length} · 共 {magicJobs.length} 项</span><button type="button" className="task-monitor-toggle" aria-expanded={!tasksCollapsed} aria-controls="canvas-task-details" onClick={() => setTasksCollapsed((value) => !value)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d={tasksCollapsed ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} /></svg>{tasksCollapsed ? "展开任务监测" : "折叠任务监测"}</button></div>
+      {!tasksCollapsed && <div id="canvas-task-details">
       <p className="task-default-model">后续任务默认模型：{defaultModel ? `${defaultModel.name || "未配置"} · ${defaultModel.model_name || "无模型"} · ${NETWORK_LABELS[defaultModel.network_mode || ""] || "自动"}` : "正在读取"}。可在设置中“保存并设为默认”。</p>
       <div className="task-manager-toolbar"><label>任务状态<select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}><option value="all">全部任务</option>{Object.entries(TASK_STATUS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><span>已选 {selectedTaskIds.length} 项</span><button className="secondary" onClick={() => void batchTaskAction("pause")}>暂停选中</button><button className="secondary" onClick={() => void batchTaskAction("resume")}>继续 / 重试选中</button><button className="secondary danger" onClick={() => void batchTaskAction("cancel")}>取消选中</button></div>
       {taskMessage && <p className="task-manager-message" role="status">{taskMessage}</p>}
@@ -869,6 +877,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <div className="canvas-task-track"><i style={{ width: `${job.progress}%` }} /></div>
       </article>)}</div>
       {!magicJobs.length && <span>暂无生成任务</span>}
+      </div>}
     </section>
     {taskDetailId && (() => { const job = magicJobs.find((item) => item.job_id === taskDetailId); return job ? <TaskDetails key={job.job_id} job={job} nodes={board.nodes} formats={contentFormats} controls={taskControls(job)} pending={taskOperations.includes(job.job_id)} message={taskMessage} onClose={() => setTaskDetailId("")} onResume={(values) => void taskAction(job.job_id, "resume", values)} /> : null; })()}
     {expandedNodeId && (() => {

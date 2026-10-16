@@ -5,6 +5,7 @@ import textwrap
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.repositories.workspace import WorkspaceRepository
+from app.schemas.workspace import WEB_SEARCH_NODE_TYPES
 from app.services.content_formats import get_content_format
 from app.services.ai.gateway import AIProviderGateway
 from app.services.ai.cancellation import check_cancelled
@@ -160,8 +161,8 @@ class ContentWorkflowService:
         wiki_evidence = self._wiki_context(instruction, context_nodes)
         web_evidence: list[dict[str, Any]] = []
         if web_search:
-            if output_type != "insight":
-                raise ValueError("仅洞察节点支持检索网络资料")
+            if output_type not in WEB_SEARCH_NODE_TYPES:
+                raise ValueError("洞察、质疑、创意模式和笔记节点支持检索网络资料")
             if not self.mcp_search:
                 raise ValueError("搜索 MCP 尚未配置")
             emit(40, "检索网络资料", "正在通过搜索 MCP 获取网络来源")

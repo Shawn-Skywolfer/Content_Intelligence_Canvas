@@ -120,6 +120,9 @@ class WorkflowResponse(BaseModel):
     message: str
 
 
+WEB_SEARCH_NODE_TYPES = frozenset({"insight", "challenge", "creative_pattern", "note"})
+
+
 class MagicRequest(BaseModel):
     node_ids: list[str] = Field(min_length=1, max_length=20)
     instruction: str = Field(min_length=2, max_length=1000)

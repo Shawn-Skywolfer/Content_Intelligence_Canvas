@@ -3,6 +3,7 @@ import { useState } from "react";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import CanvasView from "./CanvasView";
+import { api } from "./api";
 import type { CanvasData, CanvasNode, Project } from "./api";
 
 class ResizeObserverStub {
@@ -48,6 +49,22 @@ describe("真实 React Flow 中的研究历史跳转", () => {
     view.unmount();
   });
 
+  it("任务监测可折叠并记忆，折叠时保留任务计数", async () => {
+    localStorage.removeItem("cic.canvas.tasks.collapsed");
+    const poll = vi.spyOn(api, "listMagicJobs").mockResolvedValue([{ job_id: "active-job", project_id: project.id, node_ids: [ids[0]], status: "running", phase: "检索网络资料", progress: 40, detail: "搜索 MCP", created_at: "" }]);
+    const props = { project, canvas, selectedIds: [], setSelectedIds: () => {}, onChange: () => {}, onRefresh: async () => {}, setStatus: () => {} };
+    let view = render(<CanvasView {...props} />);
+    await waitFor(() => expect(view.getByLabelText("AI 任务状态").textContent).toContain("正在生成 1"));
+    fireEvent.click(view.getByRole("button", { name: "折叠任务监测" }));
+    expect(view.queryByText("暂停选中")).toBeNull();
+    expect(view.getByLabelText("AI 任务状态").textContent).toContain("正在生成 1");
+    view.unmount();
+    view = render(<CanvasView {...props} />);
+    expect(view.getByRole("button", { name: "展开任务监测" }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(view.getByRole("button", { name: "展开任务监测" }));
+    expect(view.getByText("暂停选中")).toBeTruthy();
+    view.unmount(); poll.mockRestore(); localStorage.removeItem("cic.canvas.tasks.collapsed");
+  });
   it("卡片展示完整短摘要，展开后渲染完整 Markdown 正文", async () => {
     const full = "## 完整分析\n\n正文末尾的关键限定条件。";
     const board = { ...canvas, nodes: [{ ...nodes[0], body: full, summary: "浓缩后的关键判断。" }] };

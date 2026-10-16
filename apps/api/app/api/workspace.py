@@ -20,6 +20,7 @@ from app.schemas.workspace import (
     ContentFormatsRequest,
     ContentGenerateRequest,
     MagicRequest,
+    WEB_SEARCH_NODE_TYPES,
     NodeGenerateRequest,
     NodeCreateRequest,
     NodeSummaryRequest,
@@ -405,8 +406,8 @@ def _launch_magic_job(job: dict[str, Any], request: MagicRequest, provider: dict
 def start_magic_job(project_id: str, request: MagicRequest) -> dict[str, Any]:
     _project(project_id)
     workspace = get_container().workspace
-    if request.web_search and request.output_type != "insight":
-        raise HTTPException(422, "只有洞察节点可以启用网络检索")
+    if request.web_search and request.output_type not in WEB_SEARCH_NODE_TYPES:
+        raise HTTPException(422, "洞察、质疑、创意模式和笔记节点可以启用网络检索")
     if not request.node_ids or any(not (node := workspace.get_node(node_id)) or node["project_id"] != project_id for node_id in request.node_ids):
         raise HTTPException(422, "部分输入节点不存在或不属于当前项目")
     with _magic_lock:
@@ -473,8 +474,8 @@ def resume_magic_job(job_id: str, request: MagicRequest | None = None) -> dict[s
         raise HTTPException(422, "重试任务必须使用原输入节点")
     if any(not (node := workspace.get_node(node_id)) or node["project_id"] != job["project_id"] for node_id in request.node_ids):
         raise HTTPException(422, "输入节点已删除，无法重新执行")
-    if request.web_search and request.output_type != "insight":
-        raise HTTPException(422, "只有洞察节点可以启用网络检索")
+    if request.web_search and request.output_type not in WEB_SEARCH_NODE_TYPES:
+        raise HTTPException(422, "洞察、质疑、创意模式和笔记节点可以启用网络检索")
     with _magic_lock:
         if any(other["job_id"] != job_id and other["status"] == "running" and set(other["node_ids"]) == set(job["node_ids"])
                for other in workspace.list_magic_jobs(job["project_id"])):

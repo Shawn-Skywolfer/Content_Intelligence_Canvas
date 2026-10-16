@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
@@ -94,7 +95,8 @@ def test_streamable_mcp_search_discovers_tool_and_redacts_key(tmp_path, monkeypa
     assert "tavilyApiKey=private-key" in calls[0][1]
 
 
-def test_insight_combines_internal_wiki_and_mcp_sources(tmp_path):
+@pytest.mark.parametrize("output_type", ["insight", "challenge", "creative_pattern", "note"])
+def test_supported_nodes_combine_internal_wiki_and_mcp_sources(tmp_path, output_type):
     repo = WorkspaceRepository(tmp_path / "app.db")
     project = repo.create_project("测试", "概念", "")
     source = repo.create_node(project["id"], {"title": "核心问题", "body": "内部知识摘要"})
@@ -111,8 +113,9 @@ def test_insight_combines_internal_wiki_and_mcp_sources(tmp_path):
 
     workflow = ContentWorkflowService(repo, None, None, AI(), None, Search())
     workflow._wiki_context = lambda question, nodes: [{"chunk_id": "wiki-1", "excerpt": "内部 Wiki 证据"}]
-    created, run_id, used_llm, message = workflow.magic(project["id"], [source["id"]], "形成洞察", "insight", web_search=True)
+    created, run_id, used_llm, message = workflow.magic(project["id"], [source["id"]], "综合分析", output_type, web_search=True)
     assert used_llm
+    assert created["type"] == output_type
     assert prompts[0][1]["wiki_evidence"][0]["chunk_id"] == "wiki-1"
     assert prompts[0][1]["web_evidence"][0]["url"] == "https://example.org"
     assert created["metadata"]["web_sources"][0]["url"] == "https://example.org"
