@@ -47,12 +47,13 @@ def test_research_creates_only_model_authored_and_cited_nodes(tmp_path: Path) ->
 
 def test_research_synthesis_receives_global_context_from_planning(tmp_path: Path) -> None:
     repo = WorkspaceRepository(tmp_path / "app.db")
-    project = repo.create_project("供电研究", "AIDC 供电")
+    project = repo.create_project("供电研究", "AIDC 供电", "面向技术决策者，比较可靠性与 TCO")
     hit = KnowledgeHit("real", "doc", "供电", (), "原始事实", 1, ("fts",),
                        "power.md", 1, 2, None, ())
 
     class Wiki:
-        def gather(self, *_args, **_kwargs):
+        def gather(self, _source, question, **_kwargs):
+            assert "面向技术决策者，比较可靠性与 TCO" in question
             return [hit], {"agent_context": {"overview.md": "全局判断", "domain-map.md": "领域关系"}}
 
         def evidence(self, _hits):
@@ -61,6 +62,7 @@ def test_research_synthesis_receives_global_context_from_planning(tmp_path: Path
     class Model:
         def complete_json(self, _system, prompt):
             payload = json.loads(prompt)
+            assert payload["project_brief"] == "面向技术决策者，比较可靠性与 TCO"
             assert payload["agent_context"] == {"overview.md": "全局判断", "domain-map.md": "领域关系"}
             return {"findings": [{"type": "fact", "title": "供电", "body": "原始事实",
                                   "evidence_chunk_ids": ["real"]}],

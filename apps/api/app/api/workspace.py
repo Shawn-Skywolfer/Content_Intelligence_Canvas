@@ -144,7 +144,10 @@ def get_project(project_id: str) -> dict[str, Any]:
 def update_project(project_id: str, request: ProjectUpdateRequest) -> dict[str, Any]:
     _project(project_id)
     values = request.model_dump(exclude_none=True)
-    return get_container().workspace.update_project(project_id, values) or _project(project_id)
+    try:
+        return get_container().workspace.update_project(project_id, values) or _project(project_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.delete("/projects/{project_id}", status_code=204)

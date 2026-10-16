@@ -48,6 +48,50 @@ const canvas: CanvasData = {
 
 describe("白板进入与节点编辑", () => {
   beforeEach(() => { vi.spyOn(api, "listMagicJobs").mockResolvedValue([]); });
+  it("分组内右键拖动画布，锁定分组保持底层，且拖动结束才保存视口", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const group = { ...canvas.nodes[0], id: "locked-group", type: "frame", title: "锁定分组", locked: true, x: -40, y: -40, width: 900, height: 600 };
+    const onChange = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas: { ...canvas, nodes: [group, ...canvas.nodes] }, selectedIds: [group.id], setSelectedIds: vi.fn(), onChange, onRefresh: async () => {}, setStatus: vi.fn() })); });
+    const flow = renderer.root.findAll((item) => typeof item.props.onInit === "function")[0];
+    expect(flow.props.elevateNodesOnSelect).toBe(false);
+    expect(flow.props.nodes.find((node: { id: string }) => node.id === group.id).zIndex).toBe(-10);
+    const setViewport = vi.fn();
+    flow.props.onInit({ getViewport: () => ({ x: -200, y: 50, zoom: .5 }), setViewport });
+    const board = () => renderer.root.findAllByType("section").find((item) => item.props.className?.includes("board-wrap"))!;
+    const target = { closest: () => null };
+    const element = { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() };
+    const event = { pointerId: 1, button: 2, clientX: 500, clientY: 300, target, currentTarget: element, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    await act(async () => { board().props.onPointerDownCapture(event); });
+    onChange.mockClear();
+    await act(async () => { board().props.onPointerMoveCapture({ ...event, clientX: 620, clientY: 380 }); });
+    expect(setViewport).toHaveBeenCalledWith({ x: -80, y: 130, zoom: .5 }, { duration: 0 });
+    expect(onChange).not.toHaveBeenCalled();
+    await act(async () => { board().props.onPointerUpCapture(event); });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ viewport: { x: -80, y: 130, zoom: .5 } }));
+    const preventDefault = vi.fn();
+    board().props.onContextMenuCapture({ target, preventDefault });
+    expect(preventDefault).toHaveBeenCalled();
+    await act(async () => { renderer.unmount(); });
+  });
+  it("按 N 将当前鼠标屏幕位置转换为白板坐标创建节点", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let keydown: (event: unknown) => void = () => {};
+    vi.stubGlobal("window", { addEventListener(type: string, listener: (event: unknown) => void) { if (type === "keydown") keydown = listener; }, removeEventListener() {} });
+    const onChange = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(createElement(CanvasView, { project, canvas, selectedIds: [], setSelectedIds: vi.fn(), onChange, onRefresh: async () => {}, setStatus: vi.fn() })); });
+    const convert = vi.fn(() => ({ x: 1440, y: 780 }));
+    renderer.root.findAll((item) => typeof item.props.onInit === "function")[0].props.onInit({ getViewport: () => ({ x: -400, y: -100, zoom: .5 }), screenToFlowPosition: convert });
+    const board = renderer.root.findAllByType("section").find((item) => item.props.className?.includes("board-wrap"))!;
+    board.props.onPointerMoveCapture({ clientX: 720, clientY: 390 });
+    await act(async () => { keydown({ key: "n", target: { closest: () => null }, preventDefault() {} }); });
+    expect(convert).toHaveBeenCalledWith({ x: 720, y: 390 }, { snapToGrid: true });
+    expect(onChange.mock.calls.at(-1)![0].nodes.at(-1)).toMatchObject({ type: "note", x: 1440, y: 780 });
+    await act(async () => { renderer.unmount(); });
+  });
   it("历史失败任务可查看完整错误、补充 Prompt 后重试，任务列表不截断到六项", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });

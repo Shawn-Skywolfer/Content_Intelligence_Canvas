@@ -246,17 +246,37 @@ class WorkspaceRepository:
             row = db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _project_brief_node(db: sqlite3.Connection, project_id: str) -> sqlite3.Row | None:
+        rows = db.execute("SELECT * FROM canvas_nodes WHERE project_id=? AND type='brief' ORDER BY created_at,id", (project_id,)).fetchall()
+        return next((row for row in rows if read_metadata(row["metadata_json"]).get("project_brief")), None) or next(
+            (row for row in rows if read_metadata(row["metadata_json"]).get("starter_group") == "input"), None
+        ) or next((row for row in rows if row["title"] == "内容简报"), None)
+
     def update_project(self, project_id: str, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {key: value for key, value in values.items() if key in {"name", "idea", "brief", "status"}}
         if not allowed:
             return self.get_project(project_id)
         allowed["updated_at"] = utc_now()
         assignments = ",".join(f"{key}=?" for key in allowed)
+        needs_brief_node = False
         with self._connect() as db:
+            brief_node = self._project_brief_node(db, project_id) if "brief" in allowed else None
+            if brief_node and brief_node["locked"] and brief_node["body"] != allowed["brief"]:
+                raise ValueError("内容简报节点已锁定，请先在白板中解锁再修改简报")
             db.execute(
                 f"UPDATE projects SET {assignments} WHERE id=?",
                 (*allowed.values(), project_id),
             )
+            if "brief" in allowed:
+                needs_brief_node = brief_node is None
+                if brief_node and brief_node["body"] != allowed["brief"]:
+                    db.execute("UPDATE canvas_nodes SET body=?,summary=NULL,summary_model=NULL,updated_at=? WHERE id=?",
+                               (allowed["brief"], allowed["updated_at"], brief_node["id"]))
+                    db.execute("UPDATE canvases SET updated_at=? WHERE project_id=?", (allowed["updated_at"], project_id))
+        if needs_brief_node and self.get_project(project_id):
+            self.create_node(project_id, {"type": "brief", "title": "内容简报", "body": allowed["brief"],
+                                          "x": 420, "y": 130, "metadata": {"starter_group": "input", "project_brief": True}})
         return self.get_project(project_id)
 
     def delete_project(self, project_id: str) -> bool:
@@ -631,11 +651,14 @@ class WorkspaceRepository:
         clean["updated_at"] = utc_now()
         assignments = ",".join(f"{key}=?" for key in clean)
         with self._connect() as db:
+            brief_node = self._project_brief_node(db, project_id) if "body" in clean and clean["body"] != current["body"] else None
             db.execute(
                 f"UPDATE canvas_nodes SET {assignments} WHERE id=? AND project_id=?",
                 (*clean.values(), node_id, project_id),
             )
             db.execute("UPDATE projects SET updated_at=? WHERE id=?", (utc_now(), project_id))
+            if brief_node and brief_node["id"] == node_id:
+                db.execute("UPDATE projects SET brief=? WHERE id=?", (clean["body"], project_id))
         return self.get_node(node_id)
 
     def save_node_summary(self, project_id: str, node_id: str, title: str, body: str,

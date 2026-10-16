@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { api } from "./api";
@@ -28,9 +28,58 @@ const run: ResearchRun = {
   created_at: "2026-09-23T00:00:00Z", completed_at: "2026-09-23T00:02:00Z",
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("历史研究与项目入口", () => {
+  it("全局侧边栏可折叠、跨页面保留并在重新打开后记住状态", async () => {
+    window.localStorage.setItem("cic.sidebar.collapsed", "false");
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([]);
+    vi.spyOn(api, "listSources").mockResolvedValue([]);
+    let view = render(<App />);
+    fireEvent.click(view.getByRole("button", { name: "折叠侧边栏" }));
+    expect(view.container.querySelector(".app-shell.sidebar-collapsed")).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "快速研究" }));
+    await waitFor(() => expect(view.getByText("请先创建或选择一个项目")).toBeTruthy());
+    expect(view.container.querySelector(".app-shell.sidebar-collapsed")).toBeTruthy();
+    view.unmount();
+    view = render(<App />);
+    expect(view.getByRole("button", { name: "展开侧边栏" })).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "展开侧边栏" }));
+    expect(view.container.querySelector(".app-shell.sidebar-collapsed")).toBeNull();
+    view.unmount(); window.localStorage.removeItem("cic.sidebar.collapsed");
+  });
+  it("快速研究提供简报保存入口，开始研究前保存最新要求并在白板中显示", async () => {
+    const source = { id: "wiki", name: "本地 Wiki", root_path: "D:\\Wiki", connector_type: "local_vault", enabled: true };
+    vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
+    vi.spyOn(api, "listProjects").mockResolvedValue([project]);
+    vi.spyOn(api, "listSources").mockResolvedValue([source]);
+    vi.spyOn(api, "listRuns").mockResolvedValue([]);
+    vi.spyOn(api, "listAssets").mockResolvedValue([]);
+    vi.spyOn(api, "listMagicJobs").mockResolvedValue([]);
+    const update = vi.spyOn(api, "updateProject").mockImplementation(async (_id, values) => ({ ...project, ...values }));
+    const start = vi.spyOn(api, "startQuickResearch").mockImplementation(async () => {
+      expect(update).toHaveBeenLastCalledWith(project.id, { brief: "面向技术决策者，比较 TCO" });
+      return { job_id: "research", project_id: project.id, status: "completed", progress: 100, phase: "完成", detail: "研究已完成", result: { nodes: [], run_id: "r", used_llm: true, message: "研究完成" } };
+    });
+    vi.spyOn(api, "getCanvas").mockResolvedValue({ ...canvas, nodes: [{ ...nodes[0], id: "brief", type: "brief", title: "内容简报", body: "面向技术决策者，比较 TCO", summary: "面向技术决策者，比较 TCO" }] });
+    const view = render(<App />);
+    await waitFor(() => expect(view.getByRole("button", { name: /AIDC 液冷研究/ })).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "快速研究" }));
+    await waitFor(() => expect(view.getByLabelText("受众、目标与创作要求（可选）")).toBeTruthy());
+    const brief = view.getByLabelText("受众、目标与创作要求（可选）");
+    fireEvent.change(brief, { target: { value: "第一版创作要求" } });
+    fireEvent.click(view.getByRole("button", { name: "保存简报" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(project.id, { brief: "第一版创作要求" }));
+    await waitFor(() => expect(view.getByText(/简报已保存并同步到白板/)).toBeTruthy());
+    fireEvent.change(brief, { target: { value: "面向技术决策者，比较 TCO" } });
+    fireEvent.click(view.getByRole("button", { name: "开始快速研究" }));
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    await waitFor(() => expect(view.container.querySelector(".flow-card-expand")).toBeTruthy());
+    fireEvent.click(view.container.querySelector(".flow-card-expand")!);
+    expect(view.getByRole("dialog", { name: "内容简报的完整内容" }).textContent).toContain("面向技术决策者，比较 TCO");
+    view.unmount();
+  });
   it("最大输出可清空后输入 256000，并以数值提交保存", async () => {
     const provider: Provider = { id: "p1", name: "DeepSeek", protocol: "openai_compatible", base_url: "https://example.org/v1", model_name: "deepseek-flash", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, extra: {}, has_api_key: true, has_proxy_password: false, created_at: "", updated_at: "" };
     vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });

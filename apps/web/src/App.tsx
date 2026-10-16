@@ -86,6 +86,10 @@ function MarkdownText({ text }: { text: string }) {
 
 export default function App() {
   const [view, setView] = useState<View>("home");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { const saved = window.localStorage.getItem("cic.sidebar.collapsed"); return saved === null ? window.innerWidth <= 930 : saved === "true"; }
+    catch { return false; }
+  });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
@@ -100,6 +104,7 @@ export default function App() {
   const saveInFlight = useRef<Promise<CanvasData> | null>(null);
 
   const activeProject = projects.find((item) => item.id === projectId) ?? null;
+  useEffect(() => { try { window.localStorage.setItem("cic.sidebar.collapsed", String(sidebarCollapsed)); } catch { /* 私密窗口仍可折叠 */ } }, [sidebarCollapsed]);
 
   useEffect(() => {
     Promise.all([api.health(), api.listProjects(), api.listSources()])
@@ -175,6 +180,11 @@ export default function App() {
     catch (error) { setStatus(`切换项目前保存失败：${errorText(error)}`); }
   }
 
+  async function openResearch() {
+    try { await flushCanvas(); setProjects(await api.listProjects()); setView("research"); }
+    catch (error) { setStatus(`打开快速研究失败：${errorText(error)}`); }
+  }
+
   async function createProject(idea: string, name: string, brief: string) {
     setBusy(true);
     try {
@@ -212,16 +222,17 @@ export default function App() {
 
   const content = (() => {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} onArchive={archiveProject} onDelete={deleteProject} />;
-    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
+    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onProjectChanged={(updated) => { setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); setCanvas(null); setDirty(false); }} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
     if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>白板加载失败</strong><p>{canvasError}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>重新读取白板</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} beforeGenerate={flushCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <AssetView project={activeProject} assets={assets} onChanged={() => refreshCanvas(true)} onOpenNode={(id) => { setSelectedIds([id]); void openCanvas(projectId); }} setStatus={setStatus} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
   })();
 
-  return <div className="app-shell">
-    <aside className="sidebar">
+  return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <aside className="sidebar" id="global-sidebar">
+      <div className="sidebar-tools"><button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"} title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)}><span aria-hidden="true">{sidebarCollapsed ? "»" : "«"}</span></button></div>
       <div className="brand"><span className="brand-mark">智</span><div><strong>内容智能白板</strong><small>可信知识驱动的内容工作台</small></div></div>
-      <nav aria-label="主要导航">{NAV.map((item) => <button className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
+      <nav aria-label="主要导航">{NAV.map((item) => <button aria-label={item.label} title={sidebarCollapsed ? item.label : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "research" ? void openResearch() : item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
         <span aria-hidden="true">{item.icon}</span><b>{item.label}</b>
       </button>)}</nav>
       <div className="sidebar-project">
@@ -268,12 +279,15 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen, onArchive, onDel
   </>;
 }
 
-function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onDone: (nodeIds: string[]) => Promise<void> }) {
+function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, onProjectChanged, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onProjectChanged: (project: Project) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
   const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState(6);
+  const [brief, setBrief] = useState(project?.brief ?? "");
+  const [savingBrief, setSavingBrief] = useState(false);
+  const [briefMessage, setBriefMessage] = useState("");
   const [job, setJob] = useState<ResearchJob | null>(null);
   const [history, setHistory] = useState<ResearchRun[]>([]);
   useEffect(() => { if (!sourceId && sources[0]) setSourceId(sources[0].id); }, [sourceId, sources]);
-  useEffect(() => { if (project) setQuery(project.idea); }, [project]);
+  useEffect(() => { if (project) { setQuery(project.idea); setBrief(project.brief); setBriefMessage(""); } }, [project?.id]);
   useEffect(() => {
     if (!project?.id) { setHistory([]); return; }
     let active = true;
@@ -284,6 +298,20 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
   }, [project?.id, setStatus]);
   if (!project) return <><PageHeader eyebrow="快速研究" title="只基于内部知识库形成研究发现" description="默认不联网，事实、信号、内部知识和洞察会分层进入白板。" /><EmptyProject /></>;
   const activeProject = project;
+  async function persistBrief(flush = true) {
+    if (flush) await beforeRun();
+    const text = brief.trim();
+    if (text !== activeProject.brief) {
+      const updated = await api.updateProject(activeProject.id, { brief: text });
+      onProjectChanged(updated); setBrief(updated.brief);
+    }
+    setBriefMessage(text ? "简报已保存并同步到白板，研究将使用这些创作要求" : "简报留空，将直接围绕研究问题展开");
+  }
+  async function saveBrief() {
+    setSavingBrief(true); setBriefMessage("正在保存简报…");
+    try { await persistBrief(); } catch (error) { setBriefMessage(`简报保存失败：${errorText(error)}`); }
+    finally { setSavingBrief(false); }
+  }
   async function deleteHistory(item: ResearchRun) {
     if (!window.confirm("仅删除这条研究历史记录？已生成的白板节点和证据会保留。")) return;
     try { await api.deleteResearchRun(activeProject.id, item.id); setHistory((current) => current.filter((run) => run.id !== item.id)); setStatus("已删除研究记录，白板节点保留"); }
@@ -292,6 +320,7 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
   async function run() { if (!sourceId || !query.trim()) return; setBusy(true); setStatus("研究任务已启动，可在进度框查看当前阶段");
     try {
       await beforeRun();
+      await persistBrief(false);
       let current = await api.startQuickResearch(activeProject.id, sourceId, query, count, true);
       setJob(current);
       while (current.status === "running") {
@@ -309,9 +338,11 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
     catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
   return <><PageHeader eyebrow="快速研究" title="从问题到研究发现与创意方向" description="系统先检索真实知识库，再生成 4–8 条高价值研究发现和三条可继续发展的内容方向。" />
-    <section className="research-layout"><div className="card research-form"><div className="field"><label>研究问题</label><textarea value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="field"><label>内部知识源</label><select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select></div>
+    <section className="research-layout"><div className="card research-form"><div className="field"><label>研究问题</label><textarea value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+      <div className="research-brief"><div className="section-title"><h3>内容简报</h3><button type="button" className="text-button" disabled={busy || savingBrief || !!brief.trim()} onClick={() => setBrief("目标受众：\n传播目标：\n输出形式：\n核心关注：\n语气与限制：")}>插入简报模板</button></div><label>受众、目标与创作要求（可选）<textarea value={brief} maxLength={5000} rows={6} disabled={busy || savingBrief} onChange={(event) => { setBrief(event.target.value); setBriefMessage("简报有修改，开始研究时会自动保存，也可单独保存"); }} placeholder={"例如：面向 AIDC 客户的技术决策者，形成公众号文章。重点比较供电可靠性与 TCO，语气客观，所有数据注明来源。"} /></label><p>保存后会显示在白板「01 输入与简报」的「内容简报」节点；开始研究时自动保存，并作为研究与后续内容创作的要求。</p><button type="button" className="secondary" disabled={busy || savingBrief} onClick={saveBrief}>{savingBrief ? "正在保存…" : "保存简报"}</button>{briefMessage && <p role="status" className="brief-feedback">{briefMessage}</p>}</div>
+      <div className="field"><label>内部知识源</label><select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select></div>
       <div className="inline-fields"><label>研究发现数量<input type="number" min="3" max="8" value={count} onChange={(e) => setCount(Number(e.target.value))} /></label><span>使用设置中已启用的大模型理解 Wiki，并为每条发现保留出处。</span></div>
-      <button className="primary large" disabled={busy || !sourceId} onClick={run}>{busy ? "正在研究…" : "开始快速研究"}</button>
+      <button className="primary large" disabled={busy || savingBrief || !sourceId || !query.trim()} onClick={run}>{busy ? "正在研究…" : "开始快速研究"}</button>
       {job && <div className={`research-progress ${job.status}`} aria-live="polite"><div className="progress-heading"><div><small>{job.status === "failed" ? "任务失败" : job.status === "completed" ? "任务完成" : "实时研究进度"}</small><strong>{job.phase}</strong></div><b>{Math.round(job.progress)}%</b></div><div className="progress-track"><i style={{ width: `${Math.max(2, job.progress)}%` }} /></div><p>{job.detail}</p></div>}</div>
       <div className="research-notes"><div><span>01</span><h3>内部优先</h3><p>快速模式只读取已启用知识库，不主动联网。</p></div><div><span>02</span><h3>保留证据</h3><p>每条研究发现都保存文件、标题层级、段落与参考来源。</p></div><div><span>03</span><h3>进入白板</h3><p>生成新节点与关联边，不覆盖已有思考。</p></div></div>
     </section>

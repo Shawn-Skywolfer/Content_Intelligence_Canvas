@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import {
   applyNodeChanges, Background, Connection, ConnectionMode, Controls, Edge, EdgeChange, Handle,
-  MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow,
+  MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow, ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api, CanvasData, CanvasEdge, CanvasNode, ContentFormat, MagicJob, Project } from "./api";
@@ -53,7 +53,7 @@ function FlowCard({ data, selected }: NodeProps<FlowNode>) {
     setEditing(false);
   }
   return <article className={`flow-card node-${node.type} ${selected ? "selected" : ""} ${data.relationship ? `related-${data.relationship}` : ""} ${node.locked ? "locked" : ""}`}>
-    <NodeResizer isVisible={selected} minWidth={220} minHeight={140} onResizeEnd={(_, size) => data.onResizeCommit(node.id, size.width, size.height)} />
+    <NodeResizer isVisible={selected && !node.locked} minWidth={220} minHeight={140} onResizeEnd={(_, size) => data.onResizeCommit(node.id, size.width, size.height)} />
     {node.type !== "frame" && <>
       <Handle id="top" type="source" position={Position.Top} className="connection-handle handle-top" />
       <Handle id="right" type="source" position={Position.Right} className="connection-handle handle-right" />
@@ -112,7 +112,8 @@ function toFlowNodes(nodes: CanvasNode[], edges: CanvasEdge[], selectedIds: stri
     selected: selected.has(node.id),
     draggable: !node.locked,
     selectable: true,
-    zIndex: node.type === "frame" ? -1 : 2,
+    zIndex: node.type === "frame" ? node.locked ? -10 : -1 : 2,
+    className: node.type === "frame" ? `flow-node-frame${node.locked ? " flow-node-frame-locked" : ""}` : "",
     style: { width: node.width, height: node.height },
   }));
 }
@@ -245,6 +246,11 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const undoStack = useRef<CanvasData[]>([]);
   const redoStack = useRef<CanvasData[]>([]);
   const boardRef = useRef<CanvasData | null>(canvas);
+  const boardElementRef = useRef<HTMLElement | null>(null);
+  const flowInstanceRef = useRef<ReactFlowInstance<FlowNode> | null>(null);
+  const cursorRef = useRef<{ x: number; y: number } | null>(null);
+  const rightPanRef = useRef<{ pointerId: number; startX: number; startY: number; origin: { x: number; y: number; zoom: number }; current: { x: number; y: number; zoom: number } } | null>(null);
+  const [panningRight, setPanningRight] = useState(false);
   const displayNodesRef = useRef<FlowNode[]>([]);
   const onChangeRef = useRef(onChange);
   const draggingRef = useRef(false);
@@ -312,6 +318,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   }, [setStatus]);
 
   const onMoveEnd = useCallback((_: unknown, viewport: { x: number; y: number; zoom: number }) => {
+    if (rightPanRef.current) return;
     const current = boardRef.current;
     if (!current) return;
     const previous = current.viewport ?? {};
@@ -429,14 +436,50 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     setStatus("已重做上一步操作");
   }
 
+  function startRightPan(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 2 || !flowInstanceRef.current || (event.target as HTMLElement).closest("input,textarea,select,[contenteditable='true'],.react-flow__controls,.react-flow__minimap")) return;
+    event.preventDefault(); event.stopPropagation();
+    const viewport = flowInstanceRef.current.getViewport();
+    rightPanRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origin: viewport, current: viewport };
+    cursorRef.current = { x: event.clientX, y: event.clientY };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPanningRight(true);
+  }
+
+  function moveBoardPointer(event: ReactPointerEvent<HTMLElement>) {
+    cursorRef.current = { x: event.clientX, y: event.clientY };
+    const pan = rightPanRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    event.preventDefault(); event.stopPropagation();
+    pan.current = { x: pan.origin.x + event.clientX - pan.startX, y: pan.origin.y + event.clientY - pan.startY, zoom: pan.origin.zoom };
+    void flowInstanceRef.current?.setViewport(pan.current, { duration: 0 });
+  }
+
+  function finishRightPan(event: ReactPointerEvent<HTMLElement>) {
+    const pan = rightPanRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    event.preventDefault(); event.stopPropagation();
+    rightPanRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setPanningRight(false);
+    onMoveEnd(null, pan.current);
+  }
+
   function addNote() {
     const board = boardRef.current;
     if (!board) return;
-    const offset = board.nodes.length % 8;
+    const bounds = boardElementRef.current?.getBoundingClientRect();
+    const pointer = cursorRef.current;
+    const screenPoint = pointer ?? (bounds ? { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 } : null);
+    const viewport = flowInstanceRef.current?.getViewport() ?? { x: board.viewport.x ?? 0, y: board.viewport.y ?? 0, zoom: board.viewport.zoom ?? 1 };
+    const point = screenPoint && flowInstanceRef.current ? flowInstanceRef.current.screenToFlowPosition(screenPoint, { snapToGrid: true }) : {
+      x: ((screenPoint?.x ?? 400) - (bounds?.left ?? 0) - viewport.x) / viewport.zoom,
+      y: ((screenPoint?.y ?? 300) - (bounds?.top ?? 0) - viewport.y) / viewport.zoom,
+    };
     const node: CanvasNode = {
       id: `nod_${crypto.randomUUID().replaceAll("-", "")}`,
       type: "note", title: "新笔记", body: "", status: "exploring",
-      locked: false, x: 220 + offset * 34, y: 160 + offset * 28, width: 340, height: 210,
+      locked: false, x: point.x - (pointer ? 0 : 170), y: point.y - (pointer ? 0 : 105), width: 340, height: 210,
       metadata: {}, created_by: "user", project_id: board.project_id, canvas_id: board.id,
     };
     commit({ ...board, nodes: [...board.nodes, node] }, "已添加新节点；可从上下左右连接点拖出有向连线");
@@ -748,8 +791,13 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     </>} />
     <div className="canvas-shortcuts"><span>卡片显示模型摘要，点击展开全文</span><span>双击正文编辑 Markdown</span><span>四向端口拖出有向连线</span><span>框选或 Ctrl 多选</span><span>Ctrl+Z 撤回</span><span>Delete 删除</span><span>N 新建节点</span></div>
     <div className="canvas-workspace flow-workspace">
-      <section className="board-wrap">
+      <section className={`board-wrap${panningRight ? " panning-right" : ""}`} ref={boardElementRef}
+        onPointerDownCapture={startRightPan} onPointerMoveCapture={moveBoardPointer}
+        onPointerUpCapture={finishRightPan} onPointerCancelCapture={finishRightPan} onLostPointerCapture={finishRightPan}
+        onPointerLeave={() => { if (!rightPanRef.current) cursorRef.current = null; }}
+        onContextMenuCapture={(event) => { if (!(event.target as HTMLElement).closest("input,textarea,[contenteditable='true']")) event.preventDefault(); }}>
         <ReactFlow
+          onInit={(instance) => { flowInstanceRef.current = instance; }}
           nodes={displayNodes}
           edges={flowEdges}
           nodeTypes={NODE_TYPES}
@@ -764,7 +812,8 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           minZoom={0.2}
           maxZoom={1.8}
           selectionOnDrag
-          panOnDrag={[1, 2]}
+          panOnDrag={[1]}
+          elevateNodesOnSelect={false}
           connectionMode={ConnectionMode.Loose}
           multiSelectionKeyCode={MULTI_SELECTION_KEYS}
           deleteKeyCode={null}
