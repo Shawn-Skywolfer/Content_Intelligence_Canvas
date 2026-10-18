@@ -134,6 +134,27 @@ class MagicRequest(BaseModel):
     upstream_depth: int = Field(default=6, ge=0, le=12)
 
 
+class DeepSeekWebConfig(BaseModel):
+    base_url: str = Field(default="https://api.deepseek.com", max_length=2048)
+    api_key: str = Field(default="", max_length=2048)
+    enabled: bool = False
+    count: int = Field(default=5, ge=1, le=50)
+    need_content: bool = True
+    fetch_top_k: int = Field(default=2, ge=0, le=5)
+    max_content_chars: int = Field(default=8000, ge=1000, le=30000)
+    timeout_seconds: int = Field(default=25, ge=5, le=90)
+    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    proxy_url: str = Field(default="", max_length=2048)
+    proxy_username: str = Field(default="", max_length=256)
+    proxy_password: str = Field(default="", max_length=2048)
+
+
+class DeepSeekWebTestRequest(BaseModel):
+    operation: Literal["search", "fetch", "both"] = "both"
+    query: str = Field(default="DeepSeek API 网页搜索 官方文档", min_length=1, max_length=128)
+    url: str = Field(default="https://api-docs.deepseek.com/zh-cn/guides/search/", min_length=1, max_length=8192)
+
+
 class McpSearchConfig(BaseModel):
     name: str = Field(default="Tavily", max_length=80)
     url: str = Field(default="https://mcp.tavily.com/mcp/", max_length=2048)

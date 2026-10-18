@@ -5,6 +5,7 @@ from app.repositories.knowledge_manifest import KnowledgeManifestRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
 from app.services.mcp_search import McpSearchService
+from app.services.deepseek_web import DeepSeekWebService
 from app.schemas.workspace import ProviderConfigRequest
 
 
@@ -24,7 +25,7 @@ def test_settings_round_trip_includes_local_keys_but_no_wiki_contents(tmp_path, 
         workspace = WorkspaceRepository(folder / "app.db")
         secrets = LocalSecretStore(folder / "secrets.json")
         return SimpleNamespace(workspace=workspace, manifest=KnowledgeManifestRepository(folder / "app.db"),
-                               secrets=secrets, mcp_search=McpSearchService(workspace, secrets))
+                               secrets=secrets, mcp_search=McpSearchService(workspace, secrets), deepseek_web=DeepSeekWebService(workspace, secrets))
 
     original = container(tmp_path / "first")
     monkeypatch.setattr(settings_api, "get_container", lambda: original)
@@ -33,7 +34,10 @@ def test_settings_round_trip_includes_local_keys_but_no_wiki_contents(tmp_path, 
                                                                 api_key="local-test-key", extra={"reasoning_mode": "effort", "reasoning_effort": "high"}))
     original.workspace.set_setting("active_provider_id", provider.id)
     original.manifest.upsert_source("wiki-source", "我的 Wiki", str(vault))
+    original.deepseek_web.save({"enabled": True, "api_key": "test-web-key", "fetch_top_k": 1})
     backup = settings_api.export_settings()
+    assert backup["deepseek_web"]["api_key"] == "test-web-key"
+    assert "secret_ref" not in str(backup["deepseek_web"])
     assert backup["providers"][0]["api_key"] == "local-test-key"
     assert "私有知识原文" not in str(backup)
     assert "secret_ref" not in str(backup)
@@ -44,4 +48,6 @@ def test_settings_round_trip_includes_local_keys_but_no_wiki_contents(tmp_path, 
     assert result["missing_paths"] == []
     assert restored.workspace.active_provider()["id"] == provider.id
     assert restored.secrets.get(restored.workspace.get_provider(provider.id)["secret_ref"]) == "local-test-key"
+    assert restored.deepseek_web.config()["enabled"] is True
+    assert restored.secrets.get(restored.workspace.get_setting("deepseek_web")["secret_ref"]) == "test-web-key"
     assert restored.manifest.list_sources()[0]["root_path"] == str(vault.resolve())

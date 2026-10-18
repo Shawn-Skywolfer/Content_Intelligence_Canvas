@@ -2,7 +2,7 @@
 // CIC_E2E_PYTHON selects the Python interpreter; CIC_PLAYWRIGHT_MODULE can select a local Playwright installation.
 const { chromium } = require(process.env.CIC_PLAYWRIGHT_MODULE || 'playwright');
 const { spawn } = require('node:child_process');
-const { mkdtempSync } = require('node:fs');
+const { mkdtempSync, readFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -152,7 +152,7 @@ async function run() {
   await briefCard.click();
   for (const type of ['insight', 'challenge', 'creative_pattern', 'note']) {
     await page.getByLabel('新节点类型').selectOption(type);
-    const web = page.getByLabel('检索网络资料（通过设置的搜索 MCP，并与 Wiki 资料综合）');
+    const web = page.getByLabel('检索网络资料（自动选择：优先 DeepSeek，其次搜索 MCP，并与 Wiki 资料综合）');
     await web.check(); assert.equal(await web.isChecked(), true);
   }
   await page.screenshot({ path: path.join(temporary, 'mcp-options.png') });
@@ -179,6 +179,26 @@ async function run() {
     }
   }
   await page.screenshot({ path: path.join(temporary, 'narrow-toolbar-settings.png') });
+  if (process.env.CIC_DEEPSEEK_TEST_KEY_FILE) {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('tab', { name: 'MCP 与网页搜索', exact: true }).click();
+    const webSettings = page.getByLabel('DeepSeek 网页工具设置');
+    await webSettings.getByLabel('启用 DeepSeek 网页搜索与抓取').check();
+    await webSettings.getByLabel('DeepSeek 网页工具 API Key').fill(readFileSync(process.env.CIC_DEEPSEEK_TEST_KEY_FILE, 'utf8').trim());
+    await webSettings.getByLabel('搜索结果条数（1–50）').fill('2');
+    await webSettings.getByLabel('自动抓取前几条（0–5）').fill('1');
+    await webSettings.getByRole('button', { name: '保存并测试搜索和抓取', exact: true }).click();
+    await webSettings.getByText('真实网页工具测试通过', { exact: true }).waitFor({ timeout: 65000 });
+    const config = await api('/api/settings/deepseek-web');
+    assert.ok(config.has_api_key && !config.api_key && !config.secret_ref, '配置读取不得回显密钥');
+    assert.equal((await api('/api/settings/web-search')).provider, 'deepseek');
+    const output = await webSettings.innerText();
+    assert.ok(output.includes('Search：HTTP 200') && output.includes('Fetch：HTTP 200'));
+    assert.equal(await webSettings.getByLabel('DeepSeek 网页工具 API Key').inputValue(), '');
+    await webSettings.screenshot({ path: path.join(temporary, 'deepseek-live-test.png') });
+    console.log(JSON.stringify({ deepseek_live_test: 'passed', output: output.slice(output.indexOf('真实网页工具测试通过'), output.indexOf('测试执行日志')) }));
+  }
   assert.deepEqual(pageErrors, []);
   console.log(JSON.stringify({ passed: true, checks: ['锁定分组层级与尺寸保护', '锁定/未锁定分组右键平移', '浏览器右键菜单抑制', '侧栏折叠', '平移缩放后 N 在鼠标处创建', '简报保存与白板全文同步', '四边拖动吸附与方向切换', '任务栏折叠并刷新保留', '四种加工类型 MCP 选项'], screenshots: temporary }));
 }

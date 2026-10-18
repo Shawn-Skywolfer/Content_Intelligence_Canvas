@@ -11,6 +11,7 @@ from app.services.ai.gateway import AIProviderGateway
 from app.services.ai.cancellation import check_cancelled
 from app.services.knowledge.wiki_reasoning import WikiReasoningService
 from app.services.mcp_search import McpSearchService
+from app.services.deepseek_web import WebSearchService
 
 if TYPE_CHECKING:
     from app.repositories.lance_chunk_store import LanceChunkStore
@@ -28,7 +29,7 @@ class ContentWorkflowService:
         chunks: LanceChunkStore,
         ai: AIProviderGateway,
         wiki_reasoning: WikiReasoningService,
-        mcp_search: McpSearchService | None = None,
+        mcp_search: McpSearchService | WebSearchService | None = None,
     ) -> None:
         self.repository = repository
         self.retrieval = retrieval
@@ -165,8 +166,12 @@ class ContentWorkflowService:
                 raise ValueError("洞察、质疑、创意模式和笔记节点支持检索网络资料")
             if not self.mcp_search:
                 raise ValueError("搜索 MCP 尚未配置")
-            emit(40, "检索网络资料", "正在通过搜索 MCP 获取网络来源")
-            web_evidence = self.mcp_search.search(" ".join([instruction, *[node["title"] for node in nodes[:3]]]))
+            emit(40, "检索网络资料", "正在通过选定的网页搜索服务获取网络来源")
+            search_query = " ".join([instruction, *[node["title"] for node in nodes[:3]]])
+            if isinstance(self.mcp_search, WebSearchService):
+                web_evidence = self.mcp_search.search(search_query, lambda detail: emit(45, "检索与抓取网络资料", detail))
+            else:
+                web_evidence = self.mcp_search.search(search_query)
         run_id = self.repository.create_run(project_id, "magic_bar", instruction, node_ids)
         used_llm = True
         title = f"AI 加工：{instruction[:24]}"

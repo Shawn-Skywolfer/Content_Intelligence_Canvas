@@ -16,13 +16,47 @@ from app.schemas.workspace import (
     SecuritySettingsRequest,
     SecuritySettingsResponse,
     McpSearchConfig,
+    DeepSeekWebConfig,
+    DeepSeekWebTestRequest,
     ContentFormatsRequest,
 )
 from app.services.content_formats import list_content_formats
 from app.services.knowledge.indexer import source_id_for_path
+from app.services.deepseek_web import DeepSeekWebService
 
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+
+@router.get("/settings/web-search")
+def get_web_search_settings() -> dict:
+    return get_container().web_search.selection()
+
+
+@router.get("/settings/deepseek-web")
+def get_deepseek_web() -> dict:
+    return get_container().deepseek_web.config()
+
+
+@router.put("/settings/deepseek-web")
+def save_deepseek_web(request: DeepSeekWebConfig) -> dict:
+    try:
+        return get_container().deepseek_web.save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/deepseek-web/test/start")
+def start_deepseek_web_test(request: DeepSeekWebTestRequest) -> dict:
+    return get_container().deepseek_web_tests.start(request.operation, request.query, request.url)
+
+
+@router.get("/settings/deepseek-web/test/jobs/{job_id}")
+def get_deepseek_web_test(job_id: str) -> dict:
+    job = get_container().deepseek_web_tests.get(job_id)
+    if not job:
+        raise HTTPException(404, "网页工具测试任务不存在")
+    return job
 
 
 @router.get("/settings/mcp-search")
@@ -167,6 +201,10 @@ def export_settings() -> dict[str, Any]:
     saved_mcp = container.workspace.get_setting("mcp_search", {}) or {}
     mcp["api_key"] = container.secrets.get(saved_mcp.get("secret_ref")) or ""
     mcp["proxy_password"] = container.secrets.get(saved_mcp.get("proxy_password_ref")) or ""
+    deepseek = container.deepseek_web.config()
+    saved_deepseek = container.workspace.get_setting("deepseek_web", {}) or {}
+    deepseek["api_key"] = container.secrets.get(saved_deepseek.get("secret_ref")) or ""
+    deepseek["proxy_password"] = container.secrets.get(saved_deepseek.get("proxy_password_ref")) or ""
     active = container.workspace.active_provider()
     return {
         "backup_type": "content-intelligence-canvas-settings", "version": 1,
@@ -175,6 +213,7 @@ def export_settings() -> dict[str, Any]:
         "providers": providers, "active_provider_id": active["id"] if active else None,
         "knowledge_sources": [{"name": s["name"], "root_path": s["root_path"]} for s in container.manifest.list_sources()],
         "mcp_search": mcp,
+        "deepseek_web": deepseek,
         "security": {"protect_internal_data": container.workspace.get_setting("protect_internal_data", True)},
         "content_formats": list_content_formats(container.workspace),
     }
@@ -192,6 +231,9 @@ def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
         providers = [ProviderConfigRequest.model_validate(item) for item in raw_providers]
         formats = ContentFormatsRequest.model_validate({"formats": backup["content_formats"]}).formats
         mcp = McpSearchConfig.model_validate(backup["mcp_search"])
+        deepseek = DeepSeekWebConfig.model_validate(backup["deepseek_web"]) if "deepseek_web" in backup else None
+        if deepseek:
+            DeepSeekWebService.validate(deepseek.model_dump())
         mcp_parts = urlsplit(mcp.url)
         if mcp_parts.scheme not in {"http", "https"} or not mcp_parts.hostname:
             raise ValueError("搜索 MCP 地址无效")
@@ -207,6 +249,8 @@ def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
     for provider in providers:
         save_provider(provider)
     container.mcp_search.save(mcp.model_dump())
+    if deepseek:
+        container.deepseek_web.save(deepseek.model_dump())
     container.workspace.set_setting("content_formats", [item.model_dump() for item in formats])
     container.workspace.set_setting("protect_internal_data", protect)
     missing_paths = []

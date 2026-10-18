@@ -19,6 +19,7 @@ from app.services.retrieval.embedding import LocalHashEmbeddingProvider
 from app.services.retrieval.hybrid import HybridRetrievalService
 from app.services.workflow import ContentWorkflowService
 from app.services.mcp_search import McpSearchService
+from app.services.deepseek_web import DeepSeekWebService, DeepSeekWebTestJobs, WebSearchService
 
 
 class AppContainer:
@@ -50,10 +51,13 @@ class AppContainer:
         self.agent_context = AgentContextService(self.manifest, self.ai)
         self.refresh_jobs = KnowledgeRefreshJobs(self.manifest, self.indexer, self.agent_context)
         self.mcp_search = McpSearchService(self.workspace, self.secrets)
+        self.deepseek_web = DeepSeekWebService(self.workspace, self.secrets)
+        self.deepseek_web_tests = DeepSeekWebTestJobs(self.deepseek_web)
+        self.web_search = WebSearchService(self.workspace, self.mcp_search, self.deepseek_web)
         self.wiki_reasoning = WikiReasoningService(self.retrieval, self.chunk_store, self.ai, self.agent_context)
         self.workflow = ContentWorkflowService(
             self.workspace, self.retrieval, self.chunk_store, self.ai, self.wiki_reasoning,
-            self.mcp_search,
+            self.web_search,
         )
 
 

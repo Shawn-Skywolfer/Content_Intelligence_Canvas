@@ -80,6 +80,12 @@ export type MagicJob = {
   events?: Array<{ at: string; attempt: number; phase: string; detail: string }>;
   result?: { node: CanvasNode; run_id: string; used_llm: boolean; message: string } | null;
 };
+export type DeepSeekWebConfig = {
+  base_url: string; enabled: boolean; count: number; need_content: boolean; fetch_top_k: number;
+  max_content_chars: number; timeout_seconds: number; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy";
+  proxy_url: string; proxy_username: string; api_key?: string; proxy_password?: string; has_api_key?: boolean; has_proxy_password?: boolean;
+};
+export type WebTestJob = { job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
 export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy"; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -225,6 +231,11 @@ export const api = {
       method: "POST", body: JSON.stringify(values),
     }),
   getSecurity: () => request<{ protect_internal_data: boolean }>("/api/settings/security"),
+  getWebSearch: () => request<{ provider: "mcp" | "deepseek" | null; message: string; deepseek_ready: boolean; mcp_ready: boolean }>("/api/settings/web-search"),
+  getDeepSeekWeb: () => request<DeepSeekWebConfig>("/api/settings/deepseek-web"),
+  saveDeepSeekWeb: (config: DeepSeekWebConfig) => request<DeepSeekWebConfig>("/api/settings/deepseek-web", { method: "PUT", body: JSON.stringify(config) }),
+  startDeepSeekWebTest: (operation: "search" | "fetch" | "both", query: string, url: string) => request<WebTestJob>("/api/settings/deepseek-web/test/start", { method: "POST", body: JSON.stringify({ operation, query, url }) }),
+  deepSeekWebTestJob: (jobId: string) => request<WebTestJob>(`/api/settings/deepseek-web/test/jobs/${jobId}`),
   getMcpSearch: () => request<McpSearchConfig>("/api/settings/mcp-search"),
   saveMcpSearch: (config: McpSearchConfig) => request<McpSearchConfig>("/api/settings/mcp-search", { method: "PUT", body: JSON.stringify(config) }),
   testMcpSearch: () => request<{ tools: string[]; message: string; latency_ms: number; endpoint: string; search_tool: string; search_tool_available: boolean; network_mode: string }>("/api/settings/mcp-search/test", { method: "POST" }),
