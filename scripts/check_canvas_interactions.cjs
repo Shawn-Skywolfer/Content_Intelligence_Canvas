@@ -187,14 +187,13 @@ async function run() {
     await webSettings.getByLabel('启用 DeepSeek 网页搜索与抓取').check();
     await webSettings.getByLabel('DeepSeek 网页工具 API Key').fill(readFileSync(process.env.CIC_DEEPSEEK_TEST_KEY_FILE, 'utf8').trim());
     await webSettings.getByLabel('搜索结果条数（1–50）').fill('2');
-    await webSettings.getByLabel('自动抓取前几条（0–5）').fill('1');
-    await webSettings.getByRole('button', { name: '保存并测试搜索和抓取', exact: true }).click();
+    await webSettings.getByRole('button', { name: '保存并测试完整联网流程', exact: true }).click();
     await webSettings.getByText('真实网页工具测试通过', { exact: true }).waitFor({ timeout: 65000 });
     const config = await api('/api/settings/deepseek-web');
     assert.ok(config.has_api_key && !config.api_key && !config.secret_ref, '配置读取不得回显密钥');
     assert.equal((await api('/api/settings/web-search')).provider, 'deepseek');
     const output = await webSettings.innerText();
-    assert.ok(output.includes('Search：HTTP 200') && output.includes('Fetch：HTTP 200'));
+    assert.ok(output.includes('篇网页正文') && output.includes('字符作为模型上下文'));
     assert.equal(await webSettings.getByLabel('DeepSeek 网页工具 API Key').inputValue(), '');
     await webSettings.screenshot({ path: path.join(temporary, 'deepseek-live-test.png') });
     console.log(JSON.stringify({ deepseek_live_test: 'passed', output: output.slice(output.indexOf('真实网页工具测试通过'), output.indexOf('测试执行日志')) }));

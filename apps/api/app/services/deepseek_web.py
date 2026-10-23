@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from app.repositories.workspace import WorkspaceRepository
 from app.schemas.workspace import DeepSeekWebConfig
-from app.services.ai.cancellation import CancellationToken, OperationCancelled, cancellation_scope, check_cancelled
+from app.services.ai.cancellation import CancellationToken, OperationCancelled, cancellation_scope, check_cancelled, current_token
 from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
 from app.services.ai.secret_store import LocalSecretStore
 
@@ -63,13 +63,25 @@ class DeepSeekWebService:
         endpoint = f"{base}{'' if base.endswith('/v1') else '/v1'}/tools/{operation}"
         started = time.perf_counter()
         try:
-            response = AIProviderGateway._request(
-                "POST", endpoint, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json_payload=payload, timeout=config["timeout_seconds"], network_mode=config["network_mode"],
-                proxy_url=config["proxy_url"], proxy_username=config["proxy_username"],
-                proxy_password=self.secrets.get(saved.get("proxy_password_ref")),
-                progress=(lambda detail: progress(detail.replace("模型响应", "网页工具响应").replace("模型结果", "网页工具结果"))) if progress else None,
-            )
+            for attempt in range(2):
+                response = AIProviderGateway._request(
+                    "POST", endpoint, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json_payload=payload, timeout=config["timeout_seconds"], network_mode=config["network_mode"],
+                    proxy_url=config["proxy_url"], proxy_username=config["proxy_username"],
+                    proxy_password=self.secrets.get(saved.get("proxy_password_ref")),
+                    progress=(lambda detail: progress(detail.replace("模型响应", "网页工具响应").replace("模型结果", "网页工具结果"))) if progress else None,
+                )
+                if response.status_code not in {408, 429, 500, 502, 503, 504} or attempt:
+                    break
+                if progress:
+                    progress(f"DeepSeek {operation} 暂时返回 HTTP {response.status_code}，正在重试一次")
+                token = current_token()
+                if token:
+                    token.event.wait(0.5)
+                else:
+                    time.sleep(0.5)
+                check_cancelled()
+
         except ProviderConnectionError as exc:
             raise ValueError(str(exc).replace("模型配置", "DeepSeek 网页工具配置")) from exc
         check_cancelled()
@@ -90,7 +102,7 @@ class DeepSeekWebService:
         if not query:
             raise ValueError("请输入搜索词")
         config = self.config()
-        data, trace = self._post("search", {"query": query, "count": config["count"], "need_content": config["need_content"]}, progress)
+        data, trace = self._post("search", {"query": query, "count": config["count"], "need_content": True}, progress)
         if not isinstance(data.get("results"), list):
             raise ValueError("DeepSeek Search 返回缺少 results 数组")
         items = [item for item in data["results"] if isinstance(item, dict) and str(item.get("url", "")).startswith(("https://", "http://"))]
@@ -113,24 +125,40 @@ class DeepSeekWebService:
             raise ValueError("DeepSeek 搜索成功，但没有可引用的网络结果")
         config = self.config()
         results = []
+        failures = []
+        seen = set()
         for index, item in enumerate(items):
             check_cancelled()
-            content = str(item.get("content") or item.get("summary") or item.get("snippet") or "")
-            fetch_error = None
-            if index < config["fetch_top_k"]:
-                report(f"抓取网页 {index + 1}/{min(config['fetch_top_k'], len(items))}：{item.get('title') or item['url']}")
+            url = str(item["url"])
+            if url in seen:
+                continue
+            seen.add(url)
+            content = item.get("content")
+            content = content.strip() if isinstance(content, str) else ""
+            method = "search_content"
+            if not content:
+                report(f"读取网页正文 {index + 1}/{len(items)}：{item.get('title') or url}")
                 try:
-                    page, _ = self.fetch(str(item["url"]), report)
+                    page, _ = self.fetch(url, report)
                     content = page["content"]
+                    method = "fetch"
                 except OperationCancelled:
                     raise
                 except ValueError as exc:
-                    fetch_error = str(exc)
-                    report(f"单页抓取失败，沿用搜索正文或摘要：{fetch_error}")
-            results.append({"title": str(item.get("title") or item["url"])[:200], "url": str(item["url"])[:8192],
-                            "excerpt": content[:config["max_content_chars"]], "provider": "DeepSeek Search/Fetch",
-                            "summary": str(item.get("summary") or "")[:1600], "date": item.get("date"),
-                            "authority": item.get("authority"), "fetch_error": fetch_error})
+                    failures.append({"url": url, "error": str(exc)})
+                    report(f"未取得正文，跳过此页（不用摘要代替）：{url}；{exc}")
+                    continue
+            report(f"已取得网页正文 {index + 1}/{len(items)}：{len(content)} 字符；{item.get('title') or url}")
+            results.append({"title": str(item.get("title") or url)[:200], "url": url,
+                            "content": content, "content_chars": len(content), "excerpt": content[:800],
+                            "content_source": method, "provider": "DeepSeek Search/Fetch",
+                            "date": item.get("date"), "authority": item.get("authority")})
+        if not results:
+            detail = "；".join(f"{item['url']}：{item['error']}" for item in failures[:3])
+            raise ValueError(f"DeepSeek 找到 {len(items)} 条链接，但没有取得任何网页正文。不会使用摘要代替全文。{detail}")
+        results[0]["retrieval_report"] = {"searched": len(items), "full_text_pages": len(results),
+                                          "content_chars": sum(item["content_chars"] for item in results), "failed_pages": failures}
+        report(f"网页上下文已准备：{len(results)} 篇正文，共 {sum(item['content_chars'] for item in results)} 字符；失败跳过 {len(failures)} 篇")
         return results
 
 
@@ -152,14 +180,7 @@ class WebSearchService:
         selected = self.selection()
         if selected["provider"] == "deepseek":
             report("已自动选择 DeepSeek 网页搜索与抓取（优先）")
-            try:
-                return self.deepseek.search(query, report)
-            except OperationCancelled:
-                raise
-            except ValueError as exc:
-                if not selected["mcp_ready"]:
-                    raise
-                report(f"DeepSeek 网页工具失败：{exc}；正在回退到已启用的搜索 MCP")
+            return self.deepseek.search(query, report)
         elif not selected["mcp_ready"]:
             raise ValueError("请先在设置中启用 DeepSeek 网页搜索与抓取并保存 Key，或启用搜索 MCP")
         report("正在使用搜索 MCP 获取网络资料")
@@ -196,11 +217,17 @@ class DeepSeekWebTestJobs:
                 self.jobs[job_id]["events"].append({"at": time.time(), "detail": detail})
         result = {}
         token = CancellationToken()
-        timer = threading.Timer(self.service.config()["timeout_seconds"] * (2 if operation == "both" else 1), token.cancel)
+        timer = threading.Timer(min(180, self.service.config()["timeout_seconds"] * (self.service.config()["count"] + 1)) if operation == "context" else self.service.config()["timeout_seconds"] * (2 if operation == "both" else 1), token.cancel)
         timer.daemon = True
         timer.start()
         try:
             with cancellation_scope(token):
+                if operation == "context":
+                    report("正在测试完整流程：搜索 → 网页正文 → 模型上下文")
+                    pages = self.service.search(query, report)
+                    result["context"] = {"page_count": len(pages), "content_chars": sum(page["content_chars"] for page in pages),
+                                         "items": [{"title": page["title"], "url": page["url"], "content_chars": page["content_chars"], "content_source": page["content_source"], "preview": page["content"][:2400]} for page in pages],
+                                         "failed_pages": pages[0]["retrieval_report"]["failed_pages"]}
                 if operation in {"search", "both"}:
                     report("正在执行真实 Search 请求")
                     hits, trace = self.service.search_raw(query, report)

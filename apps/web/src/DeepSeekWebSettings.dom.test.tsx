@@ -19,6 +19,7 @@ it("先保存当前参数再做真实搜索抓取测试，显示分项结果且�
   fireEvent.change(view.getByLabelText("搜索结果条数（1–50）"), { target: { value: "" } });
   expect((view.getByLabelText("搜索结果条数（1–50）") as HTMLInputElement).value).toBe("");
   fireEvent.change(view.getByLabelText("搜索结果条数（1–50）"), { target: { value: "3" } });
+  fireEvent.click(view.getByText("单独排查 Search / Fetch 接口"));
   fireEvent.click(view.getByRole("button", { name: "保存并测试搜索和抓取" }));
   await waitFor(() => expect(start).toHaveBeenCalledWith("both", "DeepSeek API 网页搜索 官方文档", "https://api-docs.deepseek.com/zh-cn/guides/search/"));
   expect(save).toHaveBeenCalledWith(expect.objectContaining({ count: 3, api_key: "test-key", enabled: true }));

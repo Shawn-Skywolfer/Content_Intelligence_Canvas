@@ -138,7 +138,7 @@ class DeepSeekWebConfig(BaseModel):
     base_url: str = Field(default="https://api.deepseek.com", max_length=2048)
     api_key: str = Field(default="", max_length=2048)
     enabled: bool = False
-    count: int = Field(default=5, ge=1, le=50)
+    count: int = Field(default=3, ge=1, le=50)
     need_content: bool = True
     fetch_top_k: int = Field(default=2, ge=0, le=5)
     max_content_chars: int = Field(default=8000, ge=1000, le=30000)
@@ -150,7 +150,7 @@ class DeepSeekWebConfig(BaseModel):
 
 
 class DeepSeekWebTestRequest(BaseModel):
-    operation: Literal["search", "fetch", "both"] = "both"
+    operation: Literal["search", "fetch", "both", "context"] = "context"
     query: str = Field(default="DeepSeek API 网页搜索 官方文档", min_length=1, max_length=128)
     url: str = Field(default="https://api-docs.deepseek.com/zh-cn/guides/search/", min_length=1, max_length=8192)
 

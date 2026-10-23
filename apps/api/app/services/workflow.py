@@ -177,7 +177,8 @@ class ContentWorkflowService:
         title = f"AI 加工：{instruction[:24]}"
         message = "已生成新节点，原节点未被覆盖。"
         try:
-            emit(68, "模型综合生成", "正在结合 Wiki 与网络资料生成下游节点")
+            web_chars = sum(len(str(item.get("content") or item.get("excerpt") or "")) for item in web_evidence)
+            emit(68, "模型综合生成", f"正在将 Wiki 与 {len(web_evidence)} 篇网络资料（{web_chars} 字符）交给模型生成")
             body, trace = self.ai.complete(
                 "你是内容白板共创助手。根据选中节点执行指令，输出一段可直接放入新节点的中文内容。"
                 "正向要求说明要完成的任务，负向要求说明要避免的表达与做法；两者冲突时优先遵守证据约束。"
@@ -220,6 +221,7 @@ class ContentWorkflowService:
                     "evidence": evidence,
                     "wiki_context_candidates": [item["chunk_id"] for item in wiki_evidence],
                     "web_sources": web_evidence,
+                    "web_context_chars": web_chars,
                 },
             },
         )

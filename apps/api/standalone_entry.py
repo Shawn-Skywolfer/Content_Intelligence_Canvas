@@ -12,11 +12,9 @@ import threading
 import time
 import urllib.request
 import webbrowser
+import traceback
 from pathlib import Path
 
-import psutil
-import uvicorn
-from fastapi.staticfiles import StaticFiles
 
 
 APP_NAME = "ContentIntelligenceCanvas"
@@ -43,14 +41,26 @@ def _runtime_root() -> Path:
 
 
 def _user_root() -> Path:
-    portable_home = os.getenv("CIC_PORTABLE_HOME")
-    if portable_home:
-        root = Path(portable_home)
-    else:
-        base = os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        root = Path(base) / APP_NAME
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    control = _control_root()
+    requested = Path(os.getenv("CIC_PORTABLE_HOME") or control)
+    if not (requested / "data" / "app.db").is_file():
+        try:
+            previous = Path(json.loads((control / "last-data-root.json").read_text(encoding="utf-8"))["path"])
+            if (previous / "data" / "app.db").is_file():
+                requested = previous
+        except (OSError, ValueError, KeyError):
+            pass
+    try:
+        requested.mkdir(parents=True, exist_ok=True)
+        probe = requested / f".write-check-{os.getpid()}"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        if (requested / "data" / "app.db").is_file():
+            raise RuntimeError(f"已有数据目录不可写，请将应用与数据目录放到可写位置：{requested}") from exc
+        requested = control
+    (control / "last-data-root.json").write_text(json.dumps({"path": str(requested)}, ensure_ascii=False), encoding="utf-8")
+    return requested
 
 
 def _control_root() -> Path:
@@ -110,6 +120,7 @@ def _copy_seed_data(runtime_root: Path, user_root: Path) -> tuple[Path, Path]:
 
 
 def _terminate_previous(pid_file: Path) -> None:
+    import psutil
     if not pid_file.exists():
         return
     try:
@@ -154,6 +165,7 @@ def _acquire_single_instance(user_root: Path) -> tuple[int, Path]:
             kernel32.CloseHandle(handle)
             raise RuntimeError("旧实例未能在 10 秒内退出，请稍后重试。")
 
+    import psutil
     current = psutil.Process(os.getpid())
     pid_file.write_text(
         json.dumps(
@@ -176,21 +188,57 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _status(phase: str, **details) -> None:
+    record = {"phase": phase, "pid": os.getpid(), "time": time.time(), **details}
+    path = _control_root() / "startup-status.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    print(f"[启动] {phase}", flush=True)
+
+
 def _open_when_ready(url: str) -> None:
-    for _ in range(80):
+    # Loopback must never use a corporate HTTP proxy or environment proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for _ in range(240):
         try:
-            with urllib.request.urlopen(f"{url}/api/health", timeout=0.5) as response:
+            with opener.open(f"{url}/api/health", timeout=0.5) as response:
                 if response.status == 200:
-                    webbrowser.open(url)
+                    _status("服务已就绪", url=url)
+                    target = os.getenv("CIC_STARTUP_URL_FILE")
+                    if target:
+                        path = Path(target)
+                        temporary = path.with_suffix(".tmp")
+                        temporary.write_text(url, encoding="ascii")
+                        temporary.replace(path)
+                    elif not os.getenv("CIC_NO_BROWSER"):
+                        webbrowser.open(url)
                     return
         except OSError:
             time.sleep(0.25)
+    _status("本地健康检查超时", url=url)
+
+
+def _listener() -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        try:
+            sock.bind(("127.0.0.1", 48765))
+        except OSError:
+            sock.bind(("127.0.0.1", 0))
+        sock.listen(128)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
 
 
 def run() -> None:
     _ensure_headless_streams()
+    _status("正在定位数据目录")
     runtime_root = _runtime_root()
     user_root = _user_root()
+    _status("正在替换旧实例", data_root=str(user_root))
     mutex, pid_file = _acquire_single_instance(_control_root())
 
     def cleanup() -> None:
@@ -210,6 +258,9 @@ def run() -> None:
 
     api_root = runtime_root / "apps" / "api"
     sys.path.insert(0, str(api_root))
+    _status("正在加载本地服务", data_root=str(user_root))
+    import uvicorn
+    from fastapi.staticfiles import StaticFiles
     from app.main import app
 
     web_dist = runtime_root / "web_dist"
@@ -217,22 +268,33 @@ def run() -> None:
         raise RuntimeError("前端资源不完整，请重新下载应用。")
     app.mount("/", StaticFiles(directory=web_dist, html=True), name="中文界面")
 
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
+    listener = _listener()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+    _status("正在启动本地服务", url=url, data_root=str(user_root))
     threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-        access_log=False,
-        log_config=None,
-    )
+    try:
+        config = uvicorn.Config(app, host="127.0.0.1", port=listener.getsockname()[1], log_level="warning", access_log=False, log_config=None)
+        uvicorn.Server(config).run(sockets=[listener])
+    finally:
+        listener.close()
 
 
 if __name__ == "__main__":
     try:
+        log_dir = Path(os.getenv("CIC_STARTUP_LOG_DIR") or _control_root())
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "startup-python.log"
+        if log_file.exists() and log_file.stat().st_size > 2_000_000:
+            log_file.replace(log_file.with_suffix(".previous.log"))
+        stream = log_file.open("a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = stream
         run()
     except Exception as exc:
-        _message("内容智能白板启动失败", f"应用未能启动：\n\n{exc}")
-        raise
+        traceback.print_exc()
+        try:
+            _status("启动失败", error=str(exc))
+        except Exception:
+            pass
+        if not os.getenv("CIC_STARTUP_URL_FILE"):
+            _message("内容智能工作台启动失败", f"应用未能启动：\n\n{exc}")
+        sys.exit(1)

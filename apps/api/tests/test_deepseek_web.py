@@ -28,7 +28,7 @@ def test_search_fetch_payloads_and_secrets_do_not_escape(tmp_path, monkeypatch):
     def request(method, url, **kwargs):
         calls.append((url, kwargs))
         assert kwargs["headers"]["Authorization"] == "Bearer private-test-key"
-        body = {"results": [{"title": "资料", "url": "https://example.org/article", "summary": "搜索摘要", "content": "搜索正文", "authority": 3}]} if url.endswith("search") else {"title": "详情", "content": "# 抓取正文\n原始证据"}
+        body = {"results": [{"title": "资料", "url": "https://example.org/article", "summary": "搜索摘要", "content": "", "authority": 3}]} if url.endswith("search") else {"title": "详情", "content": "# 抓取正文\n原始证据"}
         return httpx.Response(200, json=body, extensions={"cic_network_route": "系统代理"})
 
     monkeypatch.setattr(AIProviderGateway, "_request", request)
@@ -62,8 +62,8 @@ def test_http_200_empty_fetch_is_failure_and_partial_search_is_kept(tmp_path, mo
     monkeypatch.setattr(AIProviderGateway, "_request", request)
     with pytest.raises(ValueError, match="没有可用 Markdown"):
         service.fetch("https://example.org")
-    hits = service.search("问题")
-    assert hits[0]["excerpt"] == "有效搜索摘要" and hits[0]["fetch_error"]
+    with pytest.raises(ValueError, match="不会使用摘要代替全文"):
+        service.search("问题")
 
 
 def test_provider_detection_prioritizes_deepseek_and_falls_back_transparently(tmp_path):
@@ -76,8 +76,9 @@ def test_provider_detection_prioritizes_deepseek_and_falls_back_transparently(tm
     mcp.search.assert_not_called()
     deepseek.search.side_effect = ValueError("HTTP 402，余额不足")
     events = []
-    assert service.search("问题", events.append)[0]["provider"] == "MCP"
-    assert any("回退" in item and "402" in item for item in events)
+    with pytest.raises(ValueError, match="402"):
+        service.search("问题", events.append)
+    mcp.search.assert_not_called()
     deepseek.search.side_effect = OperationCancelled("已取消")
     mcp.search.reset_mock()
     with pytest.raises(OperationCancelled):
@@ -112,7 +113,8 @@ def test_auto_selected_web_material_reaches_model_and_downstream_node(tmp_path, 
     repo = deepseek.repository
     project = repo.create_project("研究", "供电", "")
     node = repo.create_node(project["id"], {"title": "输入", "body": "内部材料"})
-    deepseek.search = Mock(return_value=[{"title": "网页", "url": "https://example.org", "excerpt": "外部证据", "provider": "DeepSeek Search/Fetch"}])
+    full_text = "网页正文" * 4000 + "末尾不能丢失的事实"
+    deepseek.search = Mock(return_value=[{"title": "网页", "url": "https://example.org", "content": full_text, "content_chars": len(full_text), "excerpt": full_text[:800], "provider": "DeepSeek Search/Fetch"}])
     mcp = SimpleNamespace(config=lambda: {"enabled": False, "url": "", "tool_name": ""})
     router = WebSearchService(repo, mcp, deepseek)
     prompts = []
@@ -124,5 +126,24 @@ def test_auto_selected_web_material_reaches_model_and_downstream_node(tmp_path, 
     workflow._wiki_context = lambda *args: [{"chunk_id": "wiki", "excerpt": "Wiki 证据"}]
     created, *_ = workflow.magic(project["id"], [node["id"]], "综合资料", output_type, web_search=True)
     assert prompts[0]["web_evidence"][0]["provider"] == "DeepSeek Search/Fetch"
+    assert prompts[0]["web_evidence"][0]["content"] == full_text
+    assert created["metadata"]["web_context_chars"] == len(full_text)
     assert prompts[0]["wiki_evidence"][0]["chunk_id"] == "wiki"
     assert created["metadata"]["web_sources"][0]["url"] == "https://example.org"
+
+
+def test_search_full_content_is_kept_without_redundant_fetch_or_8000_limit(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    service.save({"enabled": True, "need_content": False, "fetch_top_k": 0, "max_content_chars": 1000})
+    full_text = "完整网页正文" * 4000 + "正文末尾的关键事实"
+    calls = []
+    def request(method, url, **kwargs):
+        calls.append(url)
+        assert kwargs["json_payload"]["need_content"] is True
+        return httpx.Response(200, json={"results": [{"url": "https://example.org", "content": full_text}]})
+    monkeypatch.setattr(AIProviderGateway, "_request", request)
+    result = service.search("问题")
+    assert len(calls) == 1
+    assert result[0]["content"] == full_text
+    assert result[0]["content_chars"] > 8000
+    assert result[0]["retrieval_report"]["full_text_pages"] == 1

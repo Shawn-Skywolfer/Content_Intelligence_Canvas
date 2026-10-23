@@ -85,7 +85,7 @@ export type DeepSeekWebConfig = {
   max_content_chars: number; timeout_seconds: number; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy";
   proxy_url: string; proxy_username: string; api_key?: string; proxy_password?: string; has_api_key?: boolean; has_proxy_password?: boolean;
 };
-export type WebTestJob = { job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
+export type WebTestJob = { job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { context?: { page_count: number; content_chars: number; items: { title: string; url: string; content_chars: number; content_source: string; preview: string }[]; failed_pages: { url: string; error: string }[] }; search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
 export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy"; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -234,7 +234,7 @@ export const api = {
   getWebSearch: () => request<{ provider: "mcp" | "deepseek" | null; message: string; deepseek_ready: boolean; mcp_ready: boolean }>("/api/settings/web-search"),
   getDeepSeekWeb: () => request<DeepSeekWebConfig>("/api/settings/deepseek-web"),
   saveDeepSeekWeb: (config: DeepSeekWebConfig) => request<DeepSeekWebConfig>("/api/settings/deepseek-web", { method: "PUT", body: JSON.stringify(config) }),
-  startDeepSeekWebTest: (operation: "search" | "fetch" | "both", query: string, url: string) => request<WebTestJob>("/api/settings/deepseek-web/test/start", { method: "POST", body: JSON.stringify({ operation, query, url }) }),
+  startDeepSeekWebTest: (operation: "search" | "fetch" | "both" | "context", query: string, url: string) => request<WebTestJob>("/api/settings/deepseek-web/test/start", { method: "POST", body: JSON.stringify({ operation, query, url }) }),
   deepSeekWebTestJob: (jobId: string) => request<WebTestJob>(`/api/settings/deepseek-web/test/jobs/${jobId}`),
   getMcpSearch: () => request<McpSearchConfig>("/api/settings/mcp-search"),
   saveMcpSearch: (config: McpSearchConfig) => request<McpSearchConfig>("/api/settings/mcp-search", { method: "PUT", body: JSON.stringify(config) }),

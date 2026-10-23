@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.22
+      - release/v0.3.23
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.22"
+      RELEASE_TAG: "v0.3.23"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vsPath) { throw "未找到 Visual C++ 构建工具" }
           $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-          $command = "`"$vcvars`" && cl /nologo /O2 /DUNICODE /D_UNICODE packaging\windows\launcher.c /Fe:portable-launcher.exe /link /SUBSYSTEM:WINDOWS user32.lib"
+          $command = "`"$vcvars`" && cl /nologo /O2 /MT /utf-8 /DUNICODE /D_UNICODE packaging\windows\launcher.c /Fe:portable-launcher.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:packaging\windows\app.manifest user32.lib shell32.lib"
           cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0) { throw "原生启动器编译失败：$LASTEXITCODE" }
 
@@ -93,16 +93,24 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.22_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.23_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.22.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.22.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.23.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.23.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.22.exe"
+          $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
+          New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
+          $exe = Join-Path $testFolder "内容智能工作台.exe"
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.23.exe") $exe
+          $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
+          New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+          $env:CIC_NO_BROWSER = "1"
+          $env:HTTP_PROXY = "http://127.0.0.1:9"
+          $env:HTTPS_PROXY = "http://127.0.0.1:9"
           $pidFile = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-process.json"
           $oldRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.8"
           New-Item -ItemType Directory -Force -Path $oldRuntime | Out-Null
@@ -117,7 +125,7 @@ jobs:
                 $connections = Get-NetTCPConnection -State Listen -OwningProcess $appPid -ErrorAction SilentlyContinue |
                   Where-Object { $_.LocalAddress -eq '127.0.0.1' }
                 foreach ($connection in $connections) {
-                  $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($connection.LocalPort)/api/health" -TimeoutSec 2 -ErrorAction Stop
+                  $health = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($connection.LocalPort)/api/health" -TimeoutSec 2 -ErrorAction Stop
                   if ($health.status -eq 'ok') { return $appPid }
                 }
               } catch { }
@@ -127,32 +135,49 @@ jobs:
           try {
             Start-Process -FilePath $exe | Out-Null
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.22"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.23"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
             $connection = Get-NetTCPConnection -State Listen -OwningProcess $firstPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1
             $baseUrl = "http://127.0.0.1:$($connection.LocalPort)"
-            $project = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/projects" -ContentType 'application/json; charset=utf-8' -Body '{"name":"发布验证","idea":"验证白板启动和新节点","brief":""}'
-            $canvas = Invoke-RestMethod -Uri "$baseUrl/api/projects/$($project.id)/canvas"
+            $project = Invoke-RestMethod -NoProxy -Method Post -Uri "$baseUrl/api/projects" -ContentType 'application/json; charset=utf-8' -Body '{"name":"发布验证","idea":"验证白板启动和新节点","brief":""}'
+            $canvas = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/projects/$($project.id)/canvas"
             if (-not $canvas.nodes -or $canvas.nodes.Count -lt 2) { throw "新项目白板读取失败" }
             $nodeId = ($canvas.nodes | Where-Object { $_.type -eq 'idea' } | Select-Object -First 1).id
-            $summary = Invoke-WebRequest -SkipHttpErrorCheck -Method Post -Uri "$baseUrl/api/projects/$($project.id)/nodes/$nodeId/summary" -ContentType 'application/json; charset=utf-8' -Body '{"force":false}'
+            $summary = Invoke-WebRequest -NoProxy -SkipHttpErrorCheck -Method Post -Uri "$baseUrl/api/projects/$($project.id)/nodes/$nodeId/summary" -ContentType 'application/json; charset=utf-8' -Body '{"force":false}'
             if ($summary.StatusCode -ne 422) { throw "未配置模型时摘要应明确失败，实际状态 $($summary.StatusCode)" }
             $body = @{ node_ids=@($nodeId); instruction='整理为新节点'; output_type='insight' } | ConvertTo-Json
-            $failed = Invoke-WebRequest -SkipHttpErrorCheck -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic" -ContentType 'application/json; charset=utf-8' -Body $body
+            $failed = Invoke-WebRequest -NoProxy -SkipHttpErrorCheck -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic" -ContentType 'application/json; charset=utf-8' -Body $body
             if ($failed.StatusCode -ne 422) { throw "未配置模型时应明确失败，实际状态 $($failed.StatusCode)" }
-            $asyncJob = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic/start" -ContentType 'application/json; charset=utf-8' -Body $body
-            $persisted = Invoke-RestMethod -Uri "$baseUrl/api/projects/$($project.id)/magic/jobs"
+            $asyncJob = Invoke-RestMethod -NoProxy -Method Post -Uri "$baseUrl/api/projects/$($project.id)/magic/start" -ContentType 'application/json; charset=utf-8' -Body $body
+            $persisted = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/projects/$($project.id)/magic/jobs"
             if (-not ($persisted | Where-Object { $_.job_id -eq $asyncJob.job_id })) { throw "白板独立任务未持久化" }
-            $mcpConfig = Invoke-RestMethod -Uri "$baseUrl/api/settings/mcp-search"
+            $mcpConfig = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/settings/mcp-search"
             if ($mcpConfig.enabled -or -not $mcpConfig.url) { throw "MCP 默认配置读取失败" }
-            $after = Invoke-RestMethod -Uri "$baseUrl/api/projects/$($project.id)/canvas"
+            $after = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/projects/$($project.id)/canvas"
             if ($after.nodes.Count -ne $canvas.nodes.Count) { throw "模型失败后不应生成模板节点" }
             Start-Process -FilePath $exe | Out-Null
             $secondPid = Wait-For-App $firstPid
             if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
-            Write-Host "EXE 启动成功，健康接口可用，旧进程 $firstPid 已由新进程 $secondPid 替换。"
+            $readyNode = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$((Get-NetTCPConnection -State Listen -OwningProcess $secondPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1).LocalPort)/api/projects/$($project.id)/canvas"
+            if (-not $readyNode.nodes) { throw "重新启动后项目内容丢失" }
+            Remove-Item -LiteralPath (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py") -Force
+            Start-Process -FilePath $exe | Out-Null
+            $thirdPid = Wait-For-App $secondPid
+            if (-not (Test-Path (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py"))) { throw "缺损缓存未自动修复" }
+            if (Get-Process -Id $secondPid -ErrorAction SilentlyContinue) { throw "修复缓存后旧进程仍在运行" }
+            $clickA = Start-Process -FilePath $exe -PassThru
+            $clickB = Start-Process -FilePath $exe -PassThru
+            $clickA.WaitForExit(120000) | Out-Null
+            $clickB.WaitForExit(120000) | Out-Null
+            if (-not $clickA.HasExited -or -not $clickB.HasExited -or $clickA.ExitCode -ne 0 -or $clickB.ExitCode -ne 0) { throw "连续双击启动未完成" }
+            $finalPid = Wait-For-App $thirdPid
+            $owned = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*standalone_entry.py*' -and $_.ExecutablePath -like "$newRuntime*" })
+            if ($owned.Count -ne 1) { throw "连续启动后应用进程数异常：$($owned.Count)" }
+            $status = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\startup-status.json") -Raw | ConvertFrom-Json
+            if ($status.phase -ne '服务已就绪') { throw "启动诊断未记录服务就绪" }
+            Write-Host "已验证：中文及单引号路径、无效环境代理、冷启动/热启动/缓存修复/连续双击、旧进程替换与项目保留。"
           } finally {
             if (Test-Path $pidFile) {
               $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
@@ -173,14 +198,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.22
+          name: Content Intelligence Canvas v0.3.23
           body: |
             Windows portable public test build.
 
             大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            v0.3.22 在 MCP 与网页搜索设置中新增 DeepSeek 原生 Search/Fetch，支持密钥、搜索正文、自动抓取条数、超时和企业代理；节点勾选联网后自动检测，DeepSeek 优先，未配置或整体搜索失败时使用已启用 MCP，并记录实际来源与回退原因。新增真实搜索和抓取分项测试、实时执行日志、结果与 Markdown 预览；配置导入导出包含 DeepSeek 设置及本地密钥。
+            v0.3.23 修复启动器解包竞争、路径转义、缓存校验及代理影响本地就绪检测的问题；启动过程可见并记录诊断日志，缺损缓存自动修复。DeepSeek 联网简化为搜索、补读缺失正文、全文作为模型上下文；不再只抓前两条、不按 8000 字符截断，不用摘要或 MCP 回退冒充正文，并新增完整流程测试和正文查看。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.22.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.23.exe
           generate_release_notes: true
