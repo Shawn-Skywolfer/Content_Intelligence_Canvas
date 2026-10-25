@@ -163,11 +163,9 @@ class AIProviderGateway:
         provider: dict[str, Any],
     ) -> tuple[str, str | None, str | None, str | None]:
         extra = provider.get("extra") if isinstance(provider.get("extra"), dict) else {}
-        mode = str(extra.get("network_mode") or "auto")
-        if mode not in {"auto", "direct", "system_proxy", "custom_proxy"}:
-            mode = "auto"
-        proxy_password = extra.get("proxy_password") or self.secrets.get(extra.get("proxy_password_ref"))
-        return mode, extra.get("proxy_url"), extra.get("proxy_username"), proxy_password
+        from app.services.network_settings import NetworkSettings
+        resolved = NetworkSettings(self.repository, self.secrets).resolve(extra)
+        return tuple(resolved[key] for key in ("network_mode", "proxy_url", "proxy_username", "proxy_password"))
 
     @staticmethod
     def _ssl_verification() -> ssl.SSLContext | bool:

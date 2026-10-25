@@ -170,7 +170,7 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
 }
 
 const TASK_STATUS: Record<string, string> = { running: "运行中", paused: "已暂停", failed: "失败", cancelled: "已取消", completed: "已完成" };
-const NETWORK_LABELS: Record<string, string> = { auto: "自动（系统代理优先）", direct: "直连", system_proxy: "系统代理", custom_proxy: "企业代理" };
+const NETWORK_LABELS: Record<string, string> = { inherit: "继承全局网络设置", auto: "自动（系统代理优先）", direct: "直连", system_proxy: "系统代理", custom_proxy: "企业代理" };
 
 function TaskDetails({ job, nodes, formats, controls, pending, message, onClose, onResume }: {
   job: MagicJob; nodes: CanvasNode[]; formats: ContentFormat[]; controls: React.ReactNode; pending: boolean; message: string;
@@ -187,6 +187,7 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       {message && <p className="settings-feedback" role="status">{message}</p>}
       <p>{job.job_id}</p><p>创建于 {new Date(job.created_at).toLocaleString()} · 更新于 {job.updated_at ? new Date(job.updated_at).toLocaleString() : "未记录"}</p>
       <div className="task-detail-summary"><strong>{job.phase} · {job.progress}%</strong><p>{job.detail}</p>{job.error && <p className="settings-error">完整错误：{job.error}</p>}</div>
+      {job.result?.failure && <div className="settings-error"><strong>{job.result.failure.http_status == null ? "未收到 HTTP 响应" : `HTTP ${job.result.failure.http_status}`} · {job.result.failure.operation}</strong><p>{job.result.failure.reason}</p><p>处理建议：{job.result.failure.suggestion}</p><p>请求地址：{job.result.failure.endpoint}</p></div>}
       <p>本次调用：{job.provider?.name || "旧版未记录"} · {job.provider?.model_name || "模型未记录"} · {NETWORK_LABELS[job.provider?.network_mode || ""] || "网络未记录"}</p>
       {job.provider?.base_url && <p>接口：{job.provider.base_url}</p>}
       <div className="task-detail-actions">{controls}</div>
@@ -766,7 +767,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       {["running", "paused", "failed"].includes(job.status) && <button className="text-button danger" disabled={pending} onClick={() => void taskAction(job.job_id, "cancel")}>取消</button>}
       {["paused", "failed", "cancelled"].includes(job.status) && <button className="text-button" disabled={pending} onClick={() => void taskAction(job.job_id, "resume")}>{job.status === "paused" ? "继续" : "重试"}</button>}
       <button className="text-button" onClick={() => { setTaskMessage(""); setTaskDetailId(job.job_id); }}>查看详情</button>
-      {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node.id])}>定位结果</button>}</>;
+      {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node!.id])}>定位结果</button>}</>;
   }
 
   async function batchTaskAction(action: "pause" | "cancel" | "resume") {

@@ -10,6 +10,7 @@ import httpx
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
 from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
+from app.services.network_settings import NetworkSettings
 from app.services.ai.cancellation import check_cancelled, current_token
 
 
@@ -28,7 +29,7 @@ class McpSearchService:
             "tool_name": saved.get("tool_name", "tavily_search"),
             "enabled": bool(saved.get("enabled", False)),
             "has_api_key": bool(saved.get("secret_ref")),
-            "network_mode": saved.get("network_mode", "auto"),
+            "network_mode": saved.get("network_mode", "inherit"),
             "proxy_url": saved.get("proxy_url", ""),
             "proxy_username": saved.get("proxy_username", ""),
             "has_proxy_password": bool(saved.get("proxy_password_ref")),
@@ -54,7 +55,7 @@ class McpSearchService:
             "name": values["name"].strip(), "url": values["url"].strip(),
             "tool_name": values["tool_name"].strip(), "enabled": values["enabled"],
             "secret_ref": secret_ref,
-            "network_mode": values.get("network_mode", "auto"),
+            "network_mode": values.get("network_mode", "inherit"),
             "proxy_url": values.get("proxy_url", "").strip(),
             "proxy_username": values.get("proxy_username", "").strip(),
             "proxy_password_ref": proxy_password_ref,
@@ -78,13 +79,10 @@ class McpSearchService:
         return config, url, headers
 
     def _client_options(self, config: dict, url: str) -> dict:
-        mode = config.get("network_mode", "auto")
-        if mode == "auto":
-            return {"trust_env": True, "verify": AIProviderGateway._ssl_verification()}
+        resolved = NetworkSettings(self.repository, self.secrets).resolve(config)
         try:
             routes = AIProviderGateway._network_routes(
-                url, mode, config.get("proxy_url"), config.get("proxy_username"),
-                self.secrets.get(config.get("proxy_password_ref")),
+                url, resolved["network_mode"], resolved["proxy_url"], resolved["proxy_username"], resolved["proxy_password"],
             )
         except ProviderConnectionError as exc:
             raise ValueError(str(exc)) from exc
@@ -105,7 +103,7 @@ class McpSearchService:
     def _session(self, client: httpx.Client, url: str, headers: dict):
         init = client.post(url, headers=headers, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.23"}},
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.24"}},
         })
         if init.status_code in {400, 404, 405, 422} or (init.status_code == 200 and "application/json" in init.headers.get("content-type", "") and init.json().get("error", {}).get("code") == -32601):
             # MCP 2026-07-28 uses independent, stateless requests instead of initialize.
@@ -120,7 +118,7 @@ class McpSearchService:
 
     def _tools(self, client: httpx.Client, url: str, headers: dict) -> list[dict]:
         modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
-        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.23"}}} if modern else {}
+        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.24"}}} if modern else {}
         response = client.post(url, headers={**headers, **({"Mcp-Method": "tools/list"} if modern else {})}, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": params})
         return self._response(response).get("tools", [])
 
@@ -165,7 +163,7 @@ class McpSearchService:
                     modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
                     params = {"name": requested, "arguments": arguments}
                     if modern:
-                        params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.23"}}
+                        params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.24"}}
                     result = self._response(client.post(url, headers={**headers, **({"Mcp-Method": "tools/call", "Mcp-Name": requested} if modern else {})}, json={
                         "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": params,
                     }))

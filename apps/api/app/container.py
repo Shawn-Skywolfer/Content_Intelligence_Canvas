@@ -18,6 +18,7 @@ from app.services.knowledge.refresh_jobs import KnowledgeRefreshJobs
 from app.services.retrieval.embedding import LocalHashEmbeddingProvider
 from app.services.retrieval.hybrid import HybridRetrievalService
 from app.services.workflow import ContentWorkflowService
+from app.services.network_settings import NetworkSettings
 from app.services.mcp_search import McpSearchService
 from app.services.deepseek_web import DeepSeekWebService, DeepSeekWebTestJobs, WebSearchService
 
@@ -31,6 +32,8 @@ class AppContainer:
         self.workspace = WorkspaceRepository(settings.data_dir / "app.db")
         self.workspace.interrupt_magic_jobs()
         self.secrets = LocalSecretStore(settings.data_dir / "secrets.json")
+        self.network = NetworkSettings(self.workspace, self.secrets)
+        self.network.migrate_inheritance()
         self.chunk_store = LanceChunkStore(
             settings.data_dir / "lancedb", self.embeddings.dimensions
         )

@@ -147,3 +147,110 @@ def test_search_full_content_is_kept_without_redundant_fetch_or_8000_limit(tmp_p
     assert result[0]["content"] == full_text
     assert result[0]["content_chars"] > 8000
     assert result[0]["retrieval_report"]["full_text_pages"] == 1
+
+
+@pytest.mark.parametrize("search_enabled,fetch_enabled", [(False, False), (True, False), (False, True), (True, True)])
+def test_independent_switches_enforced_before_network(tmp_path, monkeypatch, search_enabled, fetch_enabled):
+    service = make_service(tmp_path)
+    service.save({"search_enabled": search_enabled, "fetch_enabled": fetch_enabled})
+    request = Mock(return_value=httpx.Response(200, json={"content": "正文", "results": []}))
+    monkeypatch.setattr(AIProviderGateway, "_request", request)
+    assert service.config()["enabled"] is (search_enabled or fetch_enabled)
+    for operation, enabled in [("search", search_enabled), ("fetch", fetch_enabled)]:
+        before = request.call_count
+        if enabled:
+            service._post(operation, {})
+            assert request.call_count == before + 1
+        else:
+            with pytest.raises(ValueError, match="单独启用"):
+                service._post(operation, {})
+            assert request.call_count == before
+
+
+def test_disabled_fetch_uses_search_full_body_and_skips_summary(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    service.save({"search_enabled": True, "fetch_enabled": False})
+    request = Mock(return_value=httpx.Response(200, json={"results": [
+        {"url": "https://example.org/full", "content": "完整正文"},
+        {"url": "https://example.org/summary", "summary": "不能作为全文"}]}))
+    monkeypatch.setattr(AIProviderGateway, "_request", request)
+    hits = service.search("问题")
+    assert request.call_count == 1 and len(hits) == 1
+    assert hits[0]["retrieval_report"]["failed_pages"][0]["error"] == "抓取已关闭，搜索未返回正文"
+
+
+def test_mcp_links_can_use_independent_deepseek_fetch(tmp_path, monkeypatch):
+    deepseek = make_service(tmp_path)
+    deepseek.save({"search_enabled": False, "fetch_enabled": True})
+    mcp = SimpleNamespace(config=lambda: {"enabled": True, "url": "https://example.org/mcp", "tool_name": "search"},
+                          search=Mock(return_value=[{"url": "https://example.org", "excerpt": "摘要"}]))
+    monkeypatch.setattr(AIProviderGateway, "_request", lambda *a, **kw: httpx.Response(200, json={"content": "真正全文"}))
+    router = WebSearchService(deepseek.repository, mcp, deepseek)
+    assert router.selection()["provider"] == "mcp" and router.selection()["fetch_ready"]
+    assert router.search("问题")[0]["content"] == "真正全文"
+
+
+def test_query_syntax_preserved_in_bounded_payload_and_trace(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    syntax = 'site:example.org lang:zh after:2025 -广告 "精确短语"'
+    service.save({"enabled": True, "search_syntax": syntax, "localization": "8.8.8.8"})
+    request = Mock(return_value=httpx.Response(200, json={"results": []}))
+    monkeypatch.setattr(AIProviderGateway, "_request", request)
+    events = []
+    _, trace = service.search_raw("很长的问题" * 100, events.append)
+    payload = request.call_args.kwargs["json_payload"]
+    assert payload["query"].endswith(syntax) and len(payload["query"]) == 128
+    assert payload["ori_question"] == ("很长的问题" * 100)[:128]
+    assert payload["localization"] == "8.8.8.8"
+    assert trace["query"] == payload["query"] and payload["query"] in events[0]
+
+
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 408, 413, 429, 500, 504])
+def test_test_job_keeps_structured_http_failure(tmp_path, monkeypatch, status):
+    service = make_service(tmp_path)
+    monkeypatch.setattr(AIProviderGateway, "_request", lambda *a, **kw: httpx.Response(status, json={"error": {"message": "private-test-key"}}))
+    jobs = DeepSeekWebTestJobs(service)
+    job = jobs.start("fetch", "问题", "https://example.org")
+    deadline = time.monotonic() + 4
+    while jobs.get(job["job_id"])["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(.01)
+    result = jobs.get(job["job_id"])
+    assert result["status"] == "failed"
+    assert result["failure"]["http_status"] == status
+    assert result["failure"]["reason"] and result["failure"]["suggestion"]
+    assert result["failure"]["endpoint"].endswith("/v1/tools/fetch")
+    assert "private-test-key" not in str(result)
+
+
+def test_http_failure_reaches_sync_api_and_persistent_async_task(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from app.api import workspace as workspace_api
+    from app.schemas.workspace import MagicRequest
+    from app.services.ai.cancellation import CancellationToken
+    from app.services.web_errors import WebToolError
+    service = make_service(tmp_path)
+    repo = service.repository
+    project = repo.create_project("测试", "问题", "")
+    node = repo.create_node(project["id"], {"title": "输入", "body": "材料"})
+    failure = WebToolError("fetch", 404, endpoint="https://api.deepseek.com/v1/tools/fetch")
+    workflow = SimpleNamespace(magic=Mock(side_effect=failure))
+    monkeypatch.setattr(workspace_api, "get_container", lambda: SimpleNamespace(workspace=repo, workflow=workflow))
+    request = MagicRequest(node_ids=[node["id"]], instruction="研究问题", web_search=True)
+    with pytest.raises(HTTPException) as exc:
+        workspace_api.magic_bar(project["id"], request)
+    assert exc.value.status_code == 404 and exc.value.detail["suggestion"]
+    job = repo.create_magic_job(project["id"], [node["id"]], request.model_dump())
+    workspace_api._run_magic_job(job["job_id"], project["id"], request, CancellationToken(), None, 1)
+    stored = repo.get_magic_job(job["job_id"])
+    assert stored["status"] == "failed" and stored["result"]["failure"]["http_status"] == 404
+
+
+def test_connection_failure_does_not_invent_http_status(tmp_path, monkeypatch):
+    from app.services.ai.gateway import ProviderConnectionError
+    from app.services.web_errors import WebToolError
+    service = make_service(tmp_path)
+    monkeypatch.setattr(AIProviderGateway, "_request", Mock(side_effect=ProviderConnectionError("网络超时")))
+    with pytest.raises(WebToolError) as exc:
+        service.fetch("https://example.org")
+    assert exc.value.as_dict()["http_status"] is None
+    assert "未收到 HTTP 响应" in str(exc.value)

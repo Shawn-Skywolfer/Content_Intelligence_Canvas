@@ -78,15 +78,18 @@ export type MagicJob = {
   updated_at?: string; attempt?: number; request?: Record<string, unknown>;
   provider?: { id?: string; name?: string; model_name?: string; base_url?: string; network_mode?: string };
   events?: Array<{ at: string; attempt: number; phase: string; detail: string }>;
-  result?: { node: CanvasNode; run_id: string; used_llm: boolean; message: string } | null;
+  result?: { node?: CanvasNode; run_id?: string; used_llm?: boolean; message?: string; failure?: WebFailure } | null;
 };
+export type NetworkMode = "inherit" | "auto" | "direct" | "system_proxy" | "custom_proxy";
+export type GlobalNetworkConfig = { network_mode: Exclude<NetworkMode, "inherit">; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password?: boolean; clear_proxy_password?: boolean };
+export type WebFailure = { operation: string; http_status: number | null; reason: string; suggestion: string; endpoint: string; retryable: boolean };
 export type DeepSeekWebConfig = {
-  base_url: string; enabled: boolean; count: number; need_content: boolean; fetch_top_k: number;
-  max_content_chars: number; timeout_seconds: number; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy";
+  base_url: string; enabled: boolean; search_enabled?: boolean; fetch_enabled?: boolean; search_syntax?: string; localization?: string; count: number; need_content: boolean; fetch_top_k: number;
+  max_content_chars: number; timeout_seconds: number; network_mode: NetworkMode;
   proxy_url: string; proxy_username: string; api_key?: string; proxy_password?: string; has_api_key?: boolean; has_proxy_password?: boolean;
 };
-export type WebTestJob = { job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { context?: { page_count: number; content_chars: number; items: { title: string; url: string; content_chars: number; content_source: string; preview: string }[]; failed_pages: { url: string; error: string }[] }; search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
-export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: "auto" | "direct" | "system_proxy" | "custom_proxy"; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
+export type WebTestJob = { failure?: WebFailure; job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { context?: { page_count: number; content_chars: number; items: { title: string; url: string; content_chars: number; content_source: string; preview: string }[]; failed_pages: { url: string; error: string }[] }; search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
+export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: NetworkMode; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -115,6 +118,10 @@ export function formatApiError(value: unknown): string {
     }
     return formatApiError(item);
   }).join("；");
+  if (value && typeof value === "object" && "reason" in value) {
+    const failure = value as WebFailure;
+    return `${failure.http_status != null ? `HTTP ${failure.http_status}` : "未收到 HTTP 响应"} · ${failure.reason}${failure.suggestion ? `。建议：${failure.suggestion}` : ""}`;
+  }
   if (value && typeof value === "object") return JSON.stringify(value);
   return String(value ?? "请求失败");
 }
@@ -122,6 +129,9 @@ export function formatApiError(value: unknown): string {
 export const downloadUrl = (path: string) => `${API_BASE}${path}`;
 
 export const api = {
+  getGlobalNetwork: () => request<GlobalNetworkConfig>("/api/settings/network"),
+  saveGlobalNetwork: (config: GlobalNetworkConfig) => request<GlobalNetworkConfig>("/api/settings/network", { method: "PUT", body: JSON.stringify(config) }),
+  testGlobalNetwork: () => request<{ http_status: number | null; reachable: boolean; route?: string; latency_ms: number; message: string }>("/api/settings/network/test", { method: "POST" }),
   health: () => request<{ status: string; phase: string }>("/api/health"),
   listSources: () => request<Source[]>("/api/knowledge-sources"),
   createSource: (name: string, root_path: string) => request<Source>("/api/knowledge-sources", {

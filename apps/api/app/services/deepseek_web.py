@@ -12,6 +12,8 @@ from app.schemas.workspace import DeepSeekWebConfig
 from app.services.ai.cancellation import CancellationToken, OperationCancelled, cancellation_scope, check_cancelled, current_token
 from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
 from app.services.ai.secret_store import LocalSecretStore
+from app.services.network_settings import NetworkSettings
+from app.services.web_errors import WebToolError
 
 
 class DeepSeekWebService:
@@ -29,12 +31,19 @@ class DeepSeekWebService:
     def config(self) -> dict:
         saved = self.repository.get_setting("deepseek_web", {}) or {}
         defaults = DeepSeekWebConfig().model_dump(exclude={"api_key", "proxy_password"})
-        return {**defaults, **{key: saved[key] for key in defaults if key in saved},
+        flags = {key: bool(saved[key]) if saved.get(key) is not None else bool(saved.get("enabled", False))
+                 for key in ("search_enabled", "fetch_enabled")}
+        return {**defaults, **{key: saved[key] for key in defaults if key in saved}, **flags, "enabled": any(flags.values()),
                 "has_api_key": bool(self.secrets.get(saved.get("secret_ref"))), "has_proxy_password": bool(saved.get("proxy_password_ref"))}
 
     def save(self, values: dict) -> dict:
         values = DeepSeekWebConfig.model_validate(values).model_dump()
         self.validate(values)
+        for name in ("search_enabled", "fetch_enabled"):
+            if values[name] is None:
+                values[name] = values["enabled"]
+        values["enabled"] = values["search_enabled"] or values["fetch_enabled"]
+        NetworkSettings.validate(values)
         old = self.repository.get_setting("deepseek_web", {}) or {}
         same_host = urlsplit(old.get("base_url", "")).hostname == urlsplit(values["base_url"]).hostname
         secret_ref = old.get("secret_ref") if same_host else None
@@ -53,8 +62,8 @@ class DeepSeekWebService:
     def _post(self, operation: str, payload: dict, progress: Callable[[str], None] | None = None) -> tuple[dict, dict]:
         saved = self.repository.get_setting("deepseek_web", {}) or {}
         config = self.config()
-        if not config["enabled"]:
-            raise ValueError("请先在 MCP 与网页搜索设置中启用 DeepSeek 网页搜索与抓取")
+        if not config[f"{operation}_enabled"]:
+            raise ValueError(f"请先在设置中单独启用 DeepSeek {operation} 功能")
         key = self.secrets.get(saved.get("secret_ref"))
         if not key:
             raise ValueError("DeepSeek 网页工具缺少 API Key，请保存密钥后重试")
@@ -62,13 +71,14 @@ class DeepSeekWebService:
         base = config["base_url"].rstrip("/")
         endpoint = f"{base}{'' if base.endswith('/v1') else '/v1'}/tools/{operation}"
         started = time.perf_counter()
+        network = NetworkSettings(self.repository, self.secrets).resolve(saved)
         try:
             for attempt in range(2):
                 response = AIProviderGateway._request(
                     "POST", endpoint, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json_payload=payload, timeout=config["timeout_seconds"], network_mode=config["network_mode"],
-                    proxy_url=config["proxy_url"], proxy_username=config["proxy_username"],
-                    proxy_password=self.secrets.get(saved.get("proxy_password_ref")),
+                    json_payload=payload, timeout=config["timeout_seconds"], network_mode=network["network_mode"],
+                    proxy_url=network["proxy_url"], proxy_username=network["proxy_username"],
+                    proxy_password=network["proxy_password"],
                     progress=(lambda detail: progress(detail.replace("模型响应", "网页工具响应").replace("模型结果", "网页工具结果"))) if progress else None,
                 )
                 if response.status_code not in {408, 429, 500, 502, 503, 504} or attempt:
@@ -83,28 +93,35 @@ class DeepSeekWebService:
                 check_cancelled()
 
         except ProviderConnectionError as exc:
-            raise ValueError(str(exc).replace("模型配置", "DeepSeek 网页工具配置")) from exc
+            raise WebToolError(operation, reason=str(exc).replace("模型配置", "DeepSeek 网页工具配置"), endpoint=endpoint,
+                               suggestion="检查全局代理或网页工具的独立代理设置") from exc
         check_cancelled()
         if response.status_code != 200:
-            hints = {401: "密钥无效或无权限", 402: "账号余额不足", 403: "抓取被安全策略拒绝", 404: "网页不存在、禁止抓取或无可提取正文", 429: "请求过于频繁，请稍后重试", 504: "上游网页服务超时"}
-            raise ValueError(f"DeepSeek {operation} 失败 · HTTP {response.status_code} · {hints.get(response.status_code, '请求未成功，请检查服务状态与参数')}")
+            raise WebToolError(operation, response.status_code, endpoint=endpoint)
         try:
             data = response.json()
         except ValueError as exc:
-            raise ValueError(f"DeepSeek {operation} 返回的内容不是有效 JSON") from exc
+            raise WebToolError(operation, 200, "返回的内容不是有效 JSON", endpoint) from exc
         if not isinstance(data, dict) or data.get("error"):
-            raise ValueError(f"DeepSeek {operation} 返回异常，未得到可用结果")
+            raise WebToolError(operation, 200, "返回异常，未得到可用结果", endpoint)
         return data, {"http_status": 200, "latency_ms": round((time.perf_counter() - started) * 1000),
                       "endpoint": endpoint, "route": AIProviderGateway._route_label(response)}
 
     def search_raw(self, query: str, progress: Callable[[str], None] | None = None) -> tuple[list[dict], dict]:
-        query = query.strip()[:128]
-        if not query:
+        original = query.strip()[:128]
+        if not original:
             raise ValueError("请输入搜索词")
         config = self.config()
-        data, trace = self._post("search", {"query": query, "count": config["count"], "need_content": True}, progress)
+        syntax = config["search_syntax"].strip()
+        query = original[:128 - len(syntax) - 1] + " " + syntax if syntax else original
+        payload = {"query": query, "ori_question": original, "count": config["count"], "need_content": True}
+        if config["localization"].strip():
+            payload["localization"] = config["localization"].strip()
+        if progress:
+            progress(f"实际检索语句：{query}")
+        data, trace = self._post("search", payload, progress)
         if not isinstance(data.get("results"), list):
-            raise ValueError("DeepSeek Search 返回缺少 results 数组")
+            raise WebToolError("search", 200, "返回缺少 results 数组", trace["endpoint"])
         items = [item for item in data["results"] if isinstance(item, dict) and str(item.get("url", "")).startswith(("https://", "http://"))]
         return items[:config["count"]], {**trace, "query": query, "result_count": len(items)}
 
@@ -115,15 +132,20 @@ class DeepSeekWebService:
             raise ValueError("请输入有效 HTTP(S) 网页地址，不能包含用户名和密码")
         data, trace = self._post("fetch", {"url": url}, progress)
         if not isinstance(data.get("content"), str) or not data["content"].strip():
-            raise ValueError("DeepSeek Fetch 返回 HTTP 200，但没有可用 Markdown 正文")
+            raise WebToolError("fetch", 200, "没有可用 Markdown 正文", trace["endpoint"], "更换有公开正文的网页")
         return {"title": str(data.get("title") or ""), "url": url, "content": data["content"]}, {**trace, "content_chars": len(data["content"])}
 
     def search(self, query: str, progress: Callable[[str], None] | None = None) -> list[dict]:
         report = progress or (lambda _detail: None)
-        items, _trace = self.search_raw(query, report)
+        items, trace = self.search_raw(query, report)
         if not items:
-            raise ValueError("DeepSeek 搜索成功，但没有可引用的网络结果")
+            raise WebToolError("search", 200, "搜索成功，但没有可引用的网络结果", trace["endpoint"], "调整关键词或放宽检索语法限制")
+        return self.read_pages(items, report)
+
+    def read_pages(self, items: list[dict], progress=None) -> list[dict]:
+        report = progress or (lambda _detail: None)
         config = self.config()
+        last_failure = None
         results = []
         failures = []
         seen = set()
@@ -136,6 +158,10 @@ class DeepSeekWebService:
             content = item.get("content")
             content = content.strip() if isinstance(content, str) else ""
             method = "search_content"
+            if not content and not config["fetch_enabled"]:
+                failures.append({"url": url, "error": "抓取已关闭，搜索未返回正文"})
+                report(f"抓取已关闭，跳过缺少正文的网页：{url}")
+                continue
             if not content:
                 report(f"读取网页正文 {index + 1}/{len(items)}：{item.get('title') or url}")
                 try:
@@ -145,6 +171,7 @@ class DeepSeekWebService:
                 except OperationCancelled:
                     raise
                 except ValueError as exc:
+                    last_failure = exc
                     failures.append({"url": url, "error": str(exc)})
                     report(f"未取得正文，跳过此页（不用摘要代替）：{url}；{exc}")
                     continue
@@ -155,7 +182,11 @@ class DeepSeekWebService:
                             "date": item.get("date"), "authority": item.get("authority")})
         if not results:
             detail = "；".join(f"{item['url']}：{item['error']}" for item in failures[:3])
-            raise ValueError(f"DeepSeek 找到 {len(items)} 条链接，但没有取得任何网页正文。不会使用摘要代替全文。{detail}")
+            reason = f"找到 {len(items)} 条链接，但没有取得任何网页正文。不会使用摘要代替全文。{detail}"
+            if isinstance(last_failure, WebToolError):
+                failure = last_failure.as_dict()
+                raise WebToolError(failure["operation"], failure["http_status"], reason, failure["endpoint"], failure["suggestion"])
+            raise WebToolError("fetch", reason=reason, suggestion="启用网页抓取，或更换有正文的搜索结果")
         results[0]["retrieval_report"] = {"searched": len(items), "full_text_pages": len(results),
                                           "content_chars": sum(item["content_chars"] for item in results), "failed_pages": failures}
         report(f"网页上下文已准备：{len(results)} 篇正文，共 {sum(item['content_chars'] for item in results)} 字符；失败跳过 {len(failures)} 篇")
@@ -169,10 +200,10 @@ class WebSearchService:
     def selection(self) -> dict:
         deepseek = self.deepseek.config()
         mcp = self.mcp.config()
-        deepseek_ready = bool(deepseek["enabled"] and deepseek["has_api_key"])
+        deepseek_ready = bool(deepseek["search_enabled"] and deepseek["has_api_key"])
         mcp_ready = bool(mcp["enabled"] and mcp["url"] and mcp["tool_name"])
         provider = "deepseek" if deepseek_ready else "mcp" if mcp_ready else None
-        return {"provider": provider, "deepseek_ready": deepseek_ready, "mcp_ready": mcp_ready,
+        return {"provider": provider, "deepseek_ready": deepseek_ready, "mcp_ready": mcp_ready, "fetch_ready": bool(deepseek["fetch_enabled"] and deepseek["has_api_key"]),
                 "message": "优先使用 DeepSeek 网页搜索与抓取" if deepseek_ready else "使用搜索 MCP" if mcp_ready else "尚未启用可用的网页搜索服务"}
 
     def search(self, query: str, progress: Callable[[str], None] | None = None) -> list[dict]:
@@ -184,7 +215,11 @@ class WebSearchService:
         elif not selected["mcp_ready"]:
             raise ValueError("请先在设置中启用 DeepSeek 网页搜索与抓取并保存 Key，或启用搜索 MCP")
         report("正在使用搜索 MCP 获取网络资料")
-        return self.mcp.search(query)
+        items = self.mcp.search(query)
+        if selected["fetch_ready"]:
+            report("正在用 DeepSeek 抓取 MCP 搜索链接的全文")
+            return self.deepseek.read_pages(items, report)
+        return items
 
 
 class DeepSeekWebTestJobs:
@@ -235,7 +270,7 @@ class DeepSeekWebTestJobs:
                     with self.lock:
                         self.jobs[job_id]["result"] = copy.deepcopy(result)
                     if not hits:
-                        raise ValueError("Search 返回 HTTP 200，但没有搜索结果")
+                        raise WebToolError("search", 200, "搜索成功，但没有搜索结果", trace.get("endpoint", ""), "调整关键词或放宽检索语法限制")
                     report(f"Search 通过：HTTP 200，返回 {len(hits)} 条结果")
                 if operation in {"fetch", "both"}:
                     report("正在执行真实 Fetch 请求，等待 Markdown 正文")
@@ -247,6 +282,8 @@ class DeepSeekWebTestJobs:
         except Exception as exc:
             message = "网页工具测试超时，连接已中断；请检查网络或调整超时设置" if token.event.is_set() else str(exc)
             with self.lock:
-                self.jobs[job_id].update(status="failed", phase="网页工具测试失败", error=message, result=result, finished_at=time.time())
+                failure = exc.as_dict() if isinstance(exc, WebToolError) else {"http_status": None, "operation": operation,
+                    "reason": message, "suggestion": "检查开关、密钥、参数与代理设置", "endpoint": "", "retryable": False}
+                self.jobs[job_id].update(status="failed", phase="网页工具测试失败", error=message, failure=failure, result=result, finished_at=time.time())
         finally:
             timer.cancel()

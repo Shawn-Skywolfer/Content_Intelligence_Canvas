@@ -134,16 +134,28 @@ class MagicRequest(BaseModel):
     upstream_depth: int = Field(default=6, ge=0, le=12)
 
 
+class GlobalNetworkConfig(BaseModel):
+    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    proxy_url: str = Field(default="", max_length=2048)
+    proxy_username: str = Field(default="", max_length=256)
+    proxy_password: str = Field(default="", max_length=2048)
+    clear_proxy_password: bool = False
+
+
 class DeepSeekWebConfig(BaseModel):
     base_url: str = Field(default="https://api.deepseek.com", max_length=2048)
     api_key: str = Field(default="", max_length=2048)
     enabled: bool = False
+    search_enabled: bool | None = None
+    fetch_enabled: bool | None = None
+    search_syntax: str = Field(default="", max_length=100)
+    localization: str = Field(default="", max_length=45)
     count: int = Field(default=3, ge=1, le=50)
     need_content: bool = True
     fetch_top_k: int = Field(default=2, ge=0, le=5)
     max_content_chars: int = Field(default=8000, ge=1000, le=30000)
     timeout_seconds: int = Field(default=25, ge=5, le=90)
-    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    network_mode: Literal["inherit", "auto", "direct", "system_proxy", "custom_proxy"] = "inherit"
     proxy_url: str = Field(default="", max_length=2048)
     proxy_username: str = Field(default="", max_length=256)
     proxy_password: str = Field(default="", max_length=2048)
@@ -161,7 +173,7 @@ class McpSearchConfig(BaseModel):
     api_key: str = Field(default="", max_length=2048)
     tool_name: str = Field(default="tavily_search", max_length=120)
     enabled: bool = False
-    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    network_mode: Literal["inherit", "auto", "direct", "system_proxy", "custom_proxy"] = "inherit"
     proxy_url: str = Field(default="", max_length=2048)
     proxy_username: str = Field(default="", max_length=256)
     proxy_password: str = Field(default="", max_length=2048)
@@ -265,7 +277,7 @@ class ProviderModelDiscoveryRequest(BaseModel):
     base_url: str = Field(min_length=5, max_length=500)
     api_key: str | None = Field(default=None, max_length=1000)
     timeout_seconds: int = Field(default=60, ge=5, le=300)
-    network_mode: Literal["auto", "direct", "system_proxy", "custom_proxy"] = "auto"
+    network_mode: Literal["inherit", "auto", "direct", "system_proxy", "custom_proxy"] = "inherit"
     proxy_url: str | None = Field(default=None, max_length=500)
     proxy_username: str | None = Field(default=None, max_length=300)
     proxy_password: str | None = Field(default=None, max_length=1000)

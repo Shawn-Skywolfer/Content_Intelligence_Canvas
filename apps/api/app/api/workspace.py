@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.web_errors import WebToolError
+
 import json
 import re
 import threading
@@ -334,6 +336,9 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
             negative_prompt=request.negative_prompt, web_search=request.web_search,
             upstream_depth=request.upstream_depth,
         )
+    except WebToolError as exc:
+        upstream = exc.as_dict()["http_status"]
+        raise HTTPException(upstream if upstream and upstream >= 400 else 502, exc.as_dict()) from exc
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
@@ -378,7 +383,8 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
             if node is not None:
                 workspace.delete_node(project_id, node["id"])
             return
-        workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=str(exc), error=str(exc))
+        workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=str(exc), error=str(exc),
+                                   result={"failure": exc.as_dict()} if isinstance(exc, WebToolError) else None)
     finally:
         with _magic_lock:
             if _magic_tokens.get(job_id) is token:
@@ -497,6 +503,9 @@ def generate_into_node(
         node, run_id, used_llm, message = get_container().workflow.generate_into_node(
             project_id, node_id, request.instruction, request.use_llm
         )
+    except WebToolError as exc:
+        upstream = exc.as_dict()["http_status"]
+        raise HTTPException(upstream if upstream and upstream >= 400 else 502, exc.as_dict()) from exc
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
@@ -509,6 +518,9 @@ def create_concept(project_id: str, request: ConceptRequest) -> WorkflowResponse
         node, run_id, used_llm, message = get_container().workflow.create_concept(
             project_id, request.node_ids, request.title, request.use_llm
         )
+    except WebToolError as exc:
+        upstream = exc.as_dict()["http_status"]
+        raise HTTPException(upstream if upstream and upstream >= 400 else 502, exc.as_dict()) from exc
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
@@ -569,6 +581,9 @@ def generate_content(project_id: str, request: ContentGenerateRequest) -> dict[s
             request.save_as_asset,
             negative_prompt=request.negative_prompt,
         )
+    except WebToolError as exc:
+        upstream = exc.as_dict()["http_status"]
+        raise HTTPException(upstream if upstream and upstream >= 400 else 502, exc.as_dict()) from exc
     except (ValueError, RuntimeError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {

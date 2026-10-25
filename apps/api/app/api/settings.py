@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.container import get_container
 from app.schemas.workspace import (
+    GlobalNetworkConfig,
     ProviderConfigRequest,
     ProviderConfigResponse,
     ProviderModelDiscoveryRequest,
@@ -22,10 +23,45 @@ from app.schemas.workspace import (
 )
 from app.services.content_formats import list_content_formats
 from app.services.knowledge.indexer import source_id_for_path
+from app.services.network_settings import NetworkSettings
+from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
+import time
+
 from app.services.deepseek_web import DeepSeekWebService
 
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+
+@router.get("/settings/network")
+def get_global_network() -> dict:
+    container = get_container()
+    return NetworkSettings(container.workspace, container.secrets).config()
+
+
+@router.put("/settings/network")
+def save_global_network(request: GlobalNetworkConfig) -> dict:
+    container = get_container()
+    try:
+        return NetworkSettings(container.workspace, container.secrets).save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/network/test")
+def test_global_network() -> dict:
+    container = get_container()
+    resolved = NetworkSettings(container.workspace, container.secrets).resolve()
+    started = time.perf_counter()
+    try:
+        response = AIProviderGateway._request("GET", "https://api.deepseek.com", headers={}, timeout=8,
+            **{k: resolved[k] for k in ("network_mode", "proxy_url", "proxy_username", "proxy_password")})
+        return {"http_status": response.status_code, "reachable": True, "route": AIProviderGateway._route_label(response),
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "message": "已收到 HTTP 响应，仅代表网络可达；鉴权和功能请分别测试"}
+    except ProviderConnectionError as exc:
+        return {"http_status": None, "reachable": False, "message": str(exc),
+                "latency_ms": round((time.perf_counter() - started) * 1000)}
 
 
 @router.get("/settings/web-search")
@@ -205,6 +241,9 @@ def export_settings() -> dict[str, Any]:
     saved_deepseek = container.workspace.get_setting("deepseek_web", {}) or {}
     deepseek["api_key"] = container.secrets.get(saved_deepseek.get("secret_ref")) or ""
     deepseek["proxy_password"] = container.secrets.get(saved_deepseek.get("proxy_password_ref")) or ""
+    network = NetworkSettings(container.workspace, container.secrets).config()
+    saved_network = container.workspace.get_setting("global_network", {}) or {}
+    network["proxy_password"] = container.secrets.get(saved_network.get("proxy_password_ref")) or ""
     active = container.workspace.active_provider()
     return {
         "backup_type": "content-intelligence-canvas-settings", "version": 1,
@@ -214,6 +253,7 @@ def export_settings() -> dict[str, Any]:
         "knowledge_sources": [{"name": s["name"], "root_path": s["root_path"]} for s in container.manifest.list_sources()],
         "mcp_search": mcp,
         "deepseek_web": deepseek,
+        "global_network": network,
         "security": {"protect_internal_data": container.workspace.get_setting("protect_internal_data", True)},
         "content_formats": list_content_formats(container.workspace),
     }
@@ -224,6 +264,9 @@ def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
     if backup.get("backup_type") != "content-intelligence-canvas-settings" or backup.get("version") != 1:
         raise HTTPException(422, "不是此应用支持的设置备份文件")
     try:
+        network = GlobalNetworkConfig.model_validate(backup["global_network"]) if "global_network" in backup else None
+        if network:
+            NetworkSettings.validate(network.model_dump())
         raw_providers = backup["providers"]
         raw_sources = backup["knowledge_sources"]
         if not isinstance(raw_providers, list) or len(raw_providers) > 100 or not isinstance(raw_sources, list) or len(raw_sources) > 100:
@@ -246,6 +289,8 @@ def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         raise HTTPException(422, f"导入文件校验失败：{exc}") from exc
     container = get_container()
+    if network:
+        NetworkSettings(container.workspace, container.secrets).save(network.model_dump())
     for provider in providers:
         save_provider(provider)
     container.mcp_search.save(mcp.model_dump())
