@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from app.services.retrieval.hybrid import HybridRetrievalService
 
 
+class WikiNoEvidenceError(ValueError):
+    pass
+
+
 class WikiReasoningService:
     """Let the configured model choose how to retrieve and interpret local Wiki evidence."""
 
@@ -73,7 +77,7 @@ class WikiReasoningService:
             if len(found) >= 30:
                 break
         if not found:
-            raise ValueError("Wiki 中没有找到可用材料，请刷新知识源或调整问题")
+            raise WikiNoEvidenceError("Wiki 中没有找到可用材料，请刷新知识源或调整问题")
         # Query order and the original query remain visible for debugging; the model
         # selects the actually relevant evidence during answer/research generation.
         return list(found.values())[:30], {**trace, "agent_context": context}

@@ -1,7 +1,7 @@
 {
   "name": "content-intelligence-canvas-web",
   "private": true,
-  "version": "0.3.24",
+  "version": "0.3.25",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "react": "latest",
     "react-dom": "latest",
     "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "typescript": "latest",
     "vite": "latest"
   },

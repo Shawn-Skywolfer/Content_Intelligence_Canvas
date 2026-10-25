@@ -2,7 +2,7 @@
 // CIC_E2E_PYTHON selects the Python interpreter; CIC_PLAYWRIGHT_MODULE can select a local Playwright installation.
 const { chromium } = require(process.env.CIC_PLAYWRIGHT_MODULE || 'playwright');
 const { spawn } = require('node:child_process');
-const { mkdtempSync, readFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, mkdirSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -179,6 +179,44 @@ async function run() {
     }
   }
   await page.screenshot({ path: path.join(temporary, 'narrow-toolbar-settings.png') });
+  // Real local vault refresh and full Markdown/original-entry display.
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  const vault = path.join(temporary, '本地 Wiki O\'Brien');
+  mkdirSync(vault);
+  const wikiText = '# 完整 Wiki 原始词条\n\n' + '完整论证、适用范围和限定。\n'.repeat(300) + '\n末尾原文证据不丢失';
+  writeFileSync(path.join(vault, 'power.md'), wikiText);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const folder = page.locator('.folder-picker input');
+  assert.equal(await folder.getAttribute('placeholder'), '例如：D:\\LLM-Wiki\\wiki');
+  await page.route('**/api/system/select-folder', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ path: '[WARNING] Ignore caches that are heterogeneous\n' + vault }) }));
+  await page.getByRole('button', { name: '浏览文件夹', exact: true }).click();
+  await until(async () => (await folder.inputValue()) === vault, '目录选择自动清理警告');
+  await page.getByRole('button', { name: '添加知识源', exact: true }).click();
+  await page.getByText(/已添加，请点击刷新知识库/).waitFor();
+  await page.getByRole('button', { name: '刷新知识库', exact: true }).click();
+  await page.getByText('刷新完成', { exact: true }).waitFor({ timeout: 30000 });
+  const source = (await api('/api/knowledge-sources'))[0];
+  assert.equal(source.root_path, vault);
+  const original = await api('/api/knowledge/original', 'POST', { source_id: source.id, path: 'power.md' });
+  assert.equal(original.text, wikiText);
+  await page.getByRole('button', { name: '快速研究', exact: true }).click();
+  const count = page.getByLabel('研究发现数量', { exact: true });
+  assert.equal(await count.inputValue(), '20');
+  assert.equal(await count.getAttribute('max'), '20');
+  await page.getByText(/数量越多，研究耗时越长/).waitFor();
+  const markdown = '# 内容输出\n\n| 编号 | 证据要点 | 来源页面 |\n| --- | --- | --- |\n| E1 | **800V DC** | `power.md` |\n\n- 核心判断\n  - 适用条件\n\n> 不夸大事实\n\n```python\nprint("OK")\n```';
+  await api(`/api/projects/${project.id}/nodes`, 'POST', { type: 'output', title: '正文表格回归', body: markdown, x: 400, y: 60, metadata: { evidence: [{ source_id: source.id, path: 'power.md', title: '原文来源回归', excerpt: '用于定位的短摘录' }] } });
+  await page.getByRole('button', { name: '内容白板', exact: true }).click();
+  await page.locator('.flow-card').filter({ hasText: '正文表格回归' }).getByRole('button', { name: '展开全文', exact: true }).click();
+  const fullDialog = page.getByRole('dialog', { name: '正文表格回归的完整内容', exact: true });
+  assert.equal(await fullDialog.getByRole('table').count(), 1);
+  assert.equal(await fullDialog.getByRole('columnheader').count(), 3);
+  await fullDialog.getByText('原文来源回归', { exact: true }).click();
+  await fullDialog.getByRole('button', { name: '查看完整 Wiki 原始词条', exact: true }).click();
+  await fullDialog.getByText(/末尾原文证据不丢失/).waitFor();
+  await fullDialog.screenshot({ path: path.join(temporary, 'markdown-and-wiki-original.png') });
+  await fullDialog.getByRole('button', { name: '收起全文', exact: true }).click();
+  console.log(JSON.stringify({ v25_checks: 'passed', wiki_chars: original.content_chars, checks: ['目录警告清理与真实刷新', '研究默认20与数量提示', '完整节点GFM表格与代码', '原始Wiki完整展开'] }));
   if (process.env.CIC_DEEPSEEK_TEST_KEY_FILE) {
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.getByRole('button', { name: '设置', exact: true }).click();

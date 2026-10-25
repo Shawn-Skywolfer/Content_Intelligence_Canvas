@@ -66,7 +66,7 @@ describe("真实 React Flow 中的研究历史跳转", () => {
     view.unmount(); poll.mockRestore(); localStorage.removeItem("cic.canvas.tasks.collapsed");
   });
   it("卡片展示完整短摘要，展开后渲染完整 Markdown 正文", async () => {
-    const full = "## 完整分析\n\n正文末尾的关键限定条件。";
+    const full = "## 完整分析\n\n| 编号 | 事实 |\n| --- | --- |\n| E1 | 800V DC |\n\n正文末尾的关键限定条件。";
     const board = { ...canvas, nodes: [{ ...nodes[0], body: full, summary: "浓缩后的关键判断。" }] };
     const view = render(<CanvasView project={project} canvas={board} selectedIds={[]}
       setSelectedIds={() => {}} onChange={() => {}} onRefresh={async () => {}} setStatus={() => {}} />);
@@ -75,6 +75,7 @@ describe("真实 React Flow 中的研究历史跳转", () => {
     fireEvent.click(view.container.querySelector(".flow-card-expand")!);
     const dialog = view.getByRole("dialog", { name: /完整内容/ });
     expect(within(dialog).getByText("正文末尾的关键限定条件。")).toBeTruthy();
+    expect(within(dialog).getByRole("table")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "收起全文" }));
     expect(view.queryByRole("dialog")).toBeNull();
     view.unmount();

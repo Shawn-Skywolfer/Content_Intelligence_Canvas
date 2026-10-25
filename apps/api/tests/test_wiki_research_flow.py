@@ -130,3 +130,39 @@ def test_research_direction_indexes_follow_validated_findings(tmp_path: Path) ->
     }, hits, 3)
     assert [item["title"] for item in payload["findings"]] == ["可信"]
     assert all(item["source_finding_indexes"] == [0] for item in payload["directions"])
+
+
+def test_research_supports_twenty_findings_and_validates_bounds(tmp_path):
+    from pydantic import ValidationError
+    from app.schemas.workspace import QuickResearchRequest
+    assert QuickResearchRequest(source_id="wiki", query="研究问题").finding_count == 20
+    with pytest.raises(ValidationError):
+        QuickResearchRequest(source_id="wiki", query="研究问题", finding_count=21)
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("研究", "研究问题")
+    hits = [KnowledgeHit(f"c{i}", f"d{i}", f"证据{i}", (), "原文", 1, (), f"{i}.md", 1, 2, None, ()) for i in range(30)]
+    class Wiki:
+        def gather(self, *args, **kwargs): return hits, {}
+        def evidence(self, chosen):
+            assert len(chosen) == 30
+            return [{"chunk_id": h.chunk_id, "text": "原文"} for h in chosen]
+    class AI:
+        def complete_json(self, _system, prompt):
+            assert json.loads(prompt)["finding_count"] == 20
+            return {"findings": [{"type": "fact", "title": f"发现{i}", "body": "有依据的结论", "evidence_chunk_ids": [f"c{i+10}"]} for i in range(20)],
+                    "directions": [{"title": f"方向{i}", "body": "可执行方向", "source_finding_indexes": [i]} for i in range(3)]}, {}
+    workflow = ContentWorkflowService(repo, None, None, AI(), Wiki())
+    nodes, *_ = workflow.quick_research(project["id"], "wiki", "研究问题", 20, True)
+    assert len(nodes) == 23
+    assert nodes[19]["metadata"]["evidence"][0]["chunk_id"] == "c29"
+
+    # Both initial and subsequent 20-finding runs fit two subcolumns without overlaps.
+    board = repo.get_canvas(project["id"])
+    workflow.quick_research(project["id"], "wiki", "研究问题", 20, True)
+    board = repo.get_canvas(project["id"])
+    cards = [node for node in board["nodes"] if node["type"] != "frame"]
+    for i, left in enumerate(cards):
+        for right in cards[i + 1:]:
+            overlaps = (left["x"] < right["x"] + right["width"] and right["x"] < left["x"] + left["width"]
+                        and left["y"] < right["y"] + right["height"] and right["y"] < left["y"] + left["height"])
+            assert not overlaps, (left["title"], right["title"])

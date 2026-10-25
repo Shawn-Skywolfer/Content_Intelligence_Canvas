@@ -392,6 +392,9 @@ class AIProviderGateway:
     def _reasoning_payload(provider: dict[str, Any]) -> dict[str, Any]:
         extra = provider.get("extra") or {}
         mode = extra.get("reasoning_mode", "off")
+        if mode == "off" and urlsplit(str(provider.get("base_url") or "")).hostname == "api.deepseek.com":
+            # DeepSeek enables thinking by default; omitting the field does not disable it.
+            return {"thinking": {"type": "disabled"}}
         if mode == "effort":
             effort = extra.get("reasoning_effort", "medium")
             if effort in {"low", "medium", "high"}:
@@ -452,8 +455,12 @@ class AIProviderGateway:
             proxy_password=proxy_password,
         )
         response.raise_for_status()
-        text = self._extract_content(response.json())
+        response_payload = response.json()
+        text = self._extract_content(response_payload)
         if not text:
+            choice = (response_payload.get("choices") or [{}])[0] if isinstance(response_payload, dict) else {}
+            if choice.get("finish_reason") == "length" or (choice.get("message") or {}).get("reasoning_content"):
+                raise RuntimeError("模型输出额度耗尽，尚未返回正文。请提高最大输出 token，或关闭思考模式后重试")
             raise RuntimeError("大模型返回了空内容")
         return text, {"provider": provider["name"], "model": provider["model_name"]}
 

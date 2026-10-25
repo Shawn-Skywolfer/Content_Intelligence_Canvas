@@ -76,6 +76,9 @@ https://example.com/beta
         import json
         data = json.loads(prompt)
         trace = {"provider": "测试模型", "model": "test-model"}
+        if "draft" in data:
+            assert data["project_brief"]
+            return {"compliant": True, "violations": []}, trace
         if "wiki_evidence" in data:
             assert "Alpha 系统有什么价值" in data["question"]
             return {"answer": "模块化设计提升供电连续性。[证据1]", "evidence_chunk_ids": [data["wiki_evidence"][0]["chunk_id"]]}, trace

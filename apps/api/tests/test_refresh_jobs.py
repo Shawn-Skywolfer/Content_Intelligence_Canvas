@@ -43,3 +43,40 @@ def test_refresh_reports_model_read_then_current_file_and_counts(tmp_path):
     assert job["agent_context"]["status"] == "read"
     assert job["estimated_total_seconds"] is not None
     assert events == ["context", "index"]
+
+
+def test_folder_picker_ignores_stdout_warnings_and_reads_structured_result(tmp_path, monkeypatch):
+    import json
+    import base64
+    from pathlib import Path
+    from app.api import knowledge
+    def run(args, **kwargs):
+        script = base64.b64decode(args[-1]).decode("utf-16-le")
+        assert "选择本地知识库文件夹" in script and "Write-Output" not in script
+        Path(kwargs["env"]["CIC_FOLDER_PICKER_RESULT"]).write_text(json.dumps({"path": "D:\\LLM-Wiki\\知识库 O'Brien"}, ensure_ascii=False), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="[WARNING] Ignore caches that are heterogeneous", stderr="")
+    monkeypatch.setattr(knowledge.subprocess, "run", run)
+    assert knowledge._pick_windows_folder()["path"] == "D:\\LLM-Wiki\\知识库 O'Brien"
+
+
+def test_folder_picker_cancel_returns_empty_without_using_console_output(monkeypatch):
+    from pathlib import Path
+    from app.api import knowledge
+    def run(_args, **kwargs):
+        Path(kwargs["env"]["CIC_FOLDER_PICKER_RESULT"]).write_text('{"path":""}', encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="[WARNING] junk D:\\wrong", stderr="")
+    monkeypatch.setattr(knowledge.subprocess, "run", run)
+    assert knowledge._pick_windows_folder() == {"path": ""}
+
+
+def test_saved_warning_path_is_repaired_without_losing_source_id(tmp_path):
+    from app.repositories.knowledge_manifest import KnowledgeManifestRepository
+    from app.services.knowledge.source_path import repair_source_path
+    manifest = KnowledgeManifestRepository(tmp_path / "db.sqlite")
+    vault = tmp_path / "wiki"
+    vault.mkdir()
+    manifest.upsert_source("stable-id", "知识库", f"[WARNING] junk\n{vault}")
+    fixed = repair_source_path(manifest, manifest.get_source("stable-id"))
+    assert fixed["root_path"] == str(vault.resolve())
+    assert manifest.get_source("stable-id")["root_path"] == fixed["root_path"]
+    assert len(manifest.list_sources()) == 1

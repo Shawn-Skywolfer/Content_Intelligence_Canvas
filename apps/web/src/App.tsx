@@ -1,4 +1,6 @@
 import { Component, ErrorInfo, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useRef, useState } from "react";
+import MarkdownContent from "./MarkdownContent";
+import { cleanSourcePath } from "./sourcePath";
 import CanvasView from "./CanvasView";
 import AssetView from "./AssetView";
 import GlobalNetworkSettings from "./GlobalNetworkSettings";
@@ -36,11 +38,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function cleanSourcePath(value: string): string {
-  const matches = [...value.matchAll(/[A-Za-z]:[\\/]/g)];
-  return (matches.length ? value.slice(matches[matches.length - 1].index) : value).trim().replace(/^["']|["']$/g, "");
-}
-
 function formatSeconds(seconds: number): string {
   return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, "0")} 秒`;
 }
@@ -76,14 +73,7 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode; onRetry: () =
 }
 
 function MarkdownText({ text }: { text: string }) {
-  return <div className="markdown-text">{text.split("\n").map((line, index) => {
-    if (line.startsWith("### ")) return <h4 key={index}>{line.slice(4)}</h4>;
-    if (line.startsWith("## ")) return <h3 key={index}>{line.slice(3)}</h3>;
-    if (line.startsWith("# ")) return <h2 key={index}>{line.slice(2)}</h2>;
-    if (line.startsWith("- ")) return <div className="md-list" key={index}>• {line.slice(2)}</div>;
-    if (line.startsWith("> ")) return <blockquote key={index}>{line.slice(2)}</blockquote>;
-    return line ? <p key={index}>{line}</p> : <br key={index} />;
-  })}</div>;
+  return <MarkdownContent>{text}</MarkdownContent>;
 }
 
 export default function App() {
@@ -282,7 +272,7 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen, onArchive, onDel
 }
 
 function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, onProjectChanged, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onProjectChanged: (project: Project) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
-  const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState(6);
+  const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState("20");
   const [brief, setBrief] = useState(project?.brief ?? "");
   const [savingBrief, setSavingBrief] = useState(false);
   const [briefMessage, setBriefMessage] = useState("");
@@ -321,9 +311,10 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
   }
   async function run() { if (!sourceId || !query.trim()) return; setBusy(true); setStatus("研究任务已启动，可在进度框查看当前阶段");
     try {
+      if (!count.trim() || !Number.isInteger(Number(count)) || Number(count) < 3 || Number(count) > 20) throw new Error("研究发现数量请输入 3–20 的整数");
       await beforeRun();
       await persistBrief(false);
-      let current = await api.startQuickResearch(activeProject.id, sourceId, query, count, true);
+      let current = await api.startQuickResearch(activeProject.id, sourceId, query, Number(count), true);
       setJob(current);
       while (current.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 400));
@@ -339,12 +330,12 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
     }
     catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
-  return <><PageHeader eyebrow="快速研究" title="从问题到研究发现与创意方向" description="系统先检索真实知识库，再生成 4–8 条高价值研究发现和三条可继续发展的内容方向。" />
+  return <><PageHeader eyebrow="快速研究" title="从问题到研究发现与创意方向" description="模型先理解 Wiki，再生成最多 20 条有据可查的研究发现，以及三条内容方向。" />
     <section className="research-layout"><div className="card research-form"><div className="field"><label>研究问题</label><textarea value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       <div className="research-brief"><div className="section-title"><h3>内容简报</h3><button type="button" className="text-button" disabled={busy || savingBrief || !!brief.trim()} onClick={() => setBrief("目标受众：\n传播目标：\n输出形式：\n核心关注：\n语气与限制：")}>插入简报模板</button></div><label>受众、目标与创作要求（可选）<textarea value={brief} maxLength={5000} rows={6} disabled={busy || savingBrief} onChange={(event) => { setBrief(event.target.value); setBriefMessage("简报有修改，开始研究时会自动保存，也可单独保存"); }} placeholder={"例如：面向 AIDC 客户的技术决策者，形成公众号文章。重点比较供电可靠性与 TCO，语气客观，所有数据注明来源。"} /></label><p>保存后会显示在白板「01 输入与简报」的「内容简报」节点；开始研究时自动保存，并作为研究与后续内容创作的要求。</p><button type="button" className="secondary" disabled={busy || savingBrief} onClick={saveBrief}>{savingBrief ? "正在保存…" : "保存简报"}</button>{briefMessage && <p role="status" className="brief-feedback">{briefMessage}</p>}</div>
       <div className="field"><label>内部知识源</label><select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select></div>
-      <div className="inline-fields"><label>研究发现数量<input type="number" min="3" max="8" value={count} onChange={(e) => setCount(Number(e.target.value))} /></label><span>使用设置中已启用的大模型理解 Wiki，并为每条发现保留出处。</span></div>
-      <button className="primary large" disabled={busy || savingBrief || !sourceId || !query.trim()} onClick={run}>{busy ? "正在研究…" : "开始快速研究"}</button>
+      <div className="inline-fields"><label>研究发现数量<input type="number" min="3" max="20" aria-describedby="research-count-hint" value={count} onChange={(e) => setCount(e.target.value)} /></label><span id="research-count-hint">可填 3–20 条，默认 20 条。数量越多，研究耗时越长；证据不足时会少于目标数量，不凑数。另生成三条内容方向。</span></div>
+      <button className="primary large" disabled={busy || savingBrief || !sourceId || !query.trim() || !count.trim() || !Number.isInteger(Number(count)) || Number(count) < 3 || Number(count) > 20} onClick={run}>{busy ? "正在研究…" : "开始快速研究"}</button>
       {job && <div className={`research-progress ${job.status}`} aria-live="polite"><div className="progress-heading"><div><small>{job.status === "failed" ? "任务失败" : job.status === "completed" ? "任务完成" : "实时研究进度"}</small><strong>{job.phase}</strong></div><b>{Math.round(job.progress)}%</b></div><div className="progress-track"><i style={{ width: `${Math.max(2, job.progress)}%` }} /></div><p>{job.detail}</p></div>}</div>
       <div className="research-notes"><div><span>01</span><h3>内部优先</h3><p>快速模式只读取已启用知识库，不主动联网。</p></div><div><span>02</span><h3>保留证据</h3><p>每条研究发现都保存文件、标题层级、段落与参考来源。</p></div><div><span>03</span><h3>进入白板</h3><p>生成新节点与关联边，不覆盖已有思考。</p></div></div>
     </section>
@@ -443,7 +434,7 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
   async function importSettings(file: File | undefined) { if (!file) return; setSettingsMessage("正在校验和导入配置…"); try { if (file.size > 2_000_000) throw new Error("配置文件超过 2 MB"); const backup = JSON.parse(await file.text()) as Record<string, unknown>; const result = await api.importSettings(backup); const [items, active, security, mcpConfig, sourceItems, contentFormats] = await Promise.all([api.listProviders(), api.activeProvider(), api.getSecurity(), api.getMcpSearch(), api.listSources(), api.listContentFormats()]); setProviders(items); setActiveProviderId(active.provider_id); setProtect(security.protect_internal_data); setMcp(mcpConfig); setSettingsImportRevision((value) => value + 1); setSources(sourceItems); setFormats(contentFormats); const selected = items.find((item) => item.id === active.provider_id) ?? items[0]; if (selected) { setSelectedProvider(selected.id); setFormFromProvider(selected); } setSettingsMessage(`${result.message}${result.missing_paths.length ? `；请重新选择路径：${result.missing_paths.join("、")}` : ""}`); } catch (error) { setSettingsMessage(`导入失败：${errorText(error)}`); } }
   async function discoverModels() { if (!form.base_url) return; setBusy(true); const started = Date.now(); setModelActivity({ phase: "正在访问供应商模型列表", started }); try { const result = await api.discoverModels({ ...(selectedProvider ? { provider_id: selectedProvider } : {}), base_url: form.base_url, api_key: form.api_key || null, timeout_seconds: form.timeout_seconds, network_mode: form.network_mode, proxy_url: form.proxy_url || null, proxy_username: form.proxy_username || null, proxy_password: form.proxy_password || null }); setAvailableModels(result.models); setModelActivity({ phase: result.models.length ? "已获取模型列表" : "供应商未返回模型", started, result: { ...result, endpoint: form.base_url, network_mode: form.network_mode } }); } catch (error) { setModelActivity({ phase: "获取模型失败", started, error: errorText(error) }); } finally { setBusy(false); } }
   async function addSource(event: FormEvent) { event.preventDefault(); setBusy(true); const path = cleanSourcePath(sourcePath); setSourcePath(path); setSourceMessage(path !== sourcePath ? `已移除粘贴文本中的非路径提示，识别到目录：${path}` : "正在添加知识库…"); try { const source = await api.createSource(sourceName, path); const items = await api.listSources(); setSources(items); setSourcePath(""); setSourceMessage(`知识源“${source.name}”已添加，请点击刷新知识库`); } catch (error) { setSourceMessage(`添加失败：${errorText(error)}`); } finally { setBusy(false); } }
-  async function browseSource() { setBusy(true); try { const result = await api.selectFolder(); if (result.path) { setSourcePath(result.path); setSourceMessage("已选择本地知识库文件夹"); } } catch (error) { setSourceMessage(errorText(error)); } finally { setBusy(false); } }
+  async function browseSource() { setBusy(true); try { const result = await api.selectFolder(); if (result.path) { setSourcePath(cleanSourcePath(result.path)); setSourceMessage("已选择本地知识库文件夹"); } } catch (error) { setSourceMessage(errorText(error)); } finally { setBusy(false); } }
   async function removeSource(source: Source) { if (!window.confirm(`确定移除知识源“${source.name}”及其本地索引吗？源文件不会被删除。`)) return; setBusy(true); try { await api.deleteSource(source.id); setSources(await api.listSources()); setSourceMessage(`已移除知识源“${source.name}”，源文件未被修改`); } catch (error) { setSourceMessage(errorText(error)); } finally { setBusy(false); } }
   async function refreshSource(id: string) { setSourceMessage(""); try { const job = await api.startRefresh(id); setRefreshJobs((current) => ({ ...current, [id]: job })); } catch (error) { setSourceMessage(`刷新启动失败：${errorText(error)}`); } }
   async function saveProtect(value: boolean) { setProtect(value); try { await api.saveSecurity(value); setStatus(value ? "内部数据保护已开启" : "内部数据保护已关闭，请确认模型服务的数据边界"); } catch (error) { setStatus(errorText(error)); } }
@@ -451,7 +442,7 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
     <div className="settings-backup-bar"><div><strong>配置备份</strong><span>包含全局代理、模型、知识源路径、搜索 MCP、DeepSeek 网页工具、内容形态和密钥；不包含 Wiki 原文及项目内容。</span></div><div className="form-actions"><button type="button" className="secondary" onClick={exportSettings}>一键导出</button><label className="secondary file-import-button">一键导入<input type="file" accept=".json,application/json" onChange={(event) => { void importSettings(event.target.files?.[0]); event.target.value = ""; }} /></label></div></div>
     {settingsMessage && <p className="settings-backup-message" role="status">{settingsMessage}</p>}
     <nav className="settings-tabs" aria-label="设置功能" role="tablist">{([ ["sources", "知识源"], ["models", "大模型与代理"], ["network", "全局网络与代理"], ["mcp", "MCP 与网页搜索"], ["formats", "内容形态"], ["security", "数据保护"] ] as const).map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}</nav>
-    <div className="settings-grid settings-tab-body">{tab === "sources" && <section className="card settings-card"><div className="section-title"><h2>本地知识源</h2><span>只读，不修改源文件</span></div><form onSubmit={addSource}><label>知识源名称<input value={sourceName} onChange={(e) => setSourceName(e.target.value)} /></label><label>本地知识库文件夹路径<div className="folder-picker"><input value={sourcePath} onChange={(e) => setSourcePath(cleanSourcePath(e.target.value))} placeholder="例如 D:\\Knowledge\\wiki" /><button type="button" className="secondary" disabled={busy} onClick={browseSource}>浏览文件夹</button></div></label><button className="primary" disabled={busy || !sourcePath.trim()}>添加知识源</button></form>{sourceMessage && <div className="settings-feedback" role="status">{sourceMessage}</div>}<p className="source-help">粘贴内容若含工具警告，会自动提取其中的本地目录。选择你自己的 Wiki 或 Markdown 文件夹；应用不会修改源文件。</p><p className="source-help">刷新时模型先阅读 _agent_context/overview.md 和 domain-map.md；研究时按需再读 relations.md，并从原始词条获取证据。</p><div className="source-list">{sources.map((source) => { const job = refreshJobs[source.id]; return <div className="source-entry" key={source.id}><div className="source-entry-top"><div><strong>{source.name}</strong><small>{source.root_path}</small></div><div className="source-actions"><button className="secondary" disabled={busy || job?.status === "running"} onClick={() => refreshSource(source.id)}>{job?.status === "running" ? "刷新中…" : "刷新知识库"}</button><button className="text-button danger" disabled={busy || job?.status === "running"} onClick={() => removeSource(source)}>移除</button></div></div>{job && <div className={`settings-progress ${job.status}`} role="status"><div className="settings-progress-head"><strong>{job.phase}</strong><span>{job.total ? `${job.processed} / ${job.total} 个词条` : "正在准备"}</span></div><div className="settings-progress-track"><i style={{ width: `${job.total ? Math.round(job.processed / job.total * 100) : 0}%` }} /></div><p>{job.detail}</p>{job.current_path && <p>当前词条：<code>{job.current_path}</code></p>}<p>已用 {formatSeconds(job.elapsed_seconds)} · {job.estimated_total_seconds == null ? "预计总时长计算中" : `预计总时长 ${formatSeconds(job.estimated_total_seconds)}`} · 已更新 {job.indexed} · 未变更 {job.unchanged} · 警告 {job.warnings_count}</p>{job.agent_context && <p>模型阅读：{job.agent_context.status === "read" ? `成功${job.agent_context.model ? `（${job.agent_context.model}）` : ""}，${job.agent_context.summary ?? "已理解领域图"}` : job.agent_context.message ?? "未读取"}</p>}{job.error && <p className="settings-error">错误：{job.error}</p>}{job.report?.warnings?.length ? <details><summary>查看 {job.report.warnings.length} 条索引警告</summary>{job.report.warnings.map((warning, index) => <p key={index}>{warning.path}：{warning.error}</p>)}</details> : null}</div>}</div>; })}</div></section>}
+    <div className="settings-grid settings-tab-body">{tab === "sources" && <section className="card settings-card"><div className="section-title"><h2>本地知识源</h2><span>只读，不修改源文件</span></div><form onSubmit={addSource}><label>知识源名称<input value={sourceName} onChange={(e) => setSourceName(e.target.value)} /></label><label>本地知识库文件夹路径<div className="folder-picker"><input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} onBlur={() => setSourcePath(cleanSourcePath(sourcePath))} onPaste={(e) => { const pasted = e.clipboardData.getData("text"); if (pasted) { e.preventDefault(); setSourcePath(cleanSourcePath(pasted)); } }} placeholder={"例如：D:\\LLM-Wiki\\wiki"} /><button type="button" className="secondary" disabled={busy} onClick={browseSource}>浏览文件夹</button></div></label><button className="primary" disabled={busy || !sourcePath.trim()}>添加知识源</button></form>{sourceMessage && <div className="settings-feedback" role="status">{sourceMessage}</div>}<p className="source-help">粘贴内容若含工具警告，会自动提取其中的本地目录。选择你自己的 Wiki 或 Markdown 文件夹；应用不会修改源文件。</p><p className="source-help">刷新时模型先阅读 _agent_context/overview.md 和 domain-map.md；研究时按需再读 relations.md，并从原始词条获取证据。</p><div className="source-list">{sources.map((source) => { const job = refreshJobs[source.id]; return <div className="source-entry" key={source.id}><div className="source-entry-top"><div><strong>{source.name}</strong><small>{source.root_path}</small></div><div className="source-actions"><button className="secondary" disabled={busy || job?.status === "running"} onClick={() => refreshSource(source.id)}>{job?.status === "running" ? "刷新中…" : "刷新知识库"}</button><button className="text-button danger" disabled={busy || job?.status === "running"} onClick={() => removeSource(source)}>移除</button></div></div>{job && <div className={`settings-progress ${job.status}`} role="status"><div className="settings-progress-head"><strong>{job.phase}</strong><span>{job.total ? `${job.processed} / ${job.total} 个词条` : "正在准备"}</span></div><div className="settings-progress-track"><i style={{ width: `${job.total ? Math.round(job.processed / job.total * 100) : 0}%` }} /></div><p>{job.detail}</p>{job.current_path && <p>当前词条：<code>{job.current_path}</code></p>}<p>已用 {formatSeconds(job.elapsed_seconds)} · {job.estimated_total_seconds == null ? "预计总时长计算中" : `预计总时长 ${formatSeconds(job.estimated_total_seconds)}`} · 已更新 {job.indexed} · 未变更 {job.unchanged} · 警告 {job.warnings_count}</p>{job.agent_context && <p>模型阅读：{job.agent_context.status === "read" ? `成功${job.agent_context.model ? `（${job.agent_context.model}）` : ""}，${job.agent_context.summary ?? "已理解领域图"}` : job.agent_context.message ?? "未读取"}</p>}{job.error && <p className="settings-error">错误：{job.error}</p>}{job.report?.warnings?.length ? <details><summary>查看 {job.report.warnings.length} 条索引警告</summary>{job.report.warnings.map((warning, index) => <p key={index}>{warning.path}：{warning.error}</p>)}</details> : null}</div>}</div>; })}</div></section>}
       {tab === "network" && <GlobalNetworkSettings key={settingsImportRevision} />}
     {tab === "models" && <section className="card settings-card">
         <p className="model-default-notice">当前研究与白板共创默认调用：{providers.find((item) => item.id === activeProviderId)?.name ?? "未配置"} · {providers.find((item) => item.id === activeProviderId)?.model_name ?? "无模型"}。测试其他配置成功不会自动切换默认模型。</p>

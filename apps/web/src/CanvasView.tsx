@@ -1,5 +1,6 @@
 import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown from "./MarkdownContent";
+import WikiEvidence from "./WikiEvidence";
 import CanvasToolbar from "./CanvasToolbar";
 
 import {
@@ -846,13 +847,13 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <label className="switch-row"><span><strong>锁定节点</strong><small>锁定后不能修改内容或删除</small></span><input type="checkbox" checked={primary.locked} onChange={(event) => updateLocal(primary.id, { locked: event.target.checked, status: event.target.checked ? "locked" : primary.status === "locked" ? "candidate" : primary.status })} /></label>
         {primary.type === "output" && <div className="asset-save-panel"><strong>{primary.metadata?.asset_id ? "已关联内容资产" : "仍是白板草稿"}</strong><p>先在上方直接修改，确认后再保存到内容资产；再次保存会生成新版本。</p><button className="primary" disabled={busy || primary.locked} onClick={saveAsAsset}>{busy ? "正在保存…" : primary.metadata?.asset_id ? "更新内容资产" : "保存到内容资产"}</button></div>}
         {primary.type === "output" && <details className="source-panel"><summary>查看生成形态与 Prompt</summary><p>输出形态：{String(primary.metadata?.format_name || primary.metadata?.format || "未记录")}</p><p>正向要求：{String(primary.metadata?.instruction || "未单独填写")}</p><p>负向要求：{String(primary.metadata?.negative_prompt || "未单独填写")}</p><p>形态默认要求：{String(primary.metadata?.format_positive_prompt || "未记录")}</p><p>形态避免事项：{String(primary.metadata?.format_negative_prompt || "未记录")}</p></details>}
-        {!!primary.metadata?.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <details key={`${item.chunk_id}-${index}`}><summary>{item.title || item.path}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small><p>{item.excerpt}</p>{item.references?.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>)}</details>)}</div>}
+        {!!primary.metadata?.evidence?.length && <div className="evidence-panel"><h3>证据</h3>{primary.metadata.evidence.map((item, index) => <WikiEvidence key={`${primary.id}-${item.chunk_id}-${index}`} item={item} sourceId={typeof primary.metadata.research_source_id === "string" ? primary.metadata.research_source_id : undefined} />)}</div>}
         {Array.isArray(primary.metadata?.web_sources) && primary.metadata.web_sources.length > 0 && <div className="evidence-panel"><h3>网络资料</h3>{(primary.metadata.web_sources as Array<{ title: string; url: string; excerpt: string; content?: string; content_chars?: number }>).map((item, index) => <details key={`${item.url}-${index}`}><summary>{item.title || item.url}</summary><small>{item.content_chars ? `用于模型上下文的正文：${item.content_chars} 字符` : "网络资料摘录"}</small><Markdown>{item.content || item.excerpt}</Markdown>{item.url && <a href={item.url} target="_blank" rel="noreferrer">查看来源</a>}</details>)}</div>}
       </> : <div className="inspector-empty"><strong>{selected.length > 1 ? `已选择 ${selected.length} 个节点` : selectedEdgeIds.length ? `已选择 ${selectedEdgeIds.length} 条连接` : "选择一个节点"}</strong><p>{selected.length > 1 ? "可以将多个节点综合为一个新的下游节点。" : "从任一节点的上下左右端口拖到另一个节点，即可创建有向连接。"}</p></div>}</div>
         {!!selectedIds.length && <section className="ai-copilot">
           <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 && primary?.type !== "frame" ? "由当前节点生成下游" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
           <label>可继承的上游节点层级<select value={upstreamDepth} onChange={(event) => updateDraft({ depth: Number(event.target.value) })}><option value={0}>不继承</option><option value={1}>仅上游一层</option><option value={2}>上游两层</option><option value={3}>上游三层</option><option value={6}>上游六层（默认）</option><option value={12}>上游十二层</option></select></label>
-          <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 原节点保留；结果进入新的下游节点并标注加工来源。</p>
+          <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 将回读这些节点引用的完整 Wiki 词条。内容简报始终作为默认创作约束；如需例外，请在本次要求中明确说明。原节点保留，结果进入新的下游节点。</p>
           <label>新节点类型<select value={magicType} onChange={(event) => updateDraft({ type: event.target.value })}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
           {WEB_SEARCH_TYPES.has(magicType) && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（自动选择：优先 DeepSeek，其次搜索 MCP，并与 Wiki 资料综合）</label>}
           {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
@@ -887,7 +888,9 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         <section className="node-full-content" role="dialog" aria-modal="true" aria-label={`${expanded.title}的完整内容`}>
           <header><div><small>{NODE_LABELS[expanded.type] ?? expanded.type} · 完整内容</small><h2>{expanded.title}</h2></div><button className="secondary" onClick={() => setExpandedNodeId("")}>收起全文</button></header>
           {expanded.summary && <p className="node-full-summary"><strong>模型摘要</strong>{expanded.summary}</p>}
-          <div className="node-full-markdown"><Markdown>{expanded.body}</Markdown></div>
+          <div className="node-full-markdown"><Markdown>{expanded.body}</Markdown>
+            {!!expanded.metadata?.evidence?.length && <section className="evidence-panel"><h3>原始 Wiki 依据</h3>{expanded.metadata.evidence.map((item, index) => <WikiEvidence key={`${expanded.id}-${item.chunk_id}-${index}`} item={item} sourceId={typeof expanded.metadata.research_source_id === "string" ? expanded.metadata.research_source_id : undefined} />)}</section>}
+          </div>
         </section>
       </div> : null;
     })()}

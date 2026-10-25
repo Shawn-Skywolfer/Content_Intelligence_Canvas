@@ -23,9 +23,10 @@ export type Project = {
   id: string; name: string; idea: string; brief: string; status: string; created_at: string; updated_at: string;
 };
 export type Evidence = {
-  chunk_id?: string; title?: string; path?: string; heading?: string[]; excerpt?: string;
+  chunk_id?: string; source_id?: string; title?: string; path?: string; heading?: string[]; excerpt?: string;
   start_line?: number; end_line?: number; references?: string[];
 };
+export type WikiOriginal = { source_id: string; path: string; title: string; text: string; content_chars: number; read_mode: "full_document" };
 export type CanvasNode = {
   id: string; type: string; title: string; body: string; status: string; locked: boolean;
   summary?: string | null; summary_model?: string | null;
@@ -129,6 +130,7 @@ export function formatApiError(value: unknown): string {
 export const downloadUrl = (path: string) => `${API_BASE}${path}`;
 
 export const api = {
+  wikiOriginal: (ref: Evidence) => request<WikiOriginal>("/api/knowledge/original", { method: "POST", body: JSON.stringify({ chunk_id: ref.chunk_id || "", source_id: ref.source_id || null, path: ref.path || "" }) }),
   getGlobalNetwork: () => request<GlobalNetworkConfig>("/api/settings/network"),
   saveGlobalNetwork: (config: GlobalNetworkConfig) => request<GlobalNetworkConfig>("/api/settings/network", { method: "PUT", body: JSON.stringify(config) }),
   testGlobalNetwork: () => request<{ http_status: number | null; reachable: boolean; route?: string; latency_ms: number; message: string }>("/api/settings/network/test", { method: "POST" }),

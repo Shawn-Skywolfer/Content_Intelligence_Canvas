@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.services.knowledge.source_path import repair_source_path
+
 
 class KnowledgeRefreshJobs:
     """Observable refresh work. Jobs survive navigation within this application process."""
@@ -22,6 +24,7 @@ class KnowledgeRefreshJobs:
         source = self.manifest.get_source(source_id)
         if not source:
             raise ValueError("知识源不存在")
+        source = repair_source_path(self.manifest, source)
         with self.lock:
             if any(job["source_id"] == source_id and job["status"] == "running" for job in self.jobs.values()):
                 raise ValueError("该知识源已经在刷新，请等待当前任务完成")

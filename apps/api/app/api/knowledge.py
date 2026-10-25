@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import tempfile
 import os
 import subprocess
 from pathlib import Path
@@ -19,14 +22,18 @@ from app.schemas.knowledge import (
     SearchResponse,
 )
 from app.services.knowledge.indexer import source_id_for_path
-from app.services.knowledge.source_path import clean_local_path
+from app.services.knowledge.originals import WikiOriginalReader
+from pydantic import BaseModel, Field
+
+from app.services.knowledge.source_path import clean_local_path, repair_source_path
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
 
 @router.get("/knowledge-sources", response_model=list[KnowledgeSourceResponse])
 def list_sources() -> list[KnowledgeSourceResponse]:
-    sources = get_container().manifest.list_sources()
+    manifest = get_container().manifest
+    sources = [repair_source_path(manifest, item) for item in manifest.list_sources()]
     return [
         KnowledgeSourceResponse(
             id=item["id"],
@@ -41,7 +48,11 @@ def list_sources() -> list[KnowledgeSourceResponse]:
 
 @router.post("/knowledge-sources", response_model=KnowledgeSourceResponse)
 def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceResponse:
-    path = Path(clean_local_path(request.root_path)).expanduser().resolve()
+    cleaned = clean_local_path(request.root_path)
+    path = Path(cleaned).expanduser()
+    if not cleaned or not path.is_absolute():
+        raise HTTPException(422, "请填写完整的本地知识库目录，或点击“浏览文件夹”选择")
+    path = path.resolve()
     if not path.is_dir():
         raise HTTPException(422, f"知识库目录不存在或无法访问：{path}。请检查路径，或点击“浏览文件夹”选择目录")
     source_id = source_id_for_path(path)
@@ -71,29 +82,38 @@ def select_folder() -> dict[str, str]:
     """Open a native Windows folder picker from the local portable application."""
     if os.name != "nt":
         raise HTTPException(501, "文件夹浏览仅在 Windows 本地版中可用")
+    return _pick_windows_folder()
+
+
+def _pick_windows_folder() -> dict[str, str]:
+    # Keep dialog output in a dedicated file: console warnings can never become a path.
     script = (
-        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; "
         "$d=New-Object System.Windows.Forms.FolderBrowserDialog; "
         "$d.Description='选择本地知识库文件夹'; $d.ShowNewFolderButton=$false; "
-        "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
-        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output $d.SelectedPath}"
+        "$selected=''; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$selected=$d.SelectedPath}; "
+        "$result=@{path=$selected}|ConvertTo-Json -Compress; "
+        "[IO.File]::WriteAllText($env:CIC_FOLDER_PICKER_RESULT,$result,(New-Object Text.UTF8Encoding($false))); $d.Dispose()"
     )
     try:
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HTTPException(500, f"无法打开文件夹选择器：{exc}") from exc
-    if completed.returncode != 0:
-        raise HTTPException(500, completed.stderr.strip() or "无法打开文件夹选择器")
-    return {"path": completed.stdout.strip()}
+        with tempfile.TemporaryDirectory(prefix="cic-folder-") as directory:
+            result_path = Path(directory) / "selection.json"
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
+                env={**os.environ, "CIC_FOLDER_PICKER_RESULT": str(result_path)},
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+            )
+            if completed.returncode != 0:
+                raise HTTPException(500, completed.stderr.strip() or "无法打开文件夹选择器")
+            if not result_path.is_file():
+                raise HTTPException(500, "文件夹选择器未返回有效结果，请重试或手动粘贴目录")
+            result = json.loads(result_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+                raise HTTPException(500, "文件夹选择器返回格式错误")
+            return {"path": clean_local_path(result["path"])}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(500, f"无法读取文件夹选择结果：{exc}") from exc
 
 
 @router.post("/knowledge-sources/{source_id}/refresh")
@@ -102,6 +122,7 @@ async def refresh_source(source_id: str) -> dict:
     source = container.manifest.get_source(source_id)
     if not source:
         raise HTTPException(404, "Knowledge source not found")
+    source = repair_source_path(container.manifest, source)
     context_status = await asyncio.to_thread(container.agent_context.prepare_refresh, source_id)
     try:
         report = await container.indexer.refresh(source["name"], Path(source["root_path"]))
@@ -182,6 +203,21 @@ def search(request: SearchRequest) -> SearchResponse:
             "debug": hit.debug,
         }) for hit in hits],
     )
+
+
+class WikiOriginalRequest(BaseModel):
+    chunk_id: str = Field(default="", max_length=200)
+    source_id: str | None = Field(default=None, max_length=200)
+    path: str = Field(default="", max_length=4096)
+
+
+@router.post("/knowledge/original")
+def wiki_original(request: WikiOriginalRequest) -> dict:
+    container = get_container()
+    try:
+        return WikiOriginalReader(container.manifest, container.chunk_store).read([request.model_dump()])[0]
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/knowledge/chunks/{chunk_id}", response_model=ChunkDetailResponse)

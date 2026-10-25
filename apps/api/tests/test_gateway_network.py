@@ -101,3 +101,10 @@ def test_deleting_active_provider_removes_selection(tmp_path):
     assert repo.delete_provider(first["id"])
     assert repo.get_setting("active_provider_id") is None
     assert repo.active_provider()["id"] == second["id"]
+
+
+def test_deepseek_thinking_off_is_explicit_but_other_providers_remain_compatible():
+    provider = {"base_url": "https://api.deepseek.com/v1", "extra": {"reasoning_mode": "off"}}
+    assert AIProviderGateway._reasoning_payload(provider) == {"thinking": {"type": "disabled"}}
+    assert AIProviderGateway._reasoning_payload({"base_url": "https://other.example/v1", "extra": {"reasoning_mode": "off"}}) == {}
+    assert AIProviderGateway._reasoning_payload({**provider, "extra": {"reasoning_mode": "thinking"}}) == {"thinking": {"type": "enabled"}}

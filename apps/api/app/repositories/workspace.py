@@ -513,7 +513,7 @@ class WorkspaceRepository:
                     additions = [row for row in rows if row["id"] in new_set and row["type"] in types]
                     start_y = max((float(row["y"]) + float(row["height"]) + 40 for row in previous), default=130)
                     for index, row in enumerate(additions):
-                        db.execute("UPDATE canvas_nodes SET x=?,y=?,updated_at=? WHERE id=?", (x + 34 + (index % 2) * 340, start_y + (index // 2) * 230, now, row["id"]))
+                        db.execute("UPDATE canvas_nodes SET x=?,y=?,width=310,height=190,updated_at=? WHERE id=?", (x + 34 + (index % 2) * 340, start_y + (index // 2) * 230, now, row["id"]))
                     required_height = max(570, start_y + ((len(additions) + 1) // 2) * 230 + 50 - 40) if additions else 570
                     for row in rows:
                         if row["type"] == "frame" and read_metadata(row["metadata_json"]).get("group_key") == key and float(row["height"]) < required_height:

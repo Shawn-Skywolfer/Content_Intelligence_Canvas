@@ -109,7 +109,7 @@ class NodeSummaryRequest(BaseModel):
 class QuickResearchRequest(BaseModel):
     source_id: str
     query: str = Field(min_length=2, max_length=500)
-    finding_count: int = Field(default=6, ge=3, le=8)
+    finding_count: int = Field(default=20, ge=3, le=20)
     use_llm: bool = True
 
 

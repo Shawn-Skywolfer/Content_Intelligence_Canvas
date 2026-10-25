@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown from "./MarkdownContent";
 import { api, ContentAsset, ContentFormat, downloadUrl, Project } from "./api";
 
 export default function AssetView({ project, assets, onChanged, onOpenNode, setStatus }: {

@@ -525,3 +525,22 @@ summary { cursor: pointer; font-weight: 750; }
 .deepseek-capability-card .settings-progress { margin: 0; }
 .deepseek-web-settings .settings-error, .deepseek-web-settings .deepseek-test-result { overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .deepseek-capability-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.markdown-content { min-width: 0; color: #354153; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { color: #202a3a; line-height: 1.45; margin: 1.3em 0 .6em; }
+.markdown-content p { margin: .7em 0; }
+.markdown-content ul, .markdown-content ol { padding-left: 1.7em; margin: .7em 0; }
+.markdown-content li { margin: .3em 0; }
+.markdown-content blockquote { margin: 1em 0; padding: .1em 1em; border-left: 3px solid #c7000b; background: #f6f8fa; color: #536073; }
+.markdown-content code { padding: .12em .3em; border-radius: 4px; background: #eef1f5; font-family: Consolas, monospace; font-size: .9em; }
+.markdown-content pre { max-width: 100%; overflow-x: auto; padding: 14px; border-radius: 8px; background: #eef1f5; }
+.markdown-content pre code { padding: 0; background: transparent; white-space: pre; }
+.markdown-table-scroll { max-width: 100%; overflow-x: auto; margin: 1em 0; border: 1px solid #dbe2eb; border-radius: 8px; }
+.markdown-content table { width: 100%; min-width: 420px; border-collapse: collapse; font-size: 13px; }
+.markdown-content th, .markdown-content td { padding: 10px 12px; border-bottom: 1px solid #e1e6ed; border-right: 1px solid #e1e6ed; vertical-align: top; min-width: 90px; }
+.markdown-content th { background: #f0f3f7; font-weight: 700; text-align: left; color: #253247; }
+.markdown-content tr:last-child td { border-bottom: 0; }.markdown-content th:last-child, .markdown-content td:last-child { border-right: 0; }
+.markdown-content img { max-width: 100%; height: auto; }
+.markdown-content .task-list-item { list-style: none; }.markdown-content .task-list-item input { width: auto; margin-right: .5em; }
+.node-full-content { width: min(1100px, 100%); }.node-full-content header h2 { overflow-wrap: anywhere; }.node-full-content header button { flex-shrink: 0; }
+.wiki-evidence { margin: 10px 0; }.wiki-evidence > button { margin: 10px 0; }.wiki-evidence > small { display: block; overflow-wrap: anywhere; }.wiki-original { padding: 14px; border: 1px solid #dfe5ed; border-radius: 10px; background: #fafbfc; margin: 10px 0; }

@@ -67,6 +67,15 @@ describe("历史研究与项目入口", () => {
     await waitFor(() => expect(view.getByRole("button", { name: /AIDC 液冷研究/ })).toBeTruthy());
     fireEvent.click(view.getByRole("button", { name: "快速研究" }));
     await waitFor(() => expect(view.getByLabelText("受众、目标与创作要求（可选）")).toBeTruthy());
+    const count = view.getByLabelText("研究发现数量") as HTMLInputElement;
+    expect(count.value).toBe("20");
+    expect(count.max).toBe("20");
+    expect(view.getByText(/数量越多，研究耗时越长/)).toBeTruthy();
+    fireEvent.change(count, { target: { value: "21" } });
+    expect((view.getByRole("button", { name: "开始快速研究" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(count, { target: { value: "" } });
+    expect(count.value).toBe("");
+    fireEvent.change(count, { target: { value: "20" } });
     const brief = view.getByLabelText("受众、目标与创作要求（可选）");
     fireEvent.change(brief, { target: { value: "第一版创作要求" } });
     fireEvent.click(view.getByRole("button", { name: "保存简报" }));
@@ -74,7 +83,7 @@ describe("历史研究与项目入口", () => {
     await waitFor(() => expect(view.getByText(/简报已保存并同步到白板/)).toBeTruthy());
     fireEvent.change(brief, { target: { value: "面向技术决策者，比较 TCO" } });
     fireEvent.click(view.getByRole("button", { name: "开始快速研究" }));
-    await waitFor(() => expect(start).toHaveBeenCalled());
+    await waitFor(() => expect(start).toHaveBeenCalledWith(project.id, "wiki", project.idea, 20, true));
     await waitFor(() => expect(view.container.querySelector(".flow-card-expand")).toBeTruthy());
     fireEvent.click(view.container.querySelector(".flow-card-expand")!);
     expect(view.getByRole("dialog", { name: "内容简报的完整内容" }).textContent).toContain("面向技术决策者，比较 TCO");
@@ -146,7 +155,7 @@ describe("历史研究与项目入口", () => {
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     const field = view.container.querySelector(".folder-picker input") as HTMLInputElement;
-    fireEvent.change(field, { target: { value: "[WARNING] Ignore caches that are heterogeneousD:\\Wiki\\wiki" } });
+    fireEvent.paste(field, { clipboardData: { getData: () => "[WARNING] Ignore caches that are heterogeneousD:\\Wiki\\wiki" } });
     expect(field.value).toBe("D:\\Wiki\\wiki");
     fireEvent.click(view.getByRole("button", { name: "添加知识源" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith("本地知识库", "D:\\Wiki\\wiki"));

@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.24
+      - release/v0.3.25
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.24"
+      RELEASE_TAG: "v0.3.25"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,10 +93,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.24_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.25_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.24.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.24.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.25.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.25.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -105,7 +105,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.24.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.25.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -135,7 +135,7 @@ jobs:
           try {
             Start-Process -FilePath $exe | Out-Null
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.24"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.25"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -198,14 +198,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.24
+          name: Content Intelligence Canvas v0.3.25
           body: |
             Windows portable public test build.
 
             大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            v0.3.24 增加全局代理配置及模型、搜索 MCP、DeepSeek 网页工具的独立覆盖。DeepSeek 搜索和抓取支持分别开关、独立真实测试和并行查看结果；支持默认检索语法与本地化 IP，显示实际查询语句。错误保留上游 HTTP 状态码、中文原因和处理建议，并在白板任务详情中显示。保留 v0.3.23 的启动修复和全文上下文流程。
+            v0.3.25 将快速研究默认数量和上限调整为 20，并提示范围和耗时。目录选择通过独立结构化结果返回，避免警告混入路径。共创与最终输出按来源链回读完整 Wiki 原始词条，支持跨层、跨库和旧引用恢复；节点内可查看原始全文。统一 Markdown/GFM 显示，修复表格、列表和代码排版。内容简报作为默认硬约束，不依赖连线或继承深度，只有本次明确覆盖才例外，并增加生成后核对、自动修订和失败拦截。修复 DeepSeek 关闭思考参数未生效的问题。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.24.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.25.exe
           generate_release_notes: true
