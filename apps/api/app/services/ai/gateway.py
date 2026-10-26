@@ -443,19 +443,23 @@ class AIProviderGateway:
             "max_tokens": provider.get("max_tokens", 3000),
             **self._reasoning_payload(provider),
         }
-        response = self._request(
-            "POST",
-            self._chat_url(provider["base_url"]),
-            headers=self._headers(provider),
-            json_payload=payload,
-            timeout=provider.get("timeout_seconds", 60),
-            network_mode=network_mode,
-            proxy_url=proxy_url,
-            proxy_username=proxy_username,
-            proxy_password=proxy_password,
-        )
-        response.raise_for_status()
-        response_payload = response.json()
+        token = current_token()
+        if token and token.on_telemetry:
+            from app.services.ai.streaming import request_stream, StreamUnsupported
+            try:
+                response_payload = request_stream(
+                    self, self._chat_url(provider["base_url"]), headers=self._headers(provider), payload=payload,
+                    timeout=float(provider.get("timeout_seconds", 60)), network_mode=network_mode,
+                    proxy_url=proxy_url, proxy_username=proxy_username, proxy_password=proxy_password,
+                )
+            except StreamUnsupported:
+                token.on_telemetry("供应商不支持流式响应，改用普通调用；等待期间无法提供正文接收进度", {"stage": "fallback"}, "warning")
+                response_payload = self._complete_response(provider, payload, network_mode, proxy_url, proxy_username, proxy_password)
+        else:
+            response_payload = self._complete_response(provider, payload, network_mode, proxy_url, proxy_username, proxy_password)
+        choice = (response_payload.get("choices") or [{}])[0]
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError("模型达到输出或上下文长度上限，结果不完整。请提高最大输出 token 或缩小上下文后重试")
         text = self._extract_content(response_payload)
         if not text:
             choice = (response_payload.get("choices") or [{}])[0] if isinstance(response_payload, dict) else {}
@@ -463,6 +467,39 @@ class AIProviderGateway:
                 raise RuntimeError("模型输出额度耗尽，尚未返回正文。请提高最大输出 token，或关闭思考模式后重试")
             raise RuntimeError("大模型返回了空内容")
         return text, {"provider": provider["name"], "model": provider["model_name"]}
+
+    def _complete_response(self, provider: dict[str, Any], payload: dict[str, Any], network_mode: str,
+                           proxy_url: str | None, username: str | None, password: str | None) -> dict[str, Any]:
+        from threading import Event, Thread
+        token = current_token()
+        stop = Event()
+        started = time.monotonic()
+        def waiting() -> None:
+            while not stop.wait(5):
+                if token and token.on_telemetry and not token.event.is_set():
+                    try:
+                        token.on_telemetry("等待非流式模型返回完整结果", {"stage": "waiting", "elapsed_seconds": round(time.monotonic() - started, 1)}, "info")
+                    except RuntimeError:
+                        return
+        if token and token.on_telemetry:
+            Thread(target=waiting, name="ai-nonstream-progress", daemon=True).start()
+        try:
+            response = self._request("POST", self._chat_url(provider["base_url"]), headers=self._headers(provider),
+                                     json_payload=payload, timeout=provider.get("timeout_seconds", 60),
+                                     network_mode=network_mode, proxy_url=proxy_url,
+                                     proxy_username=username, proxy_password=password)
+            if response.status_code >= 400:
+                raise RuntimeError(self._http_error_message("模型请求失败", response))
+            result = response.json()
+            if token and token.on_telemetry:
+                token.on_telemetry("已接收非流式模型完整结果", {"stage": "complete", "http_status": response.status_code,
+                    "elapsed_seconds": round(time.monotonic() - started, 1), "content_chars": len(self._extract_content(result)),
+                    "usage": result.get("usage"),
+                    "provider_reasoning": str(((result.get("choices") or [{}])[0].get("message") or {}).get("reasoning_content") or ""),
+                    "reasoning_source": "供应商 API 的 reasoning_content 字段"}, "info")
+            return result
+        finally:
+            stop.set()
 
     def complete_json(self, system: str, user: str) -> tuple[Any, dict[str, str]]:
         content, trace = self.complete(system, user)

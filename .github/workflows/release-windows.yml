@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.25
+      - release/v0.3.26
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.25"
+      RELEASE_TAG: "v0.3.26"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,10 +93,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.25_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.26_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.25.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.25.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.26.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.26.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -105,7 +105,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.25.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.26.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -115,6 +115,13 @@ jobs:
           $oldRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.8"
           New-Item -ItemType Directory -Force -Path $oldRuntime | Out-Null
           New-Item -ItemType File -Force -Path (Join-Path $oldRuntime ".ready") | Out-Null
+          function Show-Startup-Diagnostics {
+            $control = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas"
+            foreach ($file in @("launcher.log", "startup-python.log", "startup-status.json")) {
+              $diagnostic = Join-Path $control $file
+              if (Test-Path -LiteralPath $diagnostic) { Write-Host "启动诊断 $file"; Get-Content -LiteralPath $diagnostic -Encoding utf8 -Tail 100 }
+            }
+          }
           function Wait-For-App([int]$previousPid) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
               Start-Sleep -Seconds 1
@@ -130,12 +137,14 @@ jobs:
                 }
               } catch { }
             }
-            throw "单体 EXE 未能在 180 秒内提供本地健康接口。"
+            Show-Startup-Diagnostics
+            throw "单体 EXE 未能在检查时限内提供本地健康接口。"
           }
           try {
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：冷启动"
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.25"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.26"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -158,12 +167,14 @@ jobs:
             $after = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/projects/$($project.id)/canvas"
             if ($after.nodes.Count -ne $canvas.nodes.Count) { throw "模型失败后不应生成模板节点" }
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：热启动和旧进程替换"
             $secondPid = Wait-For-App $firstPid
             if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
             $readyNode = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$((Get-NetTCPConnection -State Listen -OwningProcess $secondPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1).LocalPort)/api/projects/$($project.id)/canvas"
             if (-not $readyNode.nodes) { throw "重新启动后项目内容丢失" }
             Remove-Item -LiteralPath (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py") -Force
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：损坏缓存修复"
             $thirdPid = Wait-For-App $secondPid
             if (-not (Test-Path (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py"))) { throw "缺损缓存未自动修复" }
             if (Get-Process -Id $secondPid -ErrorAction SilentlyContinue) { throw "修复缓存后旧进程仍在运行" }
@@ -172,6 +183,7 @@ jobs:
             $clickA.WaitForExit(120000) | Out-Null
             $clickB.WaitForExit(120000) | Out-Null
             if (-not $clickA.HasExited -or -not $clickB.HasExited -or $clickA.ExitCode -ne 0 -or $clickB.ExitCode -ne 0) { throw "连续双击启动未完成" }
+            Write-Host "开始验证：连续双击后进程检查"
             $finalPid = Wait-For-App $thirdPid
             $owned = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*standalone_entry.py*' -and $_.ExecutablePath -like "$newRuntime*" })
             if ($owned.Count -ne 1) { throw "连续启动后应用进程数异常：$($owned.Count)" }
@@ -179,11 +191,22 @@ jobs:
             if ($status.phase -ne '服务已就绪') { throw "启动诊断未记录服务就绪" }
             Write-Host "已验证：中文及单引号路径、无效环境代理、冷启动/热启动/缓存修复/连续双击、旧进程替换与项目保留。"
           } finally {
+            Show-Startup-Diagnostics
             if (Test-Path $pidFile) {
               $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
               Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
             }
           }
+
+      - name: 保存失败的启动诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-startup-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/工作台 O'Brien 启动测试/**/*.log
+            ${{ runner.temp }}/工作台 O'Brien 启动测试/**/startup-status.json
+          if-no-files-found: warn
 
       - name: 将发布标签指向本次构建提交
         shell: pwsh
@@ -198,14 +221,14 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.25
+          name: Content Intelligence Canvas v0.3.26
           body: |
             Windows portable public test build.
 
             大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
 
-            v0.3.25 将快速研究默认数量和上限调整为 20，并提示范围和耗时。目录选择通过独立结构化结果返回，避免警告混入路径。共创与最终输出按来源链回读完整 Wiki 原始词条，支持跨层、跨库和旧引用恢复；节点内可查看原始全文。统一 Markdown/GFM 显示，修复表格、列表和代码排版。内容简报作为默认硬约束，不依赖连线或继承深度，只有本次明确覆盖才例外，并增加生成后核对、自动修订和失败拦截。修复 DeepSeek 关闭思考参数未生效的问题。
+            v0.3.26 将模型配置的最大可填写输出上限提高至 384K（393216 token），修复视频脚本时长清空后的前导零问题。任务监测支持删除已停止任务（保留节点及资产），运行中禁止删除；增加实时流式进度、连接线路、HTTP、耗时、推理阶段计数、正文预览、错误诊断和持久化 LOG，支持文本/JSON 完整导出。供应商 API 返回的推理文本支持实时查看和日志导出，日志自动隐藏密钥和代理凭据。断流或达到输出上限时明确失败，不保存不完整结果。
 
             这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.25.exe
+          files: Content_Intelligence_Canvas_Portable_v0.3.26.exe
           generate_release_notes: true

@@ -133,6 +133,12 @@ class WorkspaceRepository:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS ix_magic_jobs_project ON magic_jobs(project_id,created_at);
+                CREATE TABLE IF NOT EXISTS magic_job_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL REFERENCES magic_jobs(job_id) ON DELETE CASCADE,
+                    event_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_magic_logs_job ON magic_job_logs(job_id,id);
                 CREATE TABLE IF NOT EXISTS content_assets (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -183,6 +189,35 @@ class WorkspaceRepository:
             }.items():
                 if name not in job_columns:
                     db.execute(f"ALTER TABLE magic_jobs ADD COLUMN {name} {definition}")
+
+            # Migrate the retained history of older versions once; new logs are append-only.
+            for row in db.execute("SELECT job_id,events_json FROM magic_jobs WHERE NOT EXISTS (SELECT 1 FROM magic_job_logs WHERE job_id=magic_jobs.job_id)").fetchall():
+                for event in json.loads(row["events_json"] or "[]"):
+                    db.execute("INSERT INTO magic_job_logs(job_id,event_json) VALUES(?,?)",
+                               (row["job_id"], json.dumps(event, ensure_ascii=False)))
+
+    @staticmethod
+    def _job_event(db: sqlite3.Connection, job_id: str, attempt: int, phase: str, detail: str,
+                   level: str = "info", metrics: dict[str, Any] | None = None) -> None:
+        event = {"at": utc_now(), "attempt": attempt, "phase": phase, "detail": detail,
+                 "level": level, "metrics": metrics or {}}
+        db.execute("INSERT INTO magic_job_logs(job_id,event_json) VALUES(?,?)",
+                   (job_id, json.dumps(event, ensure_ascii=False)))
+        recent = [json.loads(row[0]) for row in db.execute(
+            "SELECT event_json FROM magic_job_logs WHERE job_id=? ORDER BY id DESC LIMIT 200", (job_id,))]
+        db.execute("UPDATE magic_jobs SET events_json=? WHERE job_id=?",
+                   (json.dumps(recent[::-1], ensure_ascii=False), job_id))
+
+    def magic_job_logs(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            return [json.loads(row[0]) for row in db.execute(
+                "SELECT event_json FROM magic_job_logs WHERE job_id=? ORDER BY id", (job_id,))]
+
+    def delete_magic_job(self, job_id: str) -> bool:
+        # Atomic state check also protects against a simultaneous resume.
+        with self._connect() as db:
+            cursor = db.execute("DELETE FROM magic_jobs WHERE job_id=? AND status IN ('completed','failed','cancelled','paused')", (job_id,))
+        return cursor.rowcount > 0
 
     @staticmethod
     def _decode(row: sqlite3.Row | None, *json_fields: str) -> dict[str, Any] | None:
@@ -782,6 +817,7 @@ class WorkspaceRepository:
                 VALUES(?,?,?,'running',2,'准备生成','正在准备节点上下文',?,?,?,?)""",
                 (job_id, project_id, json.dumps(node_ids), now, now,
                  json.dumps(request or {}, ensure_ascii=False), json.dumps(provider or {}, ensure_ascii=False)))
+            self._job_event(db, job_id, 1, "准备生成", "正在准备节点上下文")
         return self.get_magic_job(job_id) or {}
 
     def update_magic_job(self, job_id: str, expected_attempt: int | None = None, **changes: Any) -> None:
@@ -792,13 +828,15 @@ class WorkspaceRepository:
         if not values:
             return
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM magic_jobs WHERE job_id=?", (job_id,)).fetchone()
             if not row or row["status"] != "running" or (expected_attempt is not None and row["attempt"] != expected_attempt):
                 return
-            events = json.loads(row["events_json"] or "[]")
             if any(key in changes for key in ("phase", "detail", "status")):
-                events.append({"at": utc_now(), "attempt": row["attempt"], "phase": changes.get("phase", row["phase"]), "detail": changes.get("detail", row["detail"])})
-                values["events_json"] = json.dumps(events[-200:], ensure_ascii=False)
+                self._job_event(db, job_id, row["attempt"], changes.get("phase", row["phase"]),
+                                changes.get("detail", row["detail"]),
+                                changes.get("level", "error" if changes.get("status") == "failed" else "info"),
+                                changes.get("metrics"))
             db.execute(f"UPDATE magic_jobs SET {','.join(key + '=?' for key in values)},updated_at=? WHERE job_id=? AND status='running' AND attempt=?",
                        (*values.values(), utc_now(), job_id, row["attempt"]))
 
@@ -812,14 +850,14 @@ class WorkspaceRepository:
         phase = "已暂停" if status == "paused" else "已取消"
         detail = "任务已暂停，继续时会重新执行本次模型调用" if status == "paused" else "任务已由用户取消"
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM magic_jobs WHERE job_id=?", (job_id,)).fetchone()
             if not row or row["status"] not in allowed:
                 return False
-            events = json.loads(row["events_json"] or "[]")
-            events.append({"at": utc_now(), "attempt": row["attempt"], "phase": phase, "detail": detail})
+            self._job_event(db, job_id, row["attempt"], phase, detail, "warning")
             cursor = db.execute(
-                f"UPDATE magic_jobs SET status=?,phase=?,detail=?,events_json=?,updated_at=? WHERE job_id=? AND status IN ({','.join('?' for _ in allowed)})",
-                (status, phase, detail, json.dumps(events[-200:], ensure_ascii=False), utc_now(), job_id, *allowed),
+                f"UPDATE magic_jobs SET status=?,phase=?,detail=?,updated_at=? WHERE job_id=? AND status IN ({','.join('?' for _ in allowed)})",
+                (status, phase, detail, utc_now(), job_id, *allowed),
             )
         return cursor.rowcount > 0
 
@@ -829,6 +867,9 @@ class WorkspaceRepository:
                 detail='正在使用当前默认模型重新执行任务',error=NULL,result_json=NULL,attempt=attempt+1,
                 request_json=?,provider_json=?,updated_at=? WHERE job_id=? AND status IN ('failed','paused','cancelled')""",
                 (json.dumps(request, ensure_ascii=False), json.dumps(provider, ensure_ascii=False), utc_now(), job_id))
+            if cursor.rowcount:
+                row = db.execute("SELECT attempt FROM magic_jobs WHERE job_id=?", (job_id,)).fetchone()
+                self._job_event(db, job_id, row["attempt"], "重新准备生成", "正在使用当前默认模型重新执行任务")
         return cursor.rowcount > 0
 
     def get_magic_job(self, job_id: str) -> dict[str, Any] | None:
@@ -855,6 +896,8 @@ class WorkspaceRepository:
 
     def interrupt_magic_jobs(self) -> None:
         with self._connect() as db:
+            for row in db.execute("SELECT job_id,attempt FROM magic_jobs WHERE status='running'").fetchall():
+                self._job_event(db, row["job_id"], row["attempt"], "任务已中断", "应用重启后任务已中断，请重试", "error")
             db.execute("UPDATE magic_jobs SET status='failed',phase='任务已中断',detail='应用重启后任务已中断，请重新提交',error='应用重启后任务已中断',updated_at=? WHERE status='running'", (utc_now(),))
 
     def create_run(self, project_id: str, action: str, prompt: str, input_ids: list[str]) -> str:

@@ -78,7 +78,7 @@ export type MagicJob = {
   progress: number; phase: string; detail: string; error?: string | null; created_at: string;
   updated_at?: string; attempt?: number; request?: Record<string, unknown>;
   provider?: { id?: string; name?: string; model_name?: string; base_url?: string; network_mode?: string };
-  events?: Array<{ at: string; attempt: number; phase: string; detail: string }>;
+  events?: Array<{ at: string; attempt: number; phase: string; detail: string; level?: string; metrics?: Record<string, unknown> }>;
   result?: { node?: CanvasNode; run_id?: string; used_llm?: boolean; message?: string; failure?: WebFailure } | null;
 };
 export type NetworkMode = "inherit" | "auto" | "direct" | "system_proxy" | "custom_proxy";
@@ -193,6 +193,7 @@ export const api = {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt, web_search: webSearch, format, duration_seconds: durationSeconds, upstream_depth: upstreamDepth }),
     }),
   listMagicJobs: (projectId: string) => request<MagicJob[]>(`/api/projects/${projectId}/magic/jobs`),
+  deleteMagicJob: (jobId: string) => request<void>(`/api/magic/jobs/${jobId}`, { method: "DELETE" }),
   cancelMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/cancel`, { method: "POST" }),
   pauseMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/pause`, { method: "POST" }),
   resumeMagicJob: (jobId: string, values?: Record<string, unknown>) => request<MagicJob>(`/api/magic/jobs/${jobId}/resume`, { method: "POST", ...(values ? { body: JSON.stringify(values) } : {}) }),

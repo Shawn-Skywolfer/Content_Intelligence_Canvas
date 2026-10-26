@@ -89,7 +89,7 @@ describe("历史研究与项目入口", () => {
     expect(view.getByRole("dialog", { name: "内容简报的完整内容" }).textContent).toContain("面向技术决策者，比较 TCO");
     view.unmount();
   });
-  it("最大输出可清空后输入 256000，并以数值提交保存", async () => {
+  it("最大输出可清空后输入 393216，并以数值提交保存", async () => {
     const provider: Provider = { id: "p1", name: "DeepSeek", protocol: "openai_compatible", base_url: "https://example.org/v1", model_name: "deepseek-flash", enabled: true, is_external: true, temperature: .3, max_tokens: 3000, timeout_seconds: 60, extra: {}, has_api_key: true, has_proxy_password: false, created_at: "", updated_at: "" };
     vi.spyOn(api, "health").mockResolvedValue({ status: "ok", phase: "test" });
     vi.spyOn(api, "listProjects").mockResolvedValue([]);
@@ -99,7 +99,7 @@ describe("历史研究与项目入口", () => {
     vi.spyOn(api, "getSecurity").mockResolvedValue({ protect_internal_data: true });
     vi.spyOn(api, "listContentFormats").mockResolvedValue([]);
     vi.spyOn(api, "getMcpSearch").mockResolvedValue({ name: "Tavily", url: "https://example.org/mcp", tool_name: "search", enabled: false, has_api_key: false, network_mode: "auto", proxy_url: "", proxy_username: "", has_proxy_password: false });
-    const save = vi.spyOn(api, "saveProvider").mockResolvedValue({ ...provider, max_tokens: 256000 });
+    const save = vi.spyOn(api, "saveProvider").mockResolvedValue({ ...provider, max_tokens: 393216 });
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
@@ -107,10 +107,10 @@ describe("历史研究与项目入口", () => {
     const input = view.getByLabelText("最大输出 token") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "" } });
     expect(input.value).toBe("");
-    fireEvent.change(input, { target: { value: "256000" } });
-    expect(input.value).toBe("256000");
+    fireEvent.change(input, { target: { value: "393216" } });
+    expect(input.value).toBe("393216");
     fireEvent.click(view.getByRole("button", { name: "保存配置" }));
-    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 256000 })));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 393216 })));
     await waitFor(() => expect(view.getByText("配置已保存")).toBeTruthy());
     view.unmount();
   });
