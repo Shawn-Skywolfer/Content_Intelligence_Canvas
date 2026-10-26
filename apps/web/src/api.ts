@@ -140,6 +140,7 @@ export const api = {
     method: "POST", body: JSON.stringify({ name, root_path }),
   }),
   deleteSource: (sourceId: string) => request<void>(`/api/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+  uploadWikiZip: (file: File, name: string) => request<Source>(`/api/knowledge-sources/upload-zip?name=${encodeURIComponent(name)}`, { method: "POST", body: file, headers: { "Content-Type": "application/zip" } }),
   selectFolder: () => request<{ path: string }>("/api/system/select-folder", { method: "POST" }),
   refresh: (sourceId: string) => request<Record<string, unknown>>(`/api/knowledge-sources/${sourceId}/refresh`, { method: "POST" }),
   startRefresh: (sourceId: string) => request<RefreshJob>(`/api/knowledge-sources/${sourceId}/refresh/start`, { method: "POST" }),

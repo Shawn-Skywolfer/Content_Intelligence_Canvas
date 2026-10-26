@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi import Response
 
 from app.container import get_container
@@ -66,6 +66,54 @@ def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceRespo
     )
 
 
+@router.post("/knowledge-sources/upload-zip", response_model=KnowledgeSourceResponse)
+async def upload_wiki_zip(request: Request, name: str = "上传的知识库"):
+    import io
+    import shutil
+    import stat
+    import uuid
+    import zipfile
+    from pathlib import PurePosixPath
+    from app.config import Settings
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > 50 * 1024 * 1024:
+            raise HTTPException(413, "Wiki ZIP 不能超过 50 MB")
+    target = Settings.from_env().data_dir / "uploaded-wikis" / uuid.uuid4().hex
+    try:
+        with zipfile.ZipFile(io.BytesIO(chunks)) as archive:
+            entries = archive.infolist()
+            if len(entries) > 10000 or sum(item.file_size for item in entries) > 200 * 1024 * 1024:
+                raise HTTPException(413, "解压后不能超过 200 MB 或 10000 个条目")
+            for item in entries:
+                path = PurePosixPath(item.filename.replace("\\", "/"))
+                if path.is_absolute() or ".." in path.parts or ":" in str(path) or stat.S_ISLNK(item.external_attr >> 16):
+                    raise HTTPException(422, "ZIP 包含不安全的路径或符号链接")
+            target.mkdir(parents=True)
+            count = 0
+            for item in entries:
+                path = PurePosixPath(item.filename.replace("\\", "/"))
+                if item.is_dir() or path.suffix.lower() != ".md":
+                    continue
+                output = target.joinpath(*path.parts)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(item) as source, output.open("wb") as dest:
+                    shutil.copyfileobj(source, dest)
+                count += 1
+            if not count:
+                raise HTTPException(422, "ZIP 内没有 Markdown 词条")
+        children = list(target.iterdir())
+        root = children[0] if len(children) == 1 and children[0].is_dir() else target
+        return create_source(CreateKnowledgeSourceRequest(name=name[:100], root_path=str(root)))
+    except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+        shutil.rmtree(target, ignore_errors=True)
+        raise HTTPException(422, "无法读取 Wiki ZIP，请检查文件是否损坏或加密") from exc
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
 @router.delete("/knowledge-sources/{source_id}", status_code=204)
 def delete_source(source_id: str) -> Response:
     source = get_container().manifest.get_source(source_id)
@@ -80,6 +128,8 @@ def delete_source(source_id: str) -> Response:
 @router.post("/system/select-folder")
 def select_folder() -> dict[str, str]:
     """Open a native Windows folder picker from the local portable application."""
+    if os.getenv("CIC_SERVER_MODE") == "1":
+        raise HTTPException(501, "服务器版不能浏览访问者电脑的文件夹，请上传 Wiki ZIP，或填写服务器上的知识库目录")
     if os.name != "nt":
         raise HTTPException(501, "文件夹浏览仅在 Windows 本地版中可用")
     return _pick_windows_folder()
