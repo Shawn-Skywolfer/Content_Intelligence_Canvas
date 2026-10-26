@@ -180,3 +180,63 @@ def test_idle_watchdog_keeps_partial_and_interrupts_blocked_reader(tmp_path, mon
         gateway.complete("系统", "要求", provider=provider)
     assert time.monotonic() - started < 9
     assert token.partial_output == "未完成草稿"
+
+
+def test_idle_supervisor_returns_even_when_socket_and_close_do_not_wake(tmp_path, monkeypatch):
+    import time
+    from threading import Event
+    released = Event()
+    class FrozenStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield sse(chunk(content='{"')).encode()
+            released.wait(15)
+            yield sse(chunk(content="迟到结果", finish="stop")).encode()
+        def close(self):
+            released.wait(15)
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=FrozenStream()))
+    provider["timeout_seconds"] = 5
+    started = time.monotonic()
+    try:
+        with cancellation_scope(token), pytest.raises(RuntimeError, match="线程诊断"):
+            gateway.complete("系统", "要求", provider=provider)
+        assert time.monotonic() - started < 8
+        assert token.partial_output == '{"'
+    finally:
+        released.set()
+
+
+def test_blocked_log_writer_cannot_stop_receiving_model_body(tmp_path, monkeypatch):
+    import time
+    from threading import Event
+    released = Event()
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, text=sse(chunk(reasoning="推理"), chunk(content="完整正文", finish="stop"))))
+    def stuck_logger(*args):
+        released.wait(15)
+    token.on_telemetry = stuck_logger
+    started = time.monotonic()
+    try:
+        with cancellation_scope(token):
+            assert gateway.complete("系统", "要求", provider=provider)[0] == "完整正文"
+        assert time.monotonic() - started < 3
+    finally:
+        released.set()
+
+
+def test_completed_answer_returns_even_if_tls_teardown_blocks(tmp_path, monkeypatch):
+    import time
+    from threading import Event
+    released = Event()
+    class SlowClose(httpx.SyncByteStream):
+        def __iter__(self):
+            yield sse(chunk(content="完整结果", finish="stop")).encode()
+        def close(self):
+            released.wait(15)
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=SlowClose()))
+    started = time.monotonic()
+    try:
+        with cancellation_scope(token):
+            assert gateway.complete("系统", "要求", provider=provider)[0] == "完整结果"
+        assert time.monotonic() - started < 3
+        assert events[-1]["metrics"]["stage"] == "complete"
+    finally:
+        released.set()

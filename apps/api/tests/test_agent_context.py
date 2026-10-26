@@ -72,7 +72,7 @@ def test_research_reads_relations_only_on_demand_and_searches_original_entries(t
     hits, trace = WikiReasoningService(retrieval, None, model, context).gather("wiki", "800V 如何影响供电？")
     assert list(model_inputs[0]["agent_context"]) == ["overview.md", "domain-map.md"]
     assert "relations.md" in model_inputs[1]["agent_context"]
-    assert retrieval.queries == ["800V 如何影响供电？", "AIDC 供电", "800V 供电关系"]
+    assert retrieval.queries == ["800V 如何影响供电？", "800V 供电关系", "AIDC 供电"]
     assert hits[0].source_path == "power.md"
     assert trace["agent_context"]["relations.md"].startswith("# 关系")
 
@@ -102,3 +102,33 @@ def test_refresh_reports_model_failure_without_exposing_raw_documents(tmp_path: 
 
     result = AgentContextService(Manifest(tmp_path), Model()).prepare_refresh("wiki")
     assert result == {"status": "failed", "message": "模型服务暂不可用"}
+
+
+def test_stalled_relation_refinement_keeps_completed_model_plan(tmp_path):
+    from app.services.ai.streaming import ModelStreamTimeout
+    from app.services.ai.cancellation import CancellationToken, cancellation_scope
+    make_wiki(tmp_path)
+    class Model:
+        calls = 0
+        def complete_json(self, *_args):
+            self.calls += 1
+            if self.calls == 1:
+                return {"queries": ["构网 原始证据"], "read_relations": True}, {"model": "mock"}
+            raise ModelStreamTimeout("接收两个字符后连接停滞")
+    class Retrieval:
+        queries = []
+        def search(self, _source, query, **_kwargs):
+            self.queries.append(query)
+            return [type("Hit", (), {"chunk_id": "power"})()]
+    model = Model()
+    retrieval = Retrieval()
+    token = CancellationToken()
+    events = []
+    token.on_telemetry = lambda *args: events.append(args)
+    with cancellation_scope(token):
+        hits, trace = WikiReasoningService(retrieval, None, model, AgentContextService(Manifest(tmp_path), model)).gather("wiki", "研究问题")
+        token.check()
+    assert retrieval.queries == ["研究问题", "构网 原始证据"]
+    assert hits and trace["model"] == "mock"
+    assert events[-1][1]["stage"] == "relation_plan_recovery"
+    assert "连接停滞" in events[-1][1]["error"]
