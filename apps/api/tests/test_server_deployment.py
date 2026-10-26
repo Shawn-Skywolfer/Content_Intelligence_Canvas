@@ -25,7 +25,7 @@ def test_zip_import_keeps_agent_context_and_rejects_traversal(tmp_path, monkeypa
     response = client.post("/api/knowledge-sources/upload-zip?name=测试", content=archive({"wiki/_agent_context/overview.md": "总览", "wiki/词条.md": "原文", "wiki/image.png": "不导入"}))
     assert response.status_code == 200
     root = Path(response.json()["root_path"])
-    assert (root / "_agent_context/overview.md").read_text() == "总览"
+    assert (root / "_agent_context/overview.md").read_text(encoding="utf-8") == "总览"
     assert not (root / "image.png").exists()
     for path in ("../escape.md", "C:/escape.md", "..\\escape.md", "/escape.md"):
         assert client.post("/api/knowledge-sources/upload-zip", content=archive({path: "x"})).status_code == 422
