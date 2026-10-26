@@ -115,6 +115,13 @@ jobs:
           $oldRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.8"
           New-Item -ItemType Directory -Force -Path $oldRuntime | Out-Null
           New-Item -ItemType File -Force -Path (Join-Path $oldRuntime ".ready") | Out-Null
+          function Show-Startup-Diagnostics {
+            $control = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas"
+            foreach ($file in @("launcher.log", "startup-python.log", "startup-status.json")) {
+              $diagnostic = Join-Path $control $file
+              if (Test-Path -LiteralPath $diagnostic) { Write-Host "启动诊断 $file"; Get-Content -LiteralPath $diagnostic -Encoding utf8 -Tail 100 }
+            }
+          }
           function Wait-For-App([int]$previousPid) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
               Start-Sleep -Seconds 1
@@ -130,10 +137,12 @@ jobs:
                 }
               } catch { }
             }
-            throw "单体 EXE 未能在 180 秒内提供本地健康接口。"
+            Show-Startup-Diagnostics
+            throw "单体 EXE 未能在检查时限内提供本地健康接口。"
           }
           try {
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：冷启动"
             $firstPid = Wait-For-App 0
             $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.26"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
@@ -158,12 +167,14 @@ jobs:
             $after = Invoke-RestMethod -NoProxy -Uri "$baseUrl/api/projects/$($project.id)/canvas"
             if ($after.nodes.Count -ne $canvas.nodes.Count) { throw "模型失败后不应生成模板节点" }
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：热启动和旧进程替换"
             $secondPid = Wait-For-App $firstPid
             if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
             $readyNode = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$((Get-NetTCPConnection -State Listen -OwningProcess $secondPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1).LocalPort)/api/projects/$($project.id)/canvas"
             if (-not $readyNode.nodes) { throw "重新启动后项目内容丢失" }
             Remove-Item -LiteralPath (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py") -Force
             Start-Process -FilePath $exe | Out-Null
+            Write-Host "开始验证：损坏缓存修复"
             $thirdPid = Wait-For-App $secondPid
             if (-not (Test-Path (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py"))) { throw "缺损缓存未自动修复" }
             if (Get-Process -Id $secondPid -ErrorAction SilentlyContinue) { throw "修复缓存后旧进程仍在运行" }
@@ -172,6 +183,7 @@ jobs:
             $clickA.WaitForExit(120000) | Out-Null
             $clickB.WaitForExit(120000) | Out-Null
             if (-not $clickA.HasExited -or -not $clickB.HasExited -or $clickA.ExitCode -ne 0 -or $clickB.ExitCode -ne 0) { throw "连续双击启动未完成" }
+            Write-Host "开始验证：连续双击后进程检查"
             $finalPid = Wait-For-App $thirdPid
             $owned = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*standalone_entry.py*' -and $_.ExecutablePath -like "$newRuntime*" })
             if ($owned.Count -ne 1) { throw "连续启动后应用进程数异常：$($owned.Count)" }
@@ -179,11 +191,22 @@ jobs:
             if ($status.phase -ne '服务已就绪') { throw "启动诊断未记录服务就绪" }
             Write-Host "已验证：中文及单引号路径、无效环境代理、冷启动/热启动/缓存修复/连续双击、旧进程替换与项目保留。"
           } finally {
+            Show-Startup-Diagnostics
             if (Test-Path $pidFile) {
               $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
               Stop-Process -Id $appPid -Force -ErrorAction SilentlyContinue
             }
           }
+
+      - name: 保存失败的启动诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-startup-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/工作台 O'Brien 启动测试/**/*.log
+            ${{ runner.temp }}/工作台 O'Brien 启动测试/**/startup-status.json
+          if-no-files-found: warn
 
       - name: 将发布标签指向本次构建提交
         shell: pwsh
