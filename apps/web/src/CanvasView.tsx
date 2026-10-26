@@ -223,6 +223,7 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       <p>继承上游层级：{String(job.request?.upstream_depth ?? 6)} · 网络搜索：{job.request?.web_search ? "开启" : "关闭"}</p>
       {editable && <><p>继续或重试将使用当前默认模型重新执行；已发送给供应商的请求可能仍会计费。</p><button className="primary" disabled={pending || instruction.trim().length < 2} onClick={() => onResume({ ...job.request, node_ids: job.node_ids, instruction: instruction.trim(), negative_prompt: negative, output_type: outputType, format, web_search: WEB_SEARCH_TYPES.has(outputType) && Boolean(job.request?.web_search) })}>按以上要求{job.status === "paused" ? "继续" : "重试"}</button></>}
       <h3>输入节点（当前内容）</h3>{job.node_ids.map((id) => { const node = nodes.find((item) => item.id === id); return <details key={id}><summary>{node?.title || `已删除节点 ${id}`}</summary><Markdown>{node?.body || "节点内容已不存在"}</Markdown></details>; })}
+      {Boolean((job.result as Record<string, unknown> | null)?.partial_body) && <><h3>中断前的草稿（未完成）</h3><Markdown>{String((job.result as Record<string, unknown>).partial_body)}</Markdown></>}
       {job.result?.node && <><h3>生成结果：{job.result.node.title}</h3><Markdown>{job.result.node.body}</Markdown></>}
     </section>
   </div>;
@@ -768,6 +769,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       const job = await api.startMagic(activeProject.id, inputs, magicType === "output" && !magic.trim() ? "结合节点内容生成草稿" : magic,
         magicType, magicNegativePrompt, WEB_SEARCH_TYPES.has(magicType) && webSearch, contentFormat, contentFormat === "video_script" ? Number(contentDuration) : 90, upstreamDepth);
       setMagicJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
+      await onRefresh(true);
       setStatus(`已启动生成任务：${job.job_id}`);
       setDrafts((current) => { const next = { ...current }; delete next[submittedDraftKey]; return next; });
     } catch (error) { setStatus(errorText(error)); } finally { setSubmittingMagic(false); }
@@ -895,6 +897,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           <div className="ai-copilot-head"><div><small>AI 共创</small><h3>{selectedIds.length === 1 && primary?.type !== "frame" ? "由当前节点生成下游" : "综合多个节点"}</h3></div><span>{selectedIds.length} 个选中节点</span></div>
           <label>可继承的上游节点层级<select value={upstreamDepth} onChange={(event) => updateDraft({ depth: Number(event.target.value) })}><option value={0}>不继承</option><option value={1}>仅上游一层</option><option value={2}>上游两层</option><option value={3}>上游三层</option><option value={6}>上游六层（默认）</option><option value={12}>上游十二层</option></select></label>
           <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 将回读这些节点引用的完整 Wiki 词条。内容简报始终作为默认创作约束；如需例外，请在本次要求中明确说明。原节点保留，结果进入新的下游节点。</p>
+          {!!primary && Array.isArray(primary.metadata.ai_prompt_history) && <details className="evidence-panel" open><summary>此节点提交过的 AI Prompt</summary>{(primary.metadata.ai_prompt_history as Array<Record<string, unknown>>).map((item, index) => <div key={index}><strong>{NODE_LABELS[String(item.output_type)] || String(item.output_type || "")} · {String(item.at || "")}</strong><p style={{ whiteSpace: "pre-wrap" }}>{String(item.instruction || "")}</p>{Boolean(item.negative_prompt) && <p>负向 Prompt：{String(item.negative_prompt)}</p>}</div>)}</details>}
           <label>新节点类型<select value={magicType} onChange={(event) => updateDraft({ type: event.target.value })}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
           {WEB_SEARCH_TYPES.has(magicType) && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（自动选择：优先 DeepSeek，其次搜索 MCP，并与 Wiki 资料综合）</label>}
           {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} step="1" onChange={(event) => updateDraft({ duration: event.target.value.replace(/^0+(?=\d)/, "") })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}

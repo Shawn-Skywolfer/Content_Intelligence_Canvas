@@ -17,8 +17,12 @@ class CancellationToken:
         self.client: Any = None
         self.on_network: Any = None
         self.on_telemetry: Any = None
+        self.failure: str | None = None
+        self.partial_output = ""
 
     def check(self) -> None:
+        if self.failure:
+            raise RuntimeError(self.failure)
         if self.event.is_set():
             raise OperationCancelled("任务已由用户取消")
 

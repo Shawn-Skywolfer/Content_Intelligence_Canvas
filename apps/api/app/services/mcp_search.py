@@ -103,7 +103,7 @@ class McpSearchService:
     def _session(self, client: httpx.Client, url: str, headers: dict):
         init = client.post(url, headers=headers, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.26"}},
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.27"}},
         })
         if init.status_code in {400, 404, 405, 422} or (init.status_code == 200 and "application/json" in init.headers.get("content-type", "") and init.json().get("error", {}).get("code") == -32601):
             # MCP 2026-07-28 uses independent, stateless requests instead of initialize.
@@ -118,7 +118,7 @@ class McpSearchService:
 
     def _tools(self, client: httpx.Client, url: str, headers: dict) -> list[dict]:
         modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
-        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.26"}}} if modern else {}
+        params = {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.27"}}} if modern else {}
         response = client.post(url, headers={**headers, **({"Mcp-Method": "tools/list"} if modern else {})}, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": params})
         return self._response(response).get("tools", [])
 
@@ -163,7 +163,7 @@ class McpSearchService:
                     modern = headers.get("MCP-Protocol-Version") == "2026-07-28"
                     params = {"name": requested, "arguments": arguments}
                     if modern:
-                        params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.26"}}
+                        params["_meta"] = {"io.modelcontextprotocol/clientInfo": {"name": "Content Intelligence Canvas", "version": "0.3.27"}}
                     result = self._response(client.post(url, headers={**headers, **({"Mcp-Method": "tools/call", "Mcp-Name": requested} if modern else {})}, json={
                         "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": params,
                     }))

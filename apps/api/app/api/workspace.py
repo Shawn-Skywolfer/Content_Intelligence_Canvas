@@ -395,7 +395,7 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
             return
         workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=safe_log(str(exc)), error=safe_log(str(exc)),
                                    metrics={"exception_type": type(exc).__name__, "elapsed_seconds": round(time.monotonic() - started, 1)},
-                                   result={"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else None)
+                                   result={"partial_body": token.partial_output, "incomplete": True, **({"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else {})})
     finally:
         with _magic_lock:
             if _magic_tokens.get(job_id) is token:
@@ -433,6 +433,14 @@ def start_magic_job(project_id: str, request: MagicRequest) -> dict[str, Any]:
             raise HTTPException(409, "这些节点已有正在运行的生成任务")
         provider = workspace.active_provider()
         job = workspace.create_magic_job(project_id, request.node_ids, request.model_dump(), _provider_summary(provider))
+    for node_id in request.node_ids:
+        node = workspace.get_node(node_id)
+        if node and not node.get("locked"):
+            metadata = dict(node.get("metadata") or {})
+            history = list(metadata.get("ai_prompt_history") or [])
+            history.append({"job_id": job["job_id"], "at": job["created_at"], **request.model_dump()})
+            metadata["ai_prompt_history"] = history[-50:]
+            workspace.update_node(project_id, node_id, {"metadata": metadata})
     _launch_magic_job(job, request, provider)
     return job
 

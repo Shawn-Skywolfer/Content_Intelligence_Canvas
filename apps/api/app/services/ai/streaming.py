@@ -29,6 +29,9 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
     last_emit = 0.0
     pending_reasoning: list[str] = []
     telemetry_lock = Lock()
+    last_content = time.monotonic()
+    parts: list[str] = []
+    active_response: httpx.Response | None = None
 
     def report(detail: str, *, force: bool = True, level: str = "info") -> None:
         nonlocal last_emit
@@ -43,8 +46,8 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                 metrics["provider_reasoning"] = "".join(pending_reasoning)
                 metrics["reasoning_source"] = "供应商 API 的 reasoning_content / reasoning 字段"
                 pending_reasoning.clear()
-            if token and token.on_telemetry and not token.event.is_set():
-                token.on_telemetry(detail, metrics, level)
+        if token and token.on_telemetry and not token.event.is_set():
+            token.on_telemetry(detail, metrics, level)
 
     def heartbeat() -> None:
         while not stop.wait(5):
@@ -57,10 +60,26 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
             except RuntimeError:
                 return
 
+    def watchdog() -> None:
+        while not stop.wait(1):
+            if token and token.event.is_set():
+                return
+            idle = time.monotonic() - last_content
+            if idle >= max(5, timeout):
+                message = f"模型连续 {int(idle)} 秒未返回新的正文或推理内容，已中止等待。请检查模型或代理连接后重试；已接收草稿已保留"
+                if token:
+                    token.failure = message
+                    token.partial_output = "".join(parts)
+                    client = active_response or token.client
+                    if client:
+                        Thread(target=client.close, daemon=True, name="close-stalled-model").start()
+                return
+
     errors: list[str] = []
     try:
         routes = gateway._network_routes(url, network_mode, proxy_url, proxy_username, proxy_password)
         Thread(target=heartbeat, daemon=True, name=f"ai-progress-{call_id}").start()
+        Thread(target=watchdog, daemon=True, name=f"ai-watchdog-{call_id}").start()
         for index, (route, proxy) in enumerate(routes):
             check_cancelled()
             state.update(route=route, stage="connecting", http_status=None)
@@ -73,6 +92,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                         token.bind(client)
                     try:
                         with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as response:
+                            active_response = response
                             state.update(http_status=response.status_code, stage="waiting")
                             report(f"{route}已返回 HTTP {response.status_code} · 正在等待模型首段响应")
                             if response.status_code >= 400:
@@ -99,13 +119,13 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 state.update(stage="complete", content_chars=len(text), usage=data.get("usage"))
                                 report("供应商返回非流式结果，已接收完整响应")
                                 return data
-                            parts: list[str] = []
+                            parts.clear()
                             finish: str | None = None
                             done = False
                             event_lines: list[str] = []
 
                             def consume(raw: str) -> None:
-                                nonlocal finish, done, received
+                                nonlocal finish, done, received, last_content
                                 if raw == "[DONE]":
                                     done = True
                                     return
@@ -126,6 +146,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                                 content = delta.get("content")
                                 if isinstance(reasoning, str) and reasoning:
+                                    last_content = time.monotonic()
                                     received = True
                                     changed = state["stage"] != "reasoning"
                                     with telemetry_lock:
@@ -133,9 +154,12 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                         state.update(stage="reasoning", reasoning_chars=state["reasoning_chars"] + len(reasoning))
                                     report(f"模型正在推理 · 已收到 {state['reasoning_chars']} 个推理字符", force=changed)
                                 if isinstance(content, str) and content:
+                                    last_content = time.monotonic()
                                     received = True
                                     changed = state["stage"] != "output"
                                     parts.append(content)
+                                    if token and time.monotonic() - last_emit >= 1:
+                                        token.partial_output = "".join(parts)
                                     state.update(stage="output", content_chars=state["content_chars"] + len(content))
                                     state["output_preview"] = (str(state.get("output_preview", "")) + content)[-240:]
                                     report(f"正在接收模型正文 · 已收到 {state['content_chars']} 字符", force=changed)
@@ -149,7 +173,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 elif not line and event_lines:
                                     consume("\n".join(event_lines))
                                     event_lines.clear()
-                                    if done:
+                                    if done or finish:
                                         break
                             if event_lines:
                                 consume("\n".join(event_lines))

@@ -42,6 +42,7 @@ def test_pause_resume_parallel_tasks_and_late_worker_do_not_duplicate_output(tmp
 
     monkeypatch.setattr(routes, "get_container", lambda: SimpleNamespace(workspace=repo, workflow=Workflow()))
     a = routes.start_magic_job(project["id"], MagicRequest(node_ids=[nodes[0]["id"]], instruction="任务甲"))
+    assert repo.get_node(nodes[0]["id"])["metadata"]["ai_prompt_history"][-1]["instruction"] == "任务甲"
     assert started[0].wait(2)
     b = routes.start_magic_job(project["id"], MagicRequest(node_ids=[nodes[1]["id"]], instruction="任务乙"))
     assert started[1].wait(2)
