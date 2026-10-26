@@ -1,6 +1,14 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
 export type Source = { id: string; name: string; connector_type: string; root_path: string; enabled: boolean };
+export type RefreshJob = {
+  job_id: string; source_id: string; status: "running" | "completed" | "failed";
+  phase: string; detail: string; current_path: string; processed: number; total: number;
+  indexed: number; unchanged: number; warnings_count: number; elapsed_seconds: number;
+  estimated_total_seconds: number | null; error: string | null;
+  agent_context: { status: string; message?: string; summary?: string; model?: string } | null;
+  report: { discovered: number; indexed: number; deleted: number; warnings: Array<{ path: string; error: string }> } | null;
+};
 export type Hit = {
   chunk_id: string; document_id: string; title: string; heading_path: string[]; excerpt: string;
   score: number; retrieval_reasons: string[]; source_path: string; start_line: number; end_line: number;
@@ -15,11 +23,13 @@ export type Project = {
   id: string; name: string; idea: string; brief: string; status: string; created_at: string; updated_at: string;
 };
 export type Evidence = {
-  chunk_id?: string; title?: string; path?: string; heading?: string[]; excerpt?: string;
+  chunk_id?: string; source_id?: string; title?: string; path?: string; heading?: string[]; excerpt?: string;
   start_line?: number; end_line?: number; references?: string[];
 };
+export type WikiOriginal = { source_id: string; path: string; title: string; text: string; content_chars: number; read_mode: "full_document" };
 export type CanvasNode = {
   id: string; type: string; title: string; body: string; status: string; locked: boolean;
+  summary?: string | null; summary_model?: string | null;
   x: number; y: number; width: number; height: number;
   metadata: Record<string, unknown> & { evidence?: Evidence[] }; created_by: string;
   parent_id?: string | null; project_id?: string; canvas_id?: string; created_at?: string; updated_at?: string;
@@ -32,18 +42,55 @@ export type CanvasData = {
   nodes: CanvasNode[]; edges: CanvasEdge[];
 };
 export type ContentAsset = {
-  id: string; project_id: string; format: string; title: string; body: string; evidence: Evidence[];
+  id: string; project_id: string; node_id?: string | null; format: string; title: string; body: string; evidence: Evidence[];
   status: string; version: number; created_at: string; updated_at: string;
 };
+export type ContentFormat = { id: string; name: string; positive_prompt: string; negative_prompt: string };
 export type Provider = {
   id: string; name: string; protocol: string; base_url: string; model_name: string; enabled: boolean;
   is_external: boolean; temperature: number; max_tokens: number; timeout_seconds: number;
   extra: Record<string, unknown>; has_api_key: boolean; has_proxy_password: boolean; created_at: string; updated_at: string;
 };
+export type ProviderTestJob = { job_id: string; provider_id: string; status: "running" | "completed"; phase: string; started_at: number; elapsed_seconds: number; result: Record<string, unknown> | null };
 export type SearchOptions = {
   top_k: number; lexical_weight: number; semantic_weight: number; wikilink_enabled: boolean;
   wikilink_weight: number; max_per_document: number;
 };
+export type ResearchJob = {
+  job_id: string; project_id: string; status: "running" | "completed" | "failed";
+  progress: number; phase: string; detail: string; error?: string;
+  result?: { nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string };
+};
+export type ResearchRun = {
+  id: string; project_id: string; action: string; prompt: string;
+  input_node_ids: string[]; output_node_ids: string[];
+  status: "running" | "completed" | "failed";
+  provider_name: string | null; model_name: string | null; error: string | null;
+  created_at: string; completed_at: string | null;
+};
+export type ContentJob = {
+  job_id: string; project_id: string; status: "running" | "completed" | "failed";
+  progress: number; phase: string; detail: string; error?: string;
+  result?: { asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string };
+};
+export type MagicJob = {
+  job_id: string; project_id: string; node_ids: string[]; status: "running" | "completed" | "failed" | "cancelled" | "paused";
+  progress: number; phase: string; detail: string; error?: string | null; created_at: string;
+  updated_at?: string; attempt?: number; request?: Record<string, unknown>;
+  provider?: { id?: string; name?: string; model_name?: string; base_url?: string; network_mode?: string };
+  events?: Array<{ at: string; attempt: number; phase: string; detail: string }>;
+  result?: { node?: CanvasNode; run_id?: string; used_llm?: boolean; message?: string; failure?: WebFailure } | null;
+};
+export type NetworkMode = "inherit" | "auto" | "direct" | "system_proxy" | "custom_proxy";
+export type GlobalNetworkConfig = { network_mode: Exclude<NetworkMode, "inherit">; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password?: boolean; clear_proxy_password?: boolean };
+export type WebFailure = { operation: string; http_status: number | null; reason: string; suggestion: string; endpoint: string; retryable: boolean };
+export type DeepSeekWebConfig = {
+  base_url: string; enabled: boolean; search_enabled?: boolean; fetch_enabled?: boolean; search_syntax?: string; localization?: string; count: number; need_content: boolean; fetch_top_k: number;
+  max_content_chars: number; timeout_seconds: number; network_mode: NetworkMode;
+  proxy_url: string; proxy_username: string; api_key?: string; proxy_password?: string; has_api_key?: boolean; has_proxy_password?: boolean;
+};
+export type WebTestJob = { failure?: WebFailure; job_id: string; status: "running" | "completed" | "failed"; phase: string; elapsed_seconds: number; events: { at: number; detail: string }[]; result: { context?: { page_count: number; content_chars: number; items: { title: string; url: string; content_chars: number; content_source: string; preview: string }[]; failed_pages: { url: string; error: string }[] }; search?: { http_status: number; latency_ms: number; route: string; query: string; result_count: number; items: { title: string; url: string; excerpt: string }[] }; fetch?: { http_status: number; latency_ms: number; route: string; content_chars: number; title: string; url: string; preview: string } }; error?: string | null };
+export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: NetworkMode; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -53,23 +100,52 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const raw = await response.text();
     let message = raw || `请求失败（${response.status}）`;
-    try { message = JSON.parse(raw).detail || message; } catch { /* 保留原始错误 */ }
+    try { const data = JSON.parse(raw); message = formatApiError(data.detail ?? data.message ?? data); } catch { /* 保留原始错误 */ }
     throw new Error(message);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
+export function formatApiError(value: unknown): string {
+  const labels: Record<string, string> = { name: "配置名称", base_url: "接口地址", api_key: "API Key", model_name: "模型 ID", protocol: "接口协议", temperature: "温度", max_tokens: "最大输出 token", timeout_seconds: "请求超时" };
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((item) => {
+    if (item && typeof item === "object" && "msg" in item) {
+      const error = item as { loc?: (string | number)[]; msg: string; type?: string; ctx?: Record<string, unknown> };
+      const field = error.loc?.filter((part) => part !== "body").map((part) => labels[String(part)] ?? String(part)).join(" / ");
+      const messages: Record<string, string> = { greater_than_equal: `不得小于 ${error.ctx?.ge}`, less_than_equal: `不得大于 ${error.ctx?.le}`, int_parsing: "请输入整数", float_parsing: "请输入数字", missing: "此项不能为空", string_too_short: `至少输入 ${error.ctx?.min_length} 个字符`, string_too_long: `最多输入 ${error.ctx?.max_length} 个字符`, literal_error: "选项无效，请重新选择" };
+      return `${field ? `${field}：` : ""}${messages[error.type ?? ""] ?? error.msg}`;
+    }
+    return formatApiError(item);
+  }).join("；");
+  if (value && typeof value === "object" && "reason" in value) {
+    const failure = value as WebFailure;
+    return `${failure.http_status != null ? `HTTP ${failure.http_status}` : "未收到 HTTP 响应"} · ${failure.reason}${failure.suggestion ? `。建议：${failure.suggestion}` : ""}`;
+  }
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "请求失败");
+}
+
 export const downloadUrl = (path: string) => `${API_BASE}${path}`;
 
 export const api = {
+  wikiOriginal: (ref: Evidence) => request<WikiOriginal>("/api/knowledge/original", { method: "POST", body: JSON.stringify({ chunk_id: ref.chunk_id || "", source_id: ref.source_id || null, path: ref.path || "" }) }),
+  getGlobalNetwork: () => request<GlobalNetworkConfig>("/api/settings/network"),
+  saveGlobalNetwork: (config: GlobalNetworkConfig) => request<GlobalNetworkConfig>("/api/settings/network", { method: "PUT", body: JSON.stringify(config) }),
+  testGlobalNetwork: () => request<{ http_status: number | null; reachable: boolean; route?: string; latency_ms: number; message: string }>("/api/settings/network/test", { method: "POST" }),
   health: () => request<{ status: string; phase: string }>("/api/health"),
   listSources: () => request<Source[]>("/api/knowledge-sources"),
   createSource: (name: string, root_path: string) => request<Source>("/api/knowledge-sources", {
     method: "POST", body: JSON.stringify({ name, root_path }),
   }),
+  deleteSource: (sourceId: string) => request<void>(`/api/knowledge-sources/${sourceId}`, { method: "DELETE" }),
+  selectFolder: () => request<{ path: string }>("/api/system/select-folder", { method: "POST" }),
   refresh: (sourceId: string) => request<Record<string, unknown>>(`/api/knowledge-sources/${sourceId}/refresh`, { method: "POST" }),
-  search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[] }>("/api/knowledge/search", {
+  startRefresh: (sourceId: string) => request<RefreshJob>(`/api/knowledge-sources/${sourceId}/refresh/start`, { method: "POST" }),
+  getRefreshJob: (jobId: string) => request<RefreshJob>(`/api/knowledge-sources/refresh/jobs/${jobId}`),
+  latestRefresh: (sourceId: string) => request<RefreshJob | null>(`/api/knowledge-sources/${sourceId}/refresh/latest`),
+  search: (sourceId: string, query: string, options: SearchOptions) => request<{ query: string; hits: Hit[]; answer: string; provider_name: string; model_name: string }>("/api/knowledge/search", {
     method: "POST", body: JSON.stringify({ source_id: sourceId, query, ...options }),
   }),
   chunkDetail: (chunkId: string) => request<ChunkDetail>(`/api/knowledge/chunks/${chunkId}`),
@@ -81,9 +157,10 @@ export const api = {
   updateProject: (projectId: string, values: Partial<Project>) => request<Project>(`/api/projects/${projectId}`, {
     method: "PATCH", body: JSON.stringify(values),
   }),
+  deleteProject: (projectId: string) => request<void>(`/api/projects/${projectId}`, { method: "DELETE" }),
   getCanvas: (projectId: string) => request<CanvasData>(`/api/projects/${projectId}/canvas`),
   saveCanvas: (projectId: string, canvas: CanvasData) => request<CanvasData>(`/api/projects/${projectId}/canvas`, {
-    method: "PUT", body: JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, viewport: canvas.viewport }),
+    method: "PUT", body: JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, viewport: canvas.viewport, base_updated_at: canvas.updated_at }),
   }),
   createNode: (projectId: string, node: Partial<CanvasNode>) => request<CanvasNode>(`/api/projects/${projectId}/nodes`, {
     method: "POST", body: JSON.stringify(node),
@@ -91,35 +168,89 @@ export const api = {
   updateNode: (projectId: string, nodeId: string, values: Partial<CanvasNode>) => request<CanvasNode>(`/api/projects/${projectId}/nodes/${nodeId}`, {
     method: "PATCH", body: JSON.stringify(values),
   }),
+  summarizeNode: (projectId: string, nodeId: string, force = false) => request<CanvasNode>(`/api/projects/${projectId}/nodes/${nodeId}/summary`, {
+    method: "POST", body: JSON.stringify({ force }),
+  }),
   deleteNode: (projectId: string, nodeId: string) => request<void>(`/api/projects/${projectId}/nodes/${nodeId}`, { method: "DELETE" }),
   quickResearch: (projectId: string, sourceId: string, query: string, findingCount: number, useLlm: boolean) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/research/quick`, {
       method: "POST", body: JSON.stringify({ source_id: sourceId, query, finding_count: findingCount, use_llm: useLlm }),
     }),
-  magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight") =>
+  startQuickResearch: (projectId: string, sourceId: string, query: string, findingCount: number, useLlm: boolean) =>
+    request<ResearchJob>(`/api/projects/${projectId}/research/quick/start`, {
+      method: "POST", body: JSON.stringify({ source_id: sourceId, query, finding_count: findingCount, use_llm: useLlm }),
+    }),
+  researchJob: (jobId: string) => request<ResearchJob>(`/api/research/jobs/${jobId}`),
+  listRuns: (projectId: string) => request<ResearchRun[]>(`/api/projects/${projectId}/runs`),
+  deleteResearchRun: (projectId: string, runId: string) =>
+    request<void>(`/api/projects/${projectId}/research/runs/${runId}`, { method: "DELETE" }),
+  magic: (projectId: string, nodeIds: string[], instruction: string, outputType = "insight", negativePrompt = "") =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/magic`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType }),
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt }),
+    }),
+  startMagic: (projectId: string, nodeIds: string[], instruction: string, outputType: string, negativePrompt: string, webSearch: boolean, format: string, durationSeconds: number, upstreamDepth = 6) =>
+    request<MagicJob>(`/api/projects/${projectId}/magic/start`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, instruction, output_type: outputType, negative_prompt: negativePrompt, web_search: webSearch, format, duration_seconds: durationSeconds, upstream_depth: upstreamDepth }),
+    }),
+  listMagicJobs: (projectId: string) => request<MagicJob[]>(`/api/projects/${projectId}/magic/jobs`),
+  cancelMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/cancel`, { method: "POST" }),
+  pauseMagicJob: (jobId: string) => request<MagicJob>(`/api/magic/jobs/${jobId}/pause`, { method: "POST" }),
+  resumeMagicJob: (jobId: string, values?: Record<string, unknown>) => request<MagicJob>(`/api/magic/jobs/${jobId}/resume`, { method: "POST", ...(values ? { body: JSON.stringify(values) } : {}) }),
+  generateIntoNode: (projectId: string, nodeId: string, instruction: string, useLlm = true) =>
+    request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/generate`, {
+      method: "POST", body: JSON.stringify({ instruction, use_llm: useLlm }),
     }),
   createConcept: (projectId: string, nodeIds: string[], title = "", useLlm = true) =>
     request<{ nodes: CanvasNode[]; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/concept`, {
       method: "POST", body: JSON.stringify({ node_ids: nodeIds, title, use_llm: useLlm }),
     }),
   listAssets: (projectId: string) => request<ContentAsset[]>(`/api/projects/${projectId}/assets`),
-  generateContent: (projectId: string, nodeIds: string[], format: "wechat" | "video_script" | "poster_campaign", title = "", durationSeconds = 90, useLlm = true) =>
-    request<{ asset: ContentAsset; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
-      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm }),
+  updateAsset: (projectId: string, assetId: string, title: string, body: string) => request<ContentAsset>(`/api/projects/${projectId}/assets/${assetId}`, {
+    method: "PATCH", body: JSON.stringify({ title, body }),
+  }),
+  deleteAsset: (projectId: string, assetId: string) => request<void>(`/api/projects/${projectId}/assets/${assetId}`, { method: "DELETE" }),
+  listContentFormats: () => request<ContentFormat[]>("/api/content-formats"),
+  saveContentFormats: (formats: ContentFormat[]) => request<ContentFormat[]>("/api/content-formats", {
+    method: "PUT", body: JSON.stringify({ formats }),
+  }),
+  generateContent: (projectId: string, nodeIds: string[], format: string, title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = true, negativePrompt = "") =>
+    request<{ asset: ContentAsset | null; node: CanvasNode; run_id: string; used_llm: boolean; message: string }>(`/api/projects/${projectId}/content/generate`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
     }),
+  startContentGeneration: (projectId: string, nodeIds: string[], format: string, title = "", durationSeconds = 90, useLlm = true, instruction = "", saveAsAsset = false, negativePrompt = "") =>
+    request<ContentJob>(`/api/projects/${projectId}/content/generate/start`, {
+      method: "POST", body: JSON.stringify({ node_ids: nodeIds, format, title, duration_seconds: durationSeconds, use_llm: useLlm, instruction, negative_prompt: negativePrompt, save_as_asset: saveAsAsset }),
+    }),
+  contentJob: (jobId: string) => request<ContentJob>(`/api/content/jobs/${jobId}`),
+  saveNodeAsAsset: (projectId: string, nodeId: string) =>
+    request<{ asset: ContentAsset; node: CanvasNode; message: string }>(`/api/projects/${projectId}/nodes/${nodeId}/save-asset`, { method: "POST" }),
 
   listProviders: () => request<Provider[]>("/api/providers"),
+  activeProvider: () => request<{ provider_id: string | null; model_name: string | null; name?: string; network_mode?: string }>("/api/providers/active"),
+  activateProvider: (id: string) => request<{ provider_id: string; model_name: string }>(`/api/providers/${id}/activate`, { method: "POST" }),
   saveProvider: (provider: Record<string, unknown>) => request<Provider>("/api/providers", {
     method: "POST", body: JSON.stringify(provider),
   }),
   testProvider: (providerId: string) => request<Record<string, unknown>>(`/api/providers/${providerId}/test`, { method: "POST" }),
+  startProviderTest: (providerId: string) => request<ProviderTestJob>(`/api/providers/${providerId}/test/start`, { method: "POST" }),
+  providerTestJob: (jobId: string) => request<ProviderTestJob>(`/api/providers/test/jobs/${jobId}`),
+  deleteProvider: (providerId: string) => request<void>(`/api/providers/${providerId}`, { method: "DELETE" }),
+  queryProviderQuota: (providerId: string) => request<{ value: string | number; unit: string; route: string }>(`/api/providers/${providerId}/quota`),
+  exportSettings: () => request<Record<string, unknown>>("/api/settings/export"),
+  importSettings: (backup: Record<string, unknown>) => request<{ message: string; missing_paths: string[] }>("/api/settings/import", { method: "POST", body: JSON.stringify(backup) }),
   discoverModels: (values: { provider_id?: string; base_url: string; api_key?: string | null; timeout_seconds: number; network_mode: string; proxy_url?: string | null; proxy_username?: string | null; proxy_password?: string | null }) =>
     request<{ models: string[]; count: number; latency_ms: number; message: string }>("/api/providers/discover-models", {
       method: "POST", body: JSON.stringify(values),
     }),
   getSecurity: () => request<{ protect_internal_data: boolean }>("/api/settings/security"),
+  getWebSearch: () => request<{ provider: "mcp" | "deepseek" | null; message: string; deepseek_ready: boolean; mcp_ready: boolean }>("/api/settings/web-search"),
+  getDeepSeekWeb: () => request<DeepSeekWebConfig>("/api/settings/deepseek-web"),
+  saveDeepSeekWeb: (config: DeepSeekWebConfig) => request<DeepSeekWebConfig>("/api/settings/deepseek-web", { method: "PUT", body: JSON.stringify(config) }),
+  startDeepSeekWebTest: (operation: "search" | "fetch" | "both" | "context", query: string, url: string) => request<WebTestJob>("/api/settings/deepseek-web/test/start", { method: "POST", body: JSON.stringify({ operation, query, url }) }),
+  deepSeekWebTestJob: (jobId: string) => request<WebTestJob>(`/api/settings/deepseek-web/test/jobs/${jobId}`),
+  getMcpSearch: () => request<McpSearchConfig>("/api/settings/mcp-search"),
+  saveMcpSearch: (config: McpSearchConfig) => request<McpSearchConfig>("/api/settings/mcp-search", { method: "PUT", body: JSON.stringify(config) }),
+  testMcpSearch: () => request<{ tools: string[]; message: string; latency_ms: number; endpoint: string; search_tool: string; search_tool_available: boolean; network_mode: string }>("/api/settings/mcp-search/test", { method: "POST" }),
   saveSecurity: (protect_internal_data: boolean) => request<{ protect_internal_data: boolean }>("/api/settings/security", {
     method: "PUT", body: JSON.stringify({ protect_internal_data }),
   }),

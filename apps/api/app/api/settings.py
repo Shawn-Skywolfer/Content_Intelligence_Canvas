@@ -1,20 +1,119 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
+from pydantic import ValidationError
 
 from fastapi import APIRouter, HTTPException
 
 from app.container import get_container
 from app.schemas.workspace import (
+    GlobalNetworkConfig,
     ProviderConfigRequest,
     ProviderConfigResponse,
     ProviderModelDiscoveryRequest,
     SecuritySettingsRequest,
     SecuritySettingsResponse,
+    McpSearchConfig,
+    DeepSeekWebConfig,
+    DeepSeekWebTestRequest,
+    ContentFormatsRequest,
 )
+from app.services.content_formats import list_content_formats
+from app.services.knowledge.indexer import source_id_for_path
+from app.services.network_settings import NetworkSettings
+from app.services.ai.gateway import AIProviderGateway, ProviderConnectionError
+import time
+
+from app.services.deepseek_web import DeepSeekWebService
 
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+
+@router.get("/settings/network")
+def get_global_network() -> dict:
+    container = get_container()
+    return NetworkSettings(container.workspace, container.secrets).config()
+
+
+@router.put("/settings/network")
+def save_global_network(request: GlobalNetworkConfig) -> dict:
+    container = get_container()
+    try:
+        return NetworkSettings(container.workspace, container.secrets).save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/network/test")
+def test_global_network() -> dict:
+    container = get_container()
+    resolved = NetworkSettings(container.workspace, container.secrets).resolve()
+    started = time.perf_counter()
+    try:
+        response = AIProviderGateway._request("GET", "https://api.deepseek.com", headers={}, timeout=8,
+            **{k: resolved[k] for k in ("network_mode", "proxy_url", "proxy_username", "proxy_password")})
+        return {"http_status": response.status_code, "reachable": True, "route": AIProviderGateway._route_label(response),
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "message": "已收到 HTTP 响应，仅代表网络可达；鉴权和功能请分别测试"}
+    except ProviderConnectionError as exc:
+        return {"http_status": None, "reachable": False, "message": str(exc),
+                "latency_ms": round((time.perf_counter() - started) * 1000)}
+
+
+@router.get("/settings/web-search")
+def get_web_search_settings() -> dict:
+    return get_container().web_search.selection()
+
+
+@router.get("/settings/deepseek-web")
+def get_deepseek_web() -> dict:
+    return get_container().deepseek_web.config()
+
+
+@router.put("/settings/deepseek-web")
+def save_deepseek_web(request: DeepSeekWebConfig) -> dict:
+    try:
+        return get_container().deepseek_web.save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/deepseek-web/test/start")
+def start_deepseek_web_test(request: DeepSeekWebTestRequest) -> dict:
+    return get_container().deepseek_web_tests.start(request.operation, request.query, request.url)
+
+
+@router.get("/settings/deepseek-web/test/jobs/{job_id}")
+def get_deepseek_web_test(job_id: str) -> dict:
+    job = get_container().deepseek_web_tests.get(job_id)
+    if not job:
+        raise HTTPException(404, "网页工具测试任务不存在")
+    return job
+
+
+@router.get("/settings/mcp-search")
+def get_mcp_search() -> dict[str, Any]:
+    return get_container().mcp_search.config()
+
+
+@router.put("/settings/mcp-search")
+def save_mcp_search(request: McpSearchConfig) -> dict[str, Any]:
+    try:
+        return get_container().mcp_search.save(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/settings/mcp-search/test")
+def test_mcp_search() -> dict[str, Any]:
+    try:
+        return get_container().mcp_search.test()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _provider_response(provider: dict[str, Any]) -> ProviderConfigResponse:
@@ -33,6 +132,25 @@ def _provider_response(provider: dict[str, Any]) -> ProviderConfigResponse:
 @router.get("/providers", response_model=list[ProviderConfigResponse])
 def list_providers() -> list[ProviderConfigResponse]:
     return [_provider_response(item) for item in get_container().workspace.list_providers()]
+
+
+@router.get("/providers/active")
+def active_provider() -> dict[str, str | None]:
+    provider = get_container().workspace.active_provider()
+    return {"provider_id": provider["id"] if provider else None,
+            "model_name": provider["model_name"] if provider else None,
+            "name": provider["name"] if provider else None,
+            "network_mode": (provider.get("extra") or {}).get("network_mode", "auto") if provider else None}
+
+
+@router.post("/providers/{provider_id}/activate")
+def activate_provider(provider_id: str) -> dict[str, str]:
+    repository = get_container().workspace
+    provider = repository.get_provider(provider_id)
+    if not provider or not provider["enabled"]:
+        raise HTTPException(422, "模型不存在或未启用")
+    repository.set_setting("active_provider_id", provider_id)
+    return {"provider_id": provider_id, "model_name": provider["model_name"]}
 
 
 @router.post("/providers", response_model=ProviderConfigResponse)
@@ -66,6 +184,131 @@ def test_provider(provider_id: str) -> dict[str, Any]:
     if not provider:
         raise HTTPException(404, "模型配置不存在")
     return get_container().ai.health_check(provider)
+
+
+@router.post("/providers/{provider_id}/test/start")
+def start_provider_test(provider_id: str) -> dict[str, Any]:
+    provider = get_container().workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    return get_container().provider_tests.start(provider)
+
+
+@router.get("/providers/test/jobs/{job_id}")
+def get_provider_test(job_id: str) -> dict[str, Any]:
+    job = get_container().provider_tests.get(job_id)
+    if not job:
+        raise HTTPException(404, "模型测试任务不存在")
+    return job
+
+
+@router.get("/providers/{provider_id}/quota")
+def query_provider_quota(provider_id: str) -> dict[str, Any]:
+    provider = get_container().workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    try:
+        return get_container().ai.query_quota(provider)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.delete("/providers/{provider_id}", status_code=204)
+def delete_provider(provider_id: str) -> None:
+    container = get_container()
+    provider = container.workspace.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(404, "模型配置不存在")
+    if container.workspace.delete_provider(provider_id):
+        container.secrets.delete(provider.get("secret_ref"))
+        container.secrets.delete((provider.get("extra") or {}).get("proxy_password_ref"))
+
+
+@router.get("/settings/export")
+def export_settings() -> dict[str, Any]:
+    container = get_container()
+    providers = []
+    for provider in container.workspace.list_providers():
+        item = _provider_response(provider).model_dump()
+        item["api_key"] = container.secrets.get(provider.get("secret_ref")) or ""
+        item["extra"]["proxy_password"] = container.secrets.get((provider.get("extra") or {}).get("proxy_password_ref")) or ""
+        providers.append(item)
+    mcp = container.mcp_search.config()
+    saved_mcp = container.workspace.get_setting("mcp_search", {}) or {}
+    mcp["api_key"] = container.secrets.get(saved_mcp.get("secret_ref")) or ""
+    mcp["proxy_password"] = container.secrets.get(saved_mcp.get("proxy_password_ref")) or ""
+    deepseek = container.deepseek_web.config()
+    saved_deepseek = container.workspace.get_setting("deepseek_web", {}) or {}
+    deepseek["api_key"] = container.secrets.get(saved_deepseek.get("secret_ref")) or ""
+    deepseek["proxy_password"] = container.secrets.get(saved_deepseek.get("proxy_password_ref")) or ""
+    network = NetworkSettings(container.workspace, container.secrets).config()
+    saved_network = container.workspace.get_setting("global_network", {}) or {}
+    network["proxy_password"] = container.secrets.get(saved_network.get("proxy_password_ref")) or ""
+    active = container.workspace.active_provider()
+    return {
+        "backup_type": "content-intelligence-canvas-settings", "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "includes_plaintext_secrets": True,
+        "providers": providers, "active_provider_id": active["id"] if active else None,
+        "knowledge_sources": [{"name": s["name"], "root_path": s["root_path"]} for s in container.manifest.list_sources()],
+        "mcp_search": mcp,
+        "deepseek_web": deepseek,
+        "global_network": network,
+        "security": {"protect_internal_data": container.workspace.get_setting("protect_internal_data", True)},
+        "content_formats": list_content_formats(container.workspace),
+    }
+
+
+@router.post("/settings/import")
+def import_settings(backup: dict[str, Any]) -> dict[str, Any]:
+    if backup.get("backup_type") != "content-intelligence-canvas-settings" or backup.get("version") != 1:
+        raise HTTPException(422, "不是此应用支持的设置备份文件")
+    try:
+        network = GlobalNetworkConfig.model_validate(backup["global_network"]) if "global_network" in backup else None
+        if network:
+            NetworkSettings.validate(network.model_dump())
+        raw_providers = backup["providers"]
+        raw_sources = backup["knowledge_sources"]
+        if not isinstance(raw_providers, list) or len(raw_providers) > 100 or not isinstance(raw_sources, list) or len(raw_sources) > 100:
+            raise ValueError("配置数量超过限制")
+        providers = [ProviderConfigRequest.model_validate(item) for item in raw_providers]
+        formats = ContentFormatsRequest.model_validate({"formats": backup["content_formats"]}).formats
+        mcp = McpSearchConfig.model_validate(backup["mcp_search"])
+        deepseek = DeepSeekWebConfig.model_validate(backup["deepseek_web"]) if "deepseek_web" in backup else None
+        if deepseek:
+            DeepSeekWebService.validate(deepseek.model_dump())
+        mcp_parts = urlsplit(mcp.url)
+        if mcp_parts.scheme not in {"http", "https"} or not mcp_parts.hostname:
+            raise ValueError("搜索 MCP 地址无效")
+        protect = backup["security"]["protect_internal_data"]
+        if not isinstance(protect, bool):
+            raise ValueError("内部数据保护设置无效")
+        sources = [(str(item["name"]).strip(), Path(str(item["root_path"])).expanduser()) for item in raw_sources]
+        if any(not name or len(name) > 100 for name, _ in sources):
+            raise ValueError("知识源名称无效")
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(422, f"导入文件校验失败：{exc}") from exc
+    container = get_container()
+    if network:
+        NetworkSettings(container.workspace, container.secrets).save(network.model_dump())
+    for provider in providers:
+        save_provider(provider)
+    container.mcp_search.save(mcp.model_dump())
+    if deepseek:
+        container.deepseek_web.save(deepseek.model_dump())
+    container.workspace.set_setting("content_formats", [item.model_dump() for item in formats])
+    container.workspace.set_setting("protect_internal_data", protect)
+    missing_paths = []
+    for name, path in sources:
+        if path.is_dir():
+            path = path.resolve()
+            container.manifest.upsert_source(source_id_for_path(path), name, str(path))
+        else:
+            missing_paths.append(str(path))
+    active_id = backup.get("active_provider_id")
+    if active_id and container.workspace.get_provider(str(active_id)):
+        container.workspace.set_setting("active_provider_id", str(active_id))
+    return {"message": f"已导入 {len(providers)} 项模型配置及设置；未找到的知识库路径 {len(missing_paths)} 项", "missing_paths": missing_paths}
 
 
 @router.post("/providers/discover-models")

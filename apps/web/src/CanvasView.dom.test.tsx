@@ -1,0 +1,83 @@
+// @vitest-environment jsdom
+import { useState } from "react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import CanvasView from "./CanvasView";
+import { api } from "./api";
+import type { CanvasData, CanvasNode, Project } from "./api";
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
+const project: Project = {
+  id: "history-project", name: "研究项目", idea: "AIDC 液冷", brief: "", status: "active",
+  created_at: "2026-09-23T00:00:00Z", updated_at: "2026-09-23T00:00:00Z",
+};
+const ids = Array.from({ length: 9 }, (_, index) => `research-${index}`);
+const nodes: CanvasNode[] = ids.map((id, index) => ({
+  id, type: "insight", title: `研究发现 ${index + 1}`, body: `**结论 ${index + 1}**`,
+  status: "exploring", locked: false, x: index % 3 * 350, y: Math.floor(index / 3) * 240,
+  width: 310, height: 190, metadata: {}, created_by: "research",
+}));
+const canvas: CanvasData = {
+  id: "board", project_id: project.id, nodes, edges: [],
+  viewport: { x: 0, y: 0, zoom: 1 }, updated_at: "",
+};
+
+describe("真实 React Flow 中的研究历史跳转", () => {
+  it("加载九个预选节点后保持稳定，不触发循环更新", async () => {
+    const selectionUpdates = vi.fn();
+    function HistoryBoard() {
+      const [selectedIds, setSelectedIds] = useState(ids);
+      const [currentCanvas, setCanvas] = useState<CanvasData | null>(null);
+      return <>
+        <button onClick={() => setCanvas(canvas)}>进入白板</button>
+        <CanvasView project={project} canvas={currentCanvas} selectedIds={selectedIds}
+          setSelectedIds={(next) => { selectionUpdates(next); setSelectedIds(next); }}
+          onChange={setCanvas} onRefresh={async () => {}} setStatus={() => {}} />
+      </>;
+    }
+    const view = render(<HistoryBoard />);
+    await act(async () => { view.getByText("进入白板").click(); });
+    await waitFor(() => expect(view.container.querySelectorAll(".flow-card")).toHaveLength(9));
+    expect(view.container.querySelectorAll(".flow-card.selected")).toHaveLength(9);
+    expect(selectionUpdates).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("任务监测可折叠并记忆，折叠时保留任务计数", async () => {
+    localStorage.removeItem("cic.canvas.tasks.collapsed");
+    const poll = vi.spyOn(api, "listMagicJobs").mockResolvedValue([{ job_id: "active-job", project_id: project.id, node_ids: [ids[0]], status: "running", phase: "检索网络资料", progress: 40, detail: "搜索 MCP", created_at: "" }]);
+    const props = { project, canvas, selectedIds: [], setSelectedIds: () => {}, onChange: () => {}, onRefresh: async () => {}, setStatus: () => {} };
+    let view = render(<CanvasView {...props} />);
+    await waitFor(() => expect(view.getByLabelText("AI 任务状态").textContent).toContain("正在生成 1"));
+    fireEvent.click(view.getByRole("button", { name: "折叠任务监测" }));
+    expect(view.queryByText("暂停选中")).toBeNull();
+    expect(view.getByLabelText("AI 任务状态").textContent).toContain("正在生成 1");
+    view.unmount();
+    view = render(<CanvasView {...props} />);
+    expect(view.getByRole("button", { name: "展开任务监测" }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(view.getByRole("button", { name: "展开任务监测" }));
+    expect(view.getByText("暂停选中")).toBeTruthy();
+    view.unmount(); poll.mockRestore(); localStorage.removeItem("cic.canvas.tasks.collapsed");
+  });
+  it("卡片展示完整短摘要，展开后渲染完整 Markdown 正文", async () => {
+    const full = "## 完整分析\n\n| 编号 | 事实 |\n| --- | --- |\n| E1 | 800V DC |\n\n正文末尾的关键限定条件。";
+    const board = { ...canvas, nodes: [{ ...nodes[0], body: full, summary: "浓缩后的关键判断。" }] };
+    const view = render(<CanvasView project={project} canvas={board} selectedIds={[]}
+      setSelectedIds={() => {}} onChange={() => {}} onRefresh={async () => {}} setStatus={() => {}} />);
+    await waitFor(() => expect(view.container.querySelector(".flow-card-summary")?.textContent).toBe("浓缩后的关键判断。"));
+    expect(view.container.querySelector(".flow-card")?.textContent).not.toContain("正文末尾的关键限定条件");
+    fireEvent.click(view.container.querySelector(".flow-card-expand")!);
+    const dialog = view.getByRole("dialog", { name: /完整内容/ });
+    expect(within(dialog).getByText("正文末尾的关键限定条件。")).toBeTruthy();
+    expect(within(dialog).getByRole("table")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "收起全文" }));
+    expect(view.queryByRole("dialog")).toBeNull();
+    view.unmount();
+  });
+});

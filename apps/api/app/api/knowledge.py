@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
+import tempfile
+import os
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi import Response
 
 from app.container import get_container
 from app.schemas.knowledge import (
@@ -15,13 +22,18 @@ from app.schemas.knowledge import (
     SearchResponse,
 )
 from app.services.knowledge.indexer import source_id_for_path
+from app.services.knowledge.originals import WikiOriginalReader
+from pydantic import BaseModel, Field
+
+from app.services.knowledge.source_path import clean_local_path, repair_source_path
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
 
 @router.get("/knowledge-sources", response_model=list[KnowledgeSourceResponse])
 def list_sources() -> list[KnowledgeSourceResponse]:
-    sources = get_container().manifest.list_sources()
+    manifest = get_container().manifest
+    sources = [repair_source_path(manifest, item) for item in manifest.list_sources()]
     return [
         KnowledgeSourceResponse(
             id=item["id"],
@@ -36,9 +48,13 @@ def list_sources() -> list[KnowledgeSourceResponse]:
 
 @router.post("/knowledge-sources", response_model=KnowledgeSourceResponse)
 def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceResponse:
-    path = Path(request.root_path).expanduser().resolve()
+    cleaned = clean_local_path(request.root_path)
+    path = Path(cleaned).expanduser()
+    if not cleaned or not path.is_absolute():
+        raise HTTPException(422, "请填写完整的本地知识库目录，或点击“浏览文件夹”选择")
+    path = path.resolve()
     if not path.is_dir():
-        raise HTTPException(422, "root_path must be an existing local directory")
+        raise HTTPException(422, f"知识库目录不存在或无法访问：{path}。请检查路径，或点击“浏览文件夹”选择目录")
     source_id = source_id_for_path(path)
     get_container().manifest.upsert_source(source_id, request.name, str(path))
     return KnowledgeSourceResponse(
@@ -50,34 +66,127 @@ def create_source(request: CreateKnowledgeSourceRequest) -> KnowledgeSourceRespo
     )
 
 
-@router.post("/knowledge-sources/{source_id}/refresh")
-async def refresh_source(source_id: str) -> dict:
+@router.delete("/knowledge-sources/{source_id}", status_code=204)
+def delete_source(source_id: str) -> Response:
     source = get_container().manifest.get_source(source_id)
     if not source:
-        raise HTTPException(404, "Knowledge source not found")
+        raise HTTPException(404, "知识源不存在")
+    document_ids = get_container().manifest.delete_source(source_id)
+    for document_id in document_ids:
+        get_container().chunk_store.delete_document(document_id)
+    return Response(status_code=204)
+
+
+@router.post("/system/select-folder")
+def select_folder() -> dict[str, str]:
+    """Open a native Windows folder picker from the local portable application."""
+    if os.name != "nt":
+        raise HTTPException(501, "文件夹浏览仅在 Windows 本地版中可用")
+    return _pick_windows_folder()
+
+
+def _pick_windows_folder() -> dict[str, str]:
+    # Keep dialog output in a dedicated file: console warnings can never become a path.
+    script = (
+        "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; "
+        "$d=New-Object System.Windows.Forms.FolderBrowserDialog; "
+        "$d.Description='选择本地知识库文件夹'; $d.ShowNewFolderButton=$false; "
+        "$selected=''; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$selected=$d.SelectedPath}; "
+        "$result=@{path=$selected}|ConvertTo-Json -Compress; "
+        "[IO.File]::WriteAllText($env:CIC_FOLDER_PICKER_RESULT,$result,(New-Object Text.UTF8Encoding($false))); $d.Dispose()"
+    )
     try:
-        report = await get_container().indexer.refresh(source["name"], Path(source["root_path"]))
+        with tempfile.TemporaryDirectory(prefix="cic-folder-") as directory:
+            result_path = Path(directory) / "selection.json"
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
+                env={**os.environ, "CIC_FOLDER_PICKER_RESULT": str(result_path)},
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+            )
+            if completed.returncode != 0:
+                raise HTTPException(500, completed.stderr.strip() or "无法打开文件夹选择器")
+            if not result_path.is_file():
+                raise HTTPException(500, "文件夹选择器未返回有效结果，请重试或手动粘贴目录")
+            result = json.loads(result_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+                raise HTTPException(500, "文件夹选择器返回格式错误")
+            return {"path": clean_local_path(result["path"])}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(500, f"无法读取文件夹选择结果：{exc}") from exc
+
+
+@router.post("/knowledge-sources/{source_id}/refresh")
+async def refresh_source(source_id: str) -> dict:
+    container = get_container()
+    source = container.manifest.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "Knowledge source not found")
+    source = repair_source_path(container.manifest, source)
+    context_status = await asyncio.to_thread(container.agent_context.prepare_refresh, source_id)
+    try:
+        report = await container.indexer.refresh(source["name"], Path(source["root_path"]))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return report.to_dict()
+    return {**report.to_dict(), "agent_context": context_status}
+
+
+@router.post("/knowledge-sources/{source_id}/refresh/start")
+def start_refresh(source_id: str) -> dict:
+    try:
+        return get_container().refresh_jobs.start(source_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/knowledge-sources/{source_id}/refresh/latest")
+def latest_refresh(source_id: str) -> dict | None:
+    if not get_container().manifest.get_source(source_id):
+        raise HTTPException(404, "知识源不存在")
+    return get_container().refresh_jobs.latest_for_source(source_id)
+
+
+@router.get("/knowledge-sources/refresh/jobs/{job_id}")
+def get_refresh_job(job_id: str) -> dict:
+    job = get_container().refresh_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "刷新任务不存在或应用已重启")
+    return job
 
 
 @router.post("/knowledge/search", response_model=SearchResponse)
 def search(request: SearchRequest) -> SearchResponse:
     if not get_container().manifest.get_source(request.source_id):
         raise HTTPException(404, "Knowledge source not found")
-    hits = get_container().retrieval.search(
-        request.source_id,
-        request.query,
-        request.top_k,
-        lexical_weight=request.lexical_weight,
-        semantic_weight=request.semantic_weight,
-        wikilink_enabled=request.wikilink_enabled,
-        wikilink_weight=request.wikilink_weight,
-        max_per_document=request.max_per_document,
-    )
+    reasoning = get_container().wiki_reasoning
+    try:
+        hits, planning_trace = reasoning.gather(
+            request.source_id,
+            request.query,
+            top_k=request.top_k,
+            search_options={
+                "lexical_weight": request.lexical_weight,
+                "semantic_weight": request.semantic_weight,
+                "wikilink_enabled": request.wikilink_enabled,
+                "wikilink_weight": request.wikilink_weight,
+                "max_per_document": request.max_per_document,
+            },
+        )
+        answer, hits, trace = reasoning.answer(
+            request.query, hits, top_k=request.top_k,
+            agent_context=planning_trace.get("agent_context"),
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, f"模型尚未获准读取内部 Wiki：{exc}。请在设置中确认数据保护选项") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"模型检索失败：{exc}") from exc
     return SearchResponse(
         query=request.query,
+        answer=answer,
+        provider_name=trace["provider"],
+        model_name=trace["model"],
         hits=[SearchHitResponse(**{
             "chunk_id": hit.chunk_id,
             "document_id": hit.document_id,
@@ -94,6 +203,21 @@ def search(request: SearchRequest) -> SearchResponse:
             "debug": hit.debug,
         }) for hit in hits],
     )
+
+
+class WikiOriginalRequest(BaseModel):
+    chunk_id: str = Field(default="", max_length=200)
+    source_id: str | None = Field(default=None, max_length=200)
+    path: str = Field(default="", max_length=4096)
+
+
+@router.post("/knowledge/original")
+def wiki_original(request: WikiOriginalRequest) -> dict:
+    container = get_container()
+    try:
+        return WikiOriginalReader(container.manifest, container.chunk_store).read([request.model_dump()])[0]
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/knowledge/chunks/{chunk_id}", response_model=ChunkDetailResponse)

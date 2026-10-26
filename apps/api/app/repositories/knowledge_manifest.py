@@ -81,6 +81,16 @@ class KnowledgeManifestRepository:
         with self._connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM knowledge_sources ORDER BY created_at")]
 
+    def delete_source(self, source_id: str) -> list[str]:
+        """Remove a source manifest and return its indexed document ids."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT document_id FROM knowledge_documents WHERE source_id = ?", (source_id,)
+            ).fetchall()
+            db.execute("DELETE FROM knowledge_documents WHERE source_id = ?", (source_id,))
+            db.execute("DELETE FROM knowledge_sources WHERE id = ?", (source_id,))
+        return [str(row["document_id"]) for row in rows]
+
     def documents_for_source(self, source_id: str) -> dict[str, dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
@@ -139,4 +149,3 @@ class KnowledgeManifestRepository:
                 (source_id, relative_path),
             )
         return str(row["document_id"]) if row else None
-

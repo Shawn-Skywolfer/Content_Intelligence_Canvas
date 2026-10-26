@@ -5,18 +5,31 @@ import os
 import re
 import ssl
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
 
 import httpx
+from app.services.ai.cancellation import check_cancelled, current_token
 
 from app.repositories.workspace import WorkspaceRepository
 from app.services.ai.secret_store import LocalSecretStore
 
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_task_provider: ContextVar[dict[str, Any] | None] = ContextVar("task_provider", default=None)
+
+
+@contextmanager
+def provider_scope(provider: dict[str, Any] | None):
+    marker = _task_provider.set(provider)
+    try:
+        yield
+    finally:
+        _task_provider.reset(marker)
 
 
 class ProviderConnectionError(RuntimeError):
@@ -150,11 +163,9 @@ class AIProviderGateway:
         provider: dict[str, Any],
     ) -> tuple[str, str | None, str | None, str | None]:
         extra = provider.get("extra") if isinstance(provider.get("extra"), dict) else {}
-        mode = str(extra.get("network_mode") or "auto")
-        if mode not in {"auto", "direct", "system_proxy", "custom_proxy"}:
-            mode = "auto"
-        proxy_password = extra.get("proxy_password") or self.secrets.get(extra.get("proxy_password_ref"))
-        return mode, extra.get("proxy_url"), extra.get("proxy_username"), proxy_password
+        from app.services.network_settings import NetworkSettings
+        resolved = NetworkSettings(self.repository, self.secrets).resolve(extra)
+        return tuple(resolved[key] for key in ("network_mode", "proxy_url", "proxy_username", "proxy_password"))
 
     @staticmethod
     def _ssl_verification() -> ssl.SSLContext | bool:
@@ -183,11 +194,18 @@ class AIProviderGateway:
         proxy_url: str | None = None,
         proxy_username: str | None = None,
         proxy_password: str | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> httpx.Response:
         errors: list[str] = []
+        token = current_token()
         routes = cls._network_routes(url, network_mode, proxy_url, proxy_username, proxy_password)
         request_timeout = httpx.Timeout(float(timeout), connect=min(float(timeout), 12.0))
         for index, (label, proxy) in enumerate(routes):
+            check_cancelled()
+            if token and token.on_network:
+                token.on_network(f"正在通过{label}连接模型接口：{url}")
+            if progress:
+                progress(f"正在通过{label}连接并等待模型响应（第 {index + 1}/{len(routes)} 条线路）")
             try:
                 with httpx.Client(
                     trust_env=False,
@@ -196,14 +214,27 @@ class AIProviderGateway:
                     follow_redirects=True,
                     verify=cls._ssl_verification(),
                 ) as client:
-                    response = client.request(method, url, headers=headers, json=json_payload)
+                    if token:
+                        token.bind(client)
+                    try:
+                        response = client.request(method, url, headers=headers, json=json_payload)
+                    finally:
+                        if token:
+                            token.unbind(client)
+                check_cancelled()
+                if token and token.on_network:
+                    token.on_network(f"{label}已返回 HTTP {response.status_code}")
+                if progress:
+                    progress(f"收到 HTTP {response.status_code}，正在解析模型结果")
                 if response.status_code in {407, 502, 503, 504} and index + 1 < len(routes):
                     errors.append(f"{label}：HTTP {response.status_code}")
                     continue
                 response.extensions["cic_network_route"] = label
                 return response
             except (httpx.TransportError, ValueError, OSError) as exc:
+                check_cancelled()
                 errors.append(f"{label}：{cls._connection_error(exc)}")
+        check_cancelled()
         detail = "；".join(errors) or "没有可用连接方式"
         raise ProviderConnectionError(
             f"自动网络连接失败：{detail}。请在模型配置中切换网络连接方式或填写代理地址"
@@ -272,41 +303,61 @@ class AIProviderGateway:
         except Exception as exc:
             raise RuntimeError(f"获取模型失败：{exc}") from exc
 
-    def health_check(self, provider: dict[str, Any]) -> dict[str, Any]:
+    def health_check(self, provider: dict[str, Any], progress: Callable[[str], None] | None = None) -> dict[str, Any]:
         started = time.perf_counter()
+        extra = provider.get("extra") or {}
+        test_model = str(extra.get("test_model") or provider["model_name"])
+        test_timeout = max(5, min(30, int(extra.get("test_timeout_seconds") or 15)))
+        test_tokens = max(64, min(512, int(extra.get("test_max_tokens") or 256)))
+        endpoint = self._chat_url(provider["base_url"])
         try:
             network_mode, proxy_url, proxy_username, proxy_password = self._network_settings(provider)
+            if progress:
+                progress(f"已准备测试文本“请只回复 OK”；模型 {test_model}，每条线路最多等待 {test_timeout} 秒")
             response = self._request(
                 "POST",
-                self._chat_url(provider["base_url"]),
+                endpoint,
                 headers=self._headers(provider),
                 json_payload={
-                    "model": provider["model_name"],
-                    "messages": [{"role": "user", "content": "只回复 OK"}],
-                    "temperature": 0,
-                    "max_tokens": 8,
+                    "model": test_model,
+                    "messages": [{"role": "user", "content": "请只回复 OK"}],
+                    "max_tokens": test_tokens,
+                    **self._reasoning_payload(provider),
                 },
-                timeout=provider.get("timeout_seconds", 60),
+                timeout=test_timeout,
                 network_mode=network_mode,
                 proxy_url=proxy_url,
                 proxy_username=proxy_username,
                 proxy_password=proxy_password,
+                progress=progress,
             )
             latency = int((time.perf_counter() - started) * 1000)
             response.raise_for_status()
             payload = response.json()
             content = self._extract_content(payload)
+            choice = (payload.get("choices") or [{}])[0] if isinstance(payload, dict) else {}
+            message = choice.get("message") or {}
+            finish_reason = choice.get("finish_reason")
+            reasoning_only = bool(message.get("reasoning_content")) and not content
+            usage = payload.get("usage") if isinstance(payload, dict) else None
+            detail = "模型已返回文本" if content else ("输出额度耗尽，只有思考内容；可提高测试输出 token 或换用非推理测试模型" if reasoning_only or finish_reason == "length" else "接口返回 HTTP 200，但未返回文本；请核对模型 ID 与响应格式")
             return {
                 "reachable": True,
                 "authenticated": True,
                 "capability_test": bool(content),
+                "status": "success" if content else "failed",
+                "http_status": response.status_code,
+                "route": self._route_label(response),
+                "tested_model": test_model,
+                "endpoint": endpoint,
                 "latency_ms": latency,
+                "finish_reason": finish_reason,
+                "usage": usage,
+                "response_excerpt": content[:200] if content else "",
+                "sent_prompt": "请只回复 OK",
+                "test_max_tokens": test_tokens,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
-                "message": (
-                    f"连接成功（{self._route_label(response)}）"
-                    if content
-                    else f"接口可达，但没有返回文本内容（{self._route_label(response)}）"
-                ),
+                "message": detail,
             }
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
@@ -314,6 +365,11 @@ class AIProviderGateway:
                 "reachable": True,
                 "authenticated": status not in {401, 403},
                 "capability_test": False,
+                "status": "failed",
+                "http_status": status,
+                "route": self._route_label(exc.response),
+                "tested_model": test_model,
+                "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "message": self._http_error_message("模型调用失败", exc.response),
@@ -323,10 +379,49 @@ class AIProviderGateway:
                 "reachable": False,
                 "authenticated": False,
                 "capability_test": False,
+                "status": "failed",
+                "http_status": None,
+                "tested_model": test_model,
+                "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "message": f"连接失败：{exc}",
             }
+
+    @staticmethod
+    def _reasoning_payload(provider: dict[str, Any]) -> dict[str, Any]:
+        extra = provider.get("extra") or {}
+        mode = extra.get("reasoning_mode", "off")
+        if mode == "off" and urlsplit(str(provider.get("base_url") or "")).hostname == "api.deepseek.com":
+            # DeepSeek enables thinking by default; omitting the field does not disable it.
+            return {"thinking": {"type": "disabled"}}
+        if mode == "effort":
+            effort = extra.get("reasoning_effort", "medium")
+            if effort in {"low", "medium", "high"}:
+                return {"reasoning_effort": effort}
+        if mode == "thinking":
+            return {"thinking": {"type": "enabled"}}
+        return {}
+
+    def query_quota(self, provider: dict[str, Any]) -> dict[str, Any]:
+        extra = provider.get("extra") or {}
+        url = str(extra.get("quota_url") or "").strip()
+        field = str(extra.get("quota_json_path") or "").strip()
+        if not url.startswith(("https://", "http://")) or not field:
+            raise ValueError("请先配置供应商的额度查询地址及 JSON 字段路径")
+        mode, proxy_url, username, password = self._network_settings(provider)
+        response = self._request("GET", url, headers=self._headers(provider), timeout=10,
+                                 network_mode=mode, proxy_url=proxy_url, proxy_username=username, proxy_password=password)
+        if response.status_code >= 400:
+            raise RuntimeError(self._http_error_message("额度查询失败", response))
+        value: Any = response.json()
+        for part in field.split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise ValueError(f"额度响应中没有字段 {field}，请检查 JSON 路径")
+            value = value[part]
+        if not isinstance(value, (int, float, str, bool)):
+            raise ValueError("额度字段应为数字或文本")
+        return {"value": value, "unit": str(extra.get("quota_unit") or ""), "route": self._route_label(response)}
 
     def complete(
         self,
@@ -335,25 +430,24 @@ class AIProviderGateway:
         *,
         provider: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, str]]:
-        provider = provider or self.repository.active_provider()
+        provider = provider or _task_provider.get() or self.repository.active_provider()
         if not provider:
             raise RuntimeError("尚未配置可用的大模型")
         if self.repository.get_setting("protect_internal_data", True) and provider.get("is_external"):
             raise PermissionError("数据保护已开启，不能把内部知识发送给外部模型")
         network_mode, proxy_url, proxy_username, proxy_password = self._network_settings(provider)
+        payload = {
+            "model": provider["model_name"],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": provider.get("temperature", 0.3),
+            "max_tokens": provider.get("max_tokens", 3000),
+            **self._reasoning_payload(provider),
+        }
         response = self._request(
             "POST",
             self._chat_url(provider["base_url"]),
             headers=self._headers(provider),
-            json_payload={
-                "model": provider["model_name"],
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": provider.get("temperature", 0.3),
-                "max_tokens": provider.get("max_tokens", 3000),
-            },
+            json_payload=payload,
             timeout=provider.get("timeout_seconds", 60),
             network_mode=network_mode,
             proxy_url=proxy_url,
@@ -361,8 +455,12 @@ class AIProviderGateway:
             proxy_password=proxy_password,
         )
         response.raise_for_status()
-        text = self._extract_content(response.json())
+        response_payload = response.json()
+        text = self._extract_content(response_payload)
         if not text:
+            choice = (response_payload.get("choices") or [{}])[0] if isinstance(response_payload, dict) else {}
+            if choice.get("finish_reason") == "length" or (choice.get("message") or {}).get("reasoning_content"):
+                raise RuntimeError("模型输出额度耗尽，尚未返回正文。请提高最大输出 token，或关闭思考模式后重试")
             raise RuntimeError("大模型返回了空内容")
         return text, {"provider": provider["name"], "model": provider["model_name"]}
 
