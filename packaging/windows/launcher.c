@@ -180,7 +180,7 @@ static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar
     if (file_exists(ready) && runtime_complete(runtime)) { log_event(L"复用已校验运行环境"); return 1; }
     progress(L"内容智能工作台：正在释放并校验本地运行环境\n首次启动可能需要一至数分钟，请稍候…");
     wchar_t zip[PATH_CAP], stage[PATH_CAP], old[PATH_CAP], command[32768], system[PATH_CAP];
-    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.27.zip", root);
+    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.28.zip", root);
     swprintf(stage, PATH_CAP, L"%ls.extracting-%lu-%llu", runtime, GetCurrentProcessId(), GetTickCount64());
     if (!write_payload(self, zip)) {
         wchar_t message[400]; swprintf(message, 400, L"读取安装数据失败。阶段 %d，系统错误 %lu。请确认 EXE 下载完整。", payload_stage, payload_error); fail(message); return 0;
@@ -206,7 +206,7 @@ static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar
     if (!MoveFileW(stage, runtime)) { fail(L"无法提交完整运行环境，请检查目录权限。"); return 0; }
     HANDLE marker = CreateFileW(ready, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (marker == INVALID_HANDLE_VALUE) { fail(L"无法保存运行环境校验标记。"); return 0; }
-    DWORD written; WriteFile(marker, "v0.3.27", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
+    DWORD written; WriteFile(marker, "v0.3.28", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
     DeleteFileW(zip); log_event(L"运行环境完整释放并提交"); return 1;
 }
 
@@ -256,7 +256,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     if (!separator) return 1;
     *separator = L'\0'; swprintf(portable, PATH_CAP, L"%ls\\ContentIntelligenceCanvas_Data", self); *separator = L'\\';
     SetEnvironmentVariableW(L"CIC_PORTABLE_HOME", portable);
-    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.27", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
+    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.28", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
     progress(L"内容智能工作台：正在准备启动…");
     HANDLE mutex = CreateMutexW(NULL, FALSE, L"Local\\ContentIntelligenceCanvas.Launcher");
     if (!mutex) { fail(L"无法创建启动锁。"); return 2; }

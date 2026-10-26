@@ -5,6 +5,10 @@ import json
 import time
 import uuid
 from threading import Event, Thread, Lock
+from contextvars import copy_context
+from queue import Queue, Empty
+import sys
+import traceback
 from typing import Any
 
 import httpx
@@ -16,22 +20,25 @@ class StreamUnsupported(RuntimeError):
     pass
 
 
-def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: dict[str, Any],
+class ModelStreamTimeout(RuntimeError):
+    pass
+
+
+def _receive_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: dict[str, Any],
                    timeout: float, network_mode: str, proxy_url: str | None,
-                   proxy_username: str | None, proxy_password: str | None) -> dict[str, Any]:
+                   proxy_username: str | None, proxy_password: str | None,
+                   activity: dict[str, Any], emit: Any, stop: Event) -> dict[str, Any]:
     token = current_token()
     started = time.monotonic()
     call_id = uuid.uuid4().hex[:12]
     state: dict[str, Any] = {"call_id": call_id, "stage": "connecting", "model": payload["model"],
                              "max_tokens": payload.get("max_tokens"), "content_chars": 0,
                              "reasoning_chars": 0, "chunks": 0}
-    stop = Event()
     last_emit = 0.0
     pending_reasoning: list[str] = []
     telemetry_lock = Lock()
-    last_content = time.monotonic()
     parts: list[str] = []
-    active_response: httpx.Response | None = None
+    activity["parts"] = parts
 
     def report(detail: str, *, force: bool = True, level: str = "info") -> None:
         nonlocal last_emit
@@ -46,40 +53,24 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                 metrics["provider_reasoning"] = "".join(pending_reasoning)
                 metrics["reasoning_source"] = "供应商 API 的 reasoning_content / reasoning 字段"
                 pending_reasoning.clear()
-        if token and token.on_telemetry and not token.event.is_set():
-            token.on_telemetry(detail, metrics, level)
+        emit(detail, metrics, level)
 
     def heartbeat() -> None:
         while not stop.wait(5):
             if token and token.event.is_set():
                 return
             elapsed = int(time.monotonic() - started)
+            idle = int(time.monotonic() - activity["last_content"])
             label = {"connecting": "连接接口", "waiting": "等待模型首段响应", "reasoning": "模型推理中", "output": "接收模型正文"}.get(state["stage"], "等待模型响应")
             try:
-                report(f"{label} · 已用 {elapsed} 秒 · 已收到正文 {state['content_chars']} 字符、推理 {state['reasoning_chars']} 字符")
+                report(f"{label} · 已用 {elapsed} 秒 · 连续 {idle} 秒无新内容 · 已收到正文 {state['content_chars']} 字符、推理 {state['reasoning_chars']} 字符")
             except RuntimeError:
-                return
-
-    def watchdog() -> None:
-        while not stop.wait(1):
-            if token and token.event.is_set():
-                return
-            idle = time.monotonic() - last_content
-            if idle >= max(5, timeout):
-                message = f"模型连续 {int(idle)} 秒未返回新的正文或推理内容，已中止等待。请检查模型或代理连接后重试；已接收草稿已保留"
-                if token:
-                    token.failure = message
-                    token.partial_output = "".join(parts)
-                    client = active_response or token.client
-                    if client:
-                        Thread(target=client.close, daemon=True, name="close-stalled-model").start()
                 return
 
     errors: list[str] = []
     try:
         routes = gateway._network_routes(url, network_mode, proxy_url, proxy_username, proxy_password)
         Thread(target=heartbeat, daemon=True, name=f"ai-progress-{call_id}").start()
-        Thread(target=watchdog, daemon=True, name=f"ai-watchdog-{call_id}").start()
         for index, (route, proxy) in enumerate(routes):
             check_cancelled()
             state.update(route=route, stage="connecting", http_status=None)
@@ -92,7 +83,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                         token.bind(client)
                     try:
                         with client.stream("POST", url, headers=headers, json={**payload, "stream": True}) as response:
-                            active_response = response
+                            activity["response"] = response
                             state.update(http_status=response.status_code, stage="waiting")
                             report(f"{route}已返回 HTTP {response.status_code} · 正在等待模型首段响应")
                             if response.status_code >= 400:
@@ -118,6 +109,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                         state["reasoning_chars"] = len(reasoning)
                                 state.update(stage="complete", content_chars=len(text), usage=data.get("usage"))
                                 report("供应商返回非流式结果，已接收完整响应")
+                                activity["result"] = data
                                 return data
                             parts.clear()
                             finish: str | None = None
@@ -125,7 +117,10 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                             event_lines: list[str] = []
 
                             def consume(raw: str) -> None:
-                                nonlocal finish, done, received, last_content
+                                nonlocal finish, done, received
+                                check_cancelled()
+                                if stop.is_set():
+                                    raise RuntimeError("本次模型接收已停止")
                                 if raw == "[DONE]":
                                     done = True
                                     return
@@ -146,7 +141,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                                 content = delta.get("content")
                                 if isinstance(reasoning, str) and reasoning:
-                                    last_content = time.monotonic()
+                                    activity["last_content"] = time.monotonic()
                                     received = True
                                     changed = state["stage"] != "reasoning"
                                     with telemetry_lock:
@@ -154,11 +149,11 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                         state.update(stage="reasoning", reasoning_chars=state["reasoning_chars"] + len(reasoning))
                                     report(f"模型正在推理 · 已收到 {state['reasoning_chars']} 个推理字符", force=changed)
                                 if isinstance(content, str) and content:
-                                    last_content = time.monotonic()
+                                    activity["last_content"] = time.monotonic()
                                     received = True
                                     changed = state["stage"] != "output"
                                     parts.append(content)
-                                    if token and time.monotonic() - last_emit >= 1:
+                                    if token and (changed or time.monotonic() - last_emit >= 1):
                                         token.partial_output = "".join(parts)
                                     state.update(stage="output", content_chars=state["content_chars"] + len(content))
                                     state["output_preview"] = (str(state.get("output_preview", "")) + content)[-240:]
@@ -179,11 +174,13 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 consume("\n".join(event_lines))
                             check_cancelled()
                             if not finish and not done:
-                                raise RuntimeError("模型响应流意外中断，未收到完成标记；请重试。未保存不完整结果")
+                                raise RuntimeError("模型响应流意外中断，未收到完成标记；已接收草稿已保留，请重试")
                             state.update(stage="complete", finish_reason=finish)
                             report(f"模型响应接收完成 · 正文 {state['content_chars']} 字符 · 结束原因 {finish or 'DONE'}")
-                            return {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}],
-                                    "usage": state.get("usage"), "reasoning_chars": state["reasoning_chars"]}
+                            result = {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}],
+                                      "usage": state.get("usage"), "reasoning_chars": state["reasoning_chars"]}
+                            activity["result"] = result
+                            return result
                     finally:
                         if token:
                             token.unbind(client)
@@ -191,7 +188,8 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                 check_cancelled()
                 message = gateway._connection_error(exc)
                 if received:
-                    raise RuntimeError(f"模型生成中断：{message}。未保存不完整结果，请重试") from exc
+                    error_type = ModelStreamTimeout if isinstance(exc, httpx.ReadTimeout) else RuntimeError
+                    raise error_type(f"模型生成中断：{message}。已接收草稿已保留，请重试") from exc
                 errors.append(f"{route}：{message}")
                 report(f"{route}失败：{message}" + ("，尝试下一条线路" if index + 1 < len(routes) else ""), level="warning")
         raise RuntimeError(f"模型网络连接失败：{'；'.join(errors)}。请检查全局网络、模型独立代理和超时设置")
@@ -200,5 +198,105 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
         state["stage"] = "error"
         report(str(exc), level="warning" if isinstance(exc, StreamUnsupported) else "error")
         raise
+
+
+def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: dict[str, Any],
+                   timeout: float, network_mode: str, proxy_url: str | None,
+                   proxy_username: str | None, proxy_password: str | None) -> dict[str, Any]:
+    """Keep socket reads and diagnostic persistence off the supervising task thread.
+
+    Closing a Windows TLS stream is best effort: it must never be the mechanism
+    that the task depends on to regain control after a stalled read.
+    """
+    token = current_token()
+    stop = Event()
+    outcome: Queue = Queue(maxsize=1)
+    logs: Queue = Queue()
+    drained = Event()
+    activity: dict[str, Any] = {"last_content": time.monotonic(), "parts": []}
+    idle_limit = max(5, min(float(timeout), 60))
+    started = time.monotonic()
+
+    def emit(detail: str, metrics: dict[str, Any], level: str) -> None:
+        if not stop.is_set():
+            logs.put((detail, metrics, level))
+
+    def persist_logs() -> None:
+        try:
+            while True:
+                item = logs.get()
+                if item is None:
+                    return
+                if stop.is_set():
+                    return
+                if token and token.on_telemetry and not token.event.is_set():
+                    try:
+                        token.on_telemetry(*item)
+                    except Exception:
+                        # Diagnostic storage failure cannot block receiving the answer.
+                        continue
+        finally:
+            drained.set()
+
+    def receive() -> None:
+        try:
+            result = _receive_stream(gateway, url, headers=headers, payload=payload, timeout=timeout,
+                                     network_mode=network_mode, proxy_url=proxy_url,
+                                     proxy_username=proxy_username, proxy_password=proxy_password,
+                                     activity=activity, emit=emit, stop=stop)
+            outcome.put((True, result))
+        except BaseException as exc:
+            outcome.put((False, exc))
+        finally:
+            logs.put(None)
+
+    context = copy_context()
+    reader = Thread(target=lambda: context.run(receive), name="ai-socket-reader", daemon=True)
+    writer = Thread(target=persist_logs, name="ai-log-writer", daemon=True)
+    writer.start()
+    reader.start()
+    try:
+        while True:
+            check_cancelled()
+            try:
+                ok, value = outcome.get(timeout=0.1)
+            except Empty:
+                if "result" in activity:
+                    # The protocol completed; a hung TLS teardown must not lose the answer.
+                    drained.wait(1)
+                    check_cancelled()
+                    return activity["result"]
+                idle = time.monotonic() - activity["last_content"]
+                if idle < idle_limit and time.monotonic() - started < 1800:
+                    continue
+                # Include code locations, never frame locals or request contents.
+                frames = sys._current_frames()
+                locations = []
+                for thread in (reader, writer):
+                    frame = frames.get(thread.ident)
+                    stack = traceback.extract_stack(frame)[-4:] if frame else []
+                    locations.append(thread.name + ": " + " > ".join(
+                        f"{entry.filename.rsplit('/', 1)[-1]}:{entry.lineno}({entry.name})" for entry in stack))
+                reason = (f"模型连续 {int(idle)} 秒未返回新的正文或推理内容" if idle >= idle_limit
+                          else "本次模型调用已达到 30 分钟总时限")
+                message = reason + "，已停止等待；已接收草稿已保留。线程诊断：" + "；".join(locations)
+                raise ModelStreamTimeout(message)
+            # Normally flush every diagnostic, but never join a blocked logger indefinitely.
+            drained.wait(1)
+            check_cancelled()
+            if ok:
+                return value
+            raise value
     finally:
         stop.set()
+        if token:
+            token.partial_output = "".join(activity["parts"])
+        logs.put(None)
+        response = activity.get("response")
+        if reader.is_alive() and response is not None:
+            def close() -> None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+            Thread(target=close, name="close-stalled-model", daemon=True).start()
