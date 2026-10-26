@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,4 +26,4 @@ app.include_router(settings_router)
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "phase": "v0.3.29-portable"}
+    return {"status": "ok", "phase": "v0.3.29-server.1" if os.getenv("CIC_SERVER_MODE") == "1" else "v0.3.29-portable"}

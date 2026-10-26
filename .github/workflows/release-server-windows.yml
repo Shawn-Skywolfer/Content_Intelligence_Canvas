@@ -1,0 +1,155 @@
+name: 发布 Windows 独立服务器版
+
+on:
+  push:
+    branches: [release/server-v0.3.29]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-server-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  server-release:
+    runs-on: windows-latest
+    env:
+      PYTHON_VERSION: "3.12.10"
+      RELEASE_TAG: "v0.3.29-server.1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: 构建中文前端
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run test
+          npm run build
+
+      - name: 准备 Windows Python 运行时和后端依赖
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "portable-runtime"
+          $runtime = Join-Path $stage "runtime"
+          New-Item -ItemType Directory -Force -Path $runtime, (Join-Path $runtime "Lib\site-packages"), (Join-Path $runtime "apps\api"), (Join-Path $runtime "web_dist"), (Join-Path $runtime "seed\data"), (Join-Path $runtime "seed\wiki") | Out-Null
+
+          $archive = Join-Path $env:RUNNER_TEMP "python-embed.zip"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $runtime -Force
+          @("python312.zip", ".", "Lib", "Lib\site-packages", "import site") | Set-Content -LiteralPath (Join-Path $runtime "python312._pth") -Encoding ascii
+
+          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile (Join-Path $env:RUNNER_TEMP "get-pip.py")
+          & (Join-Path $runtime "python.exe") (Join-Path $env:RUNNER_TEMP "get-pip.py") --disable-pip-version-check
+          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target (Join-Path $runtime "Lib\site-packages") "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2.10,<3" "lancedb>=0.20,<1" "numpy>=2,<3" "httpx>=0.28,<1" "psutil>=7,<8" "truststore>=0.10,<1"
+
+          Copy-Item -Recurse -Force apps/api/app (Join-Path $runtime "apps\api\app")
+          Copy-Item -Force apps/api/standalone_entry.py $runtime
+          Copy-Item -Recurse -Force apps/web/dist/* (Join-Path $runtime "web_dist")
+          & (Join-Path $runtime "python.exe") -c "import sys; sys.path.insert(0, r'$runtime\apps\api'); from pathlib import Path; from app.repositories.workspace import WorkspaceRepository; WorkspaceRepository(Path(r'$runtime\seed\data\app.db'))"
+
+      - name: 验证模型驱动研究及后端 API
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtime = Join-Path $env:GITHUB_WORKSPACE "portable-runtime\runtime"
+          $sitePackages = Join-Path $runtime "Lib\site-packages"
+          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target $sitePackages "pytest>=8,<10"
+          if ($LASTEXITCODE -ne 0) { throw "测试依赖安装失败" }
+          Push-Location apps/api
+          try {
+            & (Join-Path $runtime "python.exe") -m pytest -q tests
+            if ($LASTEXITCODE -ne 0) { throw "后端测试失败，不允许发布" }
+          } finally { Pop-Location }
+
+      - name: 校验旧项目 SQLite 白板恢复
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE "apps\api"
+          python apps/api/tests/test_legacy_canvas_sqlite.py
+          if ($LASTEXITCODE -ne 0) { throw "旧项目白板恢复测试失败" }
+
+      - name: 编译服务器入口
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          $command = "`"$vcvars`" && cl /nologo /O2 /MT /utf-8 /DUNICODE /D_UNICODE packaging\server\launcher.c /Fe:server-launcher.exe /link /SUBSYSTEM:CONSOLE"
+          cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw '服务器入口编译失败' }
+
+      - name: 打包独立 Windows ZIP
+        shell: pwsh
+        run: |
+          python scripts/build_windows_server.py portable-runtime/runtime server-launcher.exe WinOs_ContentIntelligenceWorkbench_v0.3.29-server.1.zip
+          if ($LASTEXITCODE -ne 0) { throw '服务器打包失败' }
+          Get-FileHash WinOs_ContentIntelligenceWorkbench_v0.3.29-server.1.zip -Algorithm SHA256 | Format-List
+
+      - name: 验证 ZIP 独立启动、登录和网页 API
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP "服务器 O'Brien 独立部署"
+          Expand-Archive -LiteralPath WinOs_ContentIntelligenceWorkbench_v0.3.29-server.1.zip -DestinationPath $root
+          $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          $probe.Start(); $port = $probe.LocalEndpoint.Port; $probe.Stop()
+          $env:PORT = [string]$port
+          $env:CIC_SERVER_HOST = '127.0.0.1'
+          $env:CIC_SERVER_USERNAME = 'admin'
+          $env:CIC_SERVER_PASSWORD = 'release-smoke-password'
+          $env:CIC_DATA_DIR = Join-Path $root 'persistent-data'
+          $base = "http://127.0.0.1:$port"
+          $auth = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('admin:release-smoke-password'))
+          $headers = @{Authorization=$auth}
+          $process = Start-Process -FilePath (Join-Path $root 'WinOs_ContentIntelligenceWorkbench.exe') -WorkingDirectory $root -PassThru -RedirectStandardError (Join-Path $root 'server-stderr.log')
+          try {
+            $ready = $false
+            for ($i=0; $i -lt 120; $i++) {
+              Start-Sleep -Seconds 1
+              if ($process.HasExited) { throw '服务器进程提前退出' }
+              try { $health = Invoke-RestMethod -NoProxy -Uri "$base/api/health" -Headers $headers -TimeoutSec 2; if ($health.status -eq 'ok') { $ready=$true; break } } catch { }
+            }
+            if (-not $ready) { throw '服务器未就绪' }
+            $anon = Invoke-WebRequest -NoProxy -SkipHttpErrorCheck -Uri "$base/api/health"
+            if ($anon.StatusCode -ne 401) { throw '匿名访问没有被拒绝' }
+            $html = Invoke-WebRequest -NoProxy -Uri "$base/" -Headers $headers
+            if ($html.Content -notmatch '<div id="root">') { throw '完整前端未提供' }
+            $project = Invoke-RestMethod -NoProxy -Method Post -Uri "$base/api/projects" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body '{"name":"服务器测试","idea":"独立部署","brief":""}'
+            $canvas = Invoke-RestMethod -NoProxy -Uri "$base/api/projects/$($project.id)/canvas" -Headers $headers
+            if (-not $canvas.nodes) { throw '服务器白板 API 不可用' }
+            if (-not (Test-Path (Join-Path $env:CIC_DATA_DIR 'app.db'))) { throw '持久数据库未创建' }
+            Write-Host '已验证 WinOs ZIP 独立运行、登录保护、同源网页、项目和白板及持久目录；无需静态托管服务。'
+          } finally {
+            if (Test-Path (Join-Path $root 'server-stderr.log')) { Get-Content (Join-Path $root 'server-stderr.log') -Tail 60 }
+            taskkill /PID $process.Id /T /F | Out-Null
+          }
+
+      - name: 固定服务器发布标签
+        shell: pwsh
+        run: |
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push --force origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw '服务器发布标签更新失败' }
+
+      - name: 发布独立服务器 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: 内容智能工作台 v0.3.29 Windows 服务器版
+          body: |
+            独立走 Windows 工作站部署链路，服务名须以 WinOs 开头。ZIP 内包含服务器入口、Windows Python 运行时、完整中文前端和后端，不依赖 Linux/K8s 静态托管。
+            上传解压后启动 WinOs_ContentIntelligenceWorkbench.exe，配置 CIC_SERVER_PASSWORD、PORT 和 CIC_DATA_DIR，并通过平台 HTTPS 网关映射同一服务。详见包内“部署说明.md”。
+            提供账号登录、服务器 Wiki ZIP 上传和已有研究、白板、AI 共创、MCP、模型代理、资产管理能力。采用共享工作空间，不提供用户间数据隔离。
+            不含用户私有 Wiki 和 API Key，需在部署后配置。平台启动、端口映射及出站网络需部署方设置；本 Release 未直接部署到企业 cloud-deploy-app。
+          files: WinOs_ContentIntelligenceWorkbench_v0.3.29-server.1.zip
