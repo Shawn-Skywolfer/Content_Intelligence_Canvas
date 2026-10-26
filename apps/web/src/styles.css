@@ -544,3 +544,15 @@ summary { cursor: pointer; font-weight: 750; }
 .markdown-content .task-list-item { list-style: none; }.markdown-content .task-list-item input { width: auto; margin-right: .5em; }
 .node-full-content { width: min(1100px, 100%); }.node-full-content header h2 { overflow-wrap: anywhere; }.node-full-content header button { flex-shrink: 0; }
 .wiki-evidence { margin: 10px 0; }.wiki-evidence > button { margin: 10px 0; }.wiki-evidence > small { display: block; overflow-wrap: anywhere; }.wiki-original { padding: 14px; border: 1px solid #dfe5ed; border-radius: 10px; background: #fafbfc; margin: 10px 0; }
+
+.task-telemetry { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; margin: 8px 0; color: #58677d; font-size: 12px; }
+.task-telemetry > span { background: #edf2f8; padding: 3px 7px; border-radius: 5px; }
+.task-telemetry details { flex: 1 0 100%; min-width: 0; padding: 5px 0; }
+.task-telemetry pre, .task-telemetry p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-log-export { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.task-log-export a { text-decoration: none; }
+.task-event-list .task-log-error { border-left: 3px solid #c7000b; padding-left: 12px; color: #a32632; }
+.task-event-list .task-log-warning { border-left: 3px solid #d88616; padding-left: 12px; }
+.task-log-export a { display: inline-flex; align-items: center; min-height: 36px; padding: 8px 12px; border: 1px solid #d7dfea; border-radius: 8px; color: #304056; background: #fff; font-size: 13px; }
+.task-log-export a:hover { background: #f3f6fa; }
+.task-event-list { max-height: 340px; overflow: auto; padding-right: 12px; overscroll-behavior: contain; }

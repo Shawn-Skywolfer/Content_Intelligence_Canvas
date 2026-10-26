@@ -241,7 +241,7 @@ class ProviderConfigRequest(BaseModel):
     enabled: bool = True
     is_external: bool = True
     temperature: float = Field(default=0.3, ge=0, le=2)
-    max_tokens: int = Field(default=3000, ge=1, le=262144)
+    max_tokens: int = Field(default=3000, ge=1, le=393216)
     timeout_seconds: int = Field(default=60, ge=5, le=300)
     extra: dict[str, Any] = Field(default_factory=dict)
 

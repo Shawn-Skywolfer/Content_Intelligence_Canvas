@@ -217,6 +217,7 @@ async function run() {
   await fullDialog.screenshot({ path: path.join(temporary, 'markdown-and-wiki-original.png') });
   await fullDialog.getByRole('button', { name: '收起全文', exact: true }).click();
   console.log(JSON.stringify({ v25_checks: 'passed', wiki_chars: original.content_chars, checks: ['目录警告清理与真实刷新', '研究默认20与数量提示', '完整节点GFM表格与代码', '原始Wiki完整展开'] }));
+  await require("./check_task_diagnostics.cjs")({ page, api, apiUrl, temporary, until });
   if (process.env.CIC_DEEPSEEK_TEST_KEY_FILE) {
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.getByRole('button', { name: '设置', exact: true }).click();

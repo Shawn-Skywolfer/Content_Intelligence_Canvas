@@ -16,6 +16,7 @@ class CancellationToken:
         self.lock = Lock()
         self.client: Any = None
         self.on_network: Any = None
+        self.on_telemetry: Any = None
 
     def check(self) -> None:
         if self.event.is_set():

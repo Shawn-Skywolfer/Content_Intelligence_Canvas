@@ -68,7 +68,7 @@ def test_failed_legacy_task_can_be_cancelled_and_retried_with_explicit_prompt(tm
     assert routes.cancel_magic_job(job["job_id"])["status"] == "cancelled"
     retried = routes.resume_magic_job(job["job_id"], MagicRequest(node_ids=[node["id"]], instruction="补充的新要求"))
     assert retried["request"]["instruction"] == "补充的新要求" and retried["attempt"] == 2
-    assert retried["events"][0]["detail"] == "完整错误"
+    assert any(event["detail"] == "完整错误" for event in retried["events"])
 
 
 def test_generation_uses_task_provider_even_if_default_changes(tmp_path, monkeypatch):

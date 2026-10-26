@@ -8,7 +8,7 @@ import {
   MarkerType, MiniMap, Node, NodeChange, NodeProps, NodeResizer, Position, ReactFlow, ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, CanvasData, CanvasEdge, CanvasNode, ContentFormat, MagicJob, Project } from "./api";
+import { api, CanvasData, CanvasEdge, CanvasNode, ContentFormat, MagicJob, Project, downloadUrl } from "./api";
 
 const WEB_SEARCH_TYPES = new Set(["insight", "challenge", "creative_pattern", "note"]);
 
@@ -173,6 +173,25 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
 const TASK_STATUS: Record<string, string> = { running: "运行中", paused: "已暂停", failed: "失败", cancelled: "已取消", completed: "已完成" };
 const NETWORK_LABELS: Record<string, string> = { inherit: "继承全局网络设置", auto: "自动（系统代理优先）", direct: "直连", system_proxy: "系统代理", custom_proxy: "企业代理" };
 
+function TaskTelemetry({ metrics }: { metrics?: Record<string, unknown> }) {
+  if (!metrics) return null;
+  return <div className="task-telemetry">
+    {metrics.route != null && <span>线路：{String(metrics.route)}</span>}
+    {metrics.http_status != null && <span>HTTP {String(metrics.http_status)}</span>}
+    {metrics.elapsed_seconds != null && <span>本次调用 {String(metrics.elapsed_seconds)} 秒</span>}
+    {metrics.content_chars != null && <span>正文 {String(metrics.content_chars)} 字符</span>}
+    {metrics.reasoning_chars != null && <span>推理 {String(metrics.reasoning_chars)} 字符（仅计数）</span>}
+    {metrics.finish_reason != null && <span>结束原因：{String(metrics.finish_reason)}</span>}
+    {metrics.exception_type != null && <span>错误类型：{String(metrics.exception_type)}</span>}
+    {metrics.usage != null && <details><summary>用量统计</summary><pre>{JSON.stringify(metrics.usage, null, 2)}</pre></details>}
+    {typeof metrics.output_preview === "string" && <details><summary>已接收正文预览</summary><p>{metrics.output_preview}</p></details>}
+  </div>;
+}
+
+function TaskLogExport({ jobId }: { jobId: string }) {
+  return <div className="task-log-export"><a className="secondary" href={downloadUrl(`/api/magic/jobs/${jobId}/logs/export?format=txt`)} download>导出 LOG（文本）</a><a className="secondary" href={downloadUrl(`/api/magic/jobs/${jobId}/logs/export?format=json`)} download>导出 LOG（JSON）</a></div>;
+}
+
 function TaskDetails({ job, nodes, formats, controls, pending, message, onClose, onResume }: {
   job: MagicJob; nodes: CanvasNode[]; formats: ContentFormat[]; controls: React.ReactNode; pending: boolean; message: string;
   onClose: () => void; onResume: (request: Record<string, unknown>) => void;
@@ -191,7 +210,8 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       {job.result?.failure && <div className="settings-error"><strong>{job.result.failure.http_status == null ? "未收到 HTTP 响应" : `HTTP ${job.result.failure.http_status}`} · {job.result.failure.operation}</strong><p>{job.result.failure.reason}</p><p>处理建议：{job.result.failure.suggestion}</p><p>请求地址：{job.result.failure.endpoint}</p></div>}
       <p>本次调用：{job.provider?.name || "旧版未记录"} · {job.provider?.model_name || "模型未记录"} · {NETWORK_LABELS[job.provider?.network_mode || ""] || "网络未记录"}</p>
       {job.provider?.base_url && <p>接口：{job.provider.base_url}</p>}
-      <div className="task-detail-actions">{controls}</div>
+      <div className="task-detail-actions">{controls}</div><TaskLogExport jobId={job.job_id} />
+      <h3>实时执行 LOG</h3><p className="context-note">实时记录处理阶段、连接线路、HTTP、接收进度及错误。推理仅显示阶段和计数。此处显示最近 200 条；导出包含全部日志与历次重试记录。</p>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index} className={`task-log-${event.level || "info"}`}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次 · {event.level === "error" ? "错误" : event.level === "warning" ? "警告" : "信息"}</small><strong>{event.phase}</strong><p>{event.detail}</p><TaskTelemetry metrics={event.metrics} /></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
       <h3>创作要求与输入</h3>
       {!job.request?.instruction && <p>旧版任务没有保存原始 Prompt，请补充要求后重新执行。</p>}
       <label>正向 Prompt<textarea value={instruction} maxLength={1000} disabled={!editable} onChange={(event) => setInstruction(event.target.value)} placeholder="输入本任务需要完成的事情" /></label>
@@ -200,7 +220,6 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       <p>继承上游层级：{String(job.request?.upstream_depth ?? 6)} · 网络搜索：{job.request?.web_search ? "开启" : "关闭"}</p>
       {editable && <><p>继续或重试将使用当前默认模型重新执行；已发送给供应商的请求可能仍会计费。</p><button className="primary" disabled={pending || instruction.trim().length < 2} onClick={() => onResume({ ...job.request, node_ids: job.node_ids, instruction: instruction.trim(), negative_prompt: negative, output_type: outputType, format, web_search: WEB_SEARCH_TYPES.has(outputType) && Boolean(job.request?.web_search) })}>按以上要求{job.status === "paused" ? "继续" : "重试"}</button></>}
       <h3>输入节点（当前内容）</h3>{job.node_ids.map((id) => { const node = nodes.find((item) => item.id === id); return <details key={id}><summary>{node?.title || `已删除节点 ${id}`}</summary><Markdown>{node?.body || "节点内容已不存在"}</Markdown></details>; })}
-      <h3>执行进展</h3>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次</small><strong>{event.phase}</strong><p>{event.detail}</p></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
       {job.result?.node && <><h3>生成结果：{job.result.node.title}</h3><Markdown>{job.result.node.body}</Markdown></>}
     </section>
   </div>;
@@ -216,11 +235,11 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   beforeGenerate?: () => Promise<void>;
   setStatus: (value: string) => void;
 }) {
-  type Draft = { magic: string; negative: string; type: string; web: boolean; format: string; duration: number; depth: number };
+  type Draft = { magic: string; negative: string; type: string; web: boolean; format: string; duration: string; depth: number };
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const draftKey = `${project?.id ?? ""}:${[...selectedIds].sort().join("|")}`;
   const [defaultFormat, setDefaultFormat] = useState("wechat");
-  const draft: Draft = drafts[draftKey] ?? { magic: "", negative: "", type: "insight", web: false, format: defaultFormat, duration: 90, depth: 6 };
+  const draft: Draft = drafts[draftKey] ?? { magic: "", negative: "", type: "insight", web: false, format: defaultFormat, duration: "90", depth: 6 };
   const updateDraft = (changes: Partial<Draft>) => setDrafts((current) => ({ ...current, [draftKey]: { ...(current[draftKey] ?? draft), ...changes } }));
   const magic = draft.magic;
   const magicNegativePrompt = draft.negative;
@@ -230,6 +249,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const contentDuration = draft.duration;
   const upstreamDepth = draft.depth;
   const [busy, setBusy] = useState(false);
+  const deletedJobIdsRef = useRef(new Set<string>());
   const [magicJobs, setMagicJobs] = useState<MagicJob[]>([]);
   const [taskDetailId, setTaskDetailId] = useState("");
   const [taskFilter, setTaskFilter] = useState("all");
@@ -278,7 +298,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
         api.activeProvider().then((value) => { if (active) setDefaultModel(value); }).catch(() => {});
         const jobs = await api.listMagicJobs(projectId);
         if (!active) return;
-        setMagicJobs(jobs);
+        setMagicJobs(jobs.filter((job) => !deletedJobIdsRef.current.has(job.job_id)));
         const finished = jobs.filter((job) => job.status === "completed" && !completedJobsRef.current.has(job.job_id));
         finished.forEach((job) => completedJobsRef.current.add(job.job_id));
         if (finished.length) await refreshJobsRef.current();
@@ -735,12 +755,15 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       return node?.type === "frame" ? (Array.isArray(node.metadata.member_ids) ? node.metadata.member_ids as string[] : []) : [id];
     }))];
     if (!inputs.length) { setStatus("分组中没有可加工的节点"); return; }
+    if (magicType === "output" && contentFormat === "video_script" && (!contentDuration.trim() || !Number.isInteger(Number(contentDuration)) || Number(contentDuration) < 15 || Number(contentDuration) > 600)) {
+      setStatus("目标时长：请输入 15–600 秒范围内的整数"); return;
+    }
     const submittedDraftKey = draftKey;
     setSubmittingMagic(true);
     try {
       if (beforeGenerate) await beforeGenerate(); else await api.saveCanvas(activeProject.id, boardRef.current!);
       const job = await api.startMagic(activeProject.id, inputs, magicType === "output" && !magic.trim() ? "结合节点内容生成草稿" : magic,
-        magicType, magicNegativePrompt, WEB_SEARCH_TYPES.has(magicType) && webSearch, contentFormat, contentDuration, upstreamDepth);
+        magicType, magicNegativePrompt, WEB_SEARCH_TYPES.has(magicType) && webSearch, contentFormat, contentFormat === "video_script" ? Number(contentDuration) : 90, upstreamDepth);
       setMagicJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
       setStatus(`已启动生成任务：${job.job_id}`);
       setDrafts((current) => { const next = { ...current }; delete next[submittedDraftKey]; return next; });
@@ -762,19 +785,34 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     finally { setTaskOperations((current) => current.filter((id) => id !== jobId)); }
   }
 
+  async function deleteTask(job: MagicJob) {
+    if (job.status === "running") return;
+    setTaskOperations((current) => [...current, job.job_id]);
+    try {
+      await api.deleteMagicJob(job.job_id);
+      deletedJobIdsRef.current.add(job.job_id);
+      setMagicJobs((current) => current.filter((item) => item.job_id !== job.job_id));
+      setSelectedTaskIds((current) => current.filter((id) => id !== job.job_id));
+      setTaskDetailId((current) => current === job.job_id ? "" : current);
+      setTaskMessage("任务及其日志已删除，生成的节点和内容资产保留");
+    } catch (error) { setTaskMessage(`删除失败：${errorText(error)}`); }
+    finally { setTaskOperations((current) => current.filter((id) => id !== job.job_id)); }
+  }
+
   function taskControls(job: MagicJob) {
     const pending = taskOperations.includes(job.job_id);
     return <>{job.status === "running" && <button className="text-button" disabled={pending} onClick={() => void taskAction(job.job_id, "pause")}>暂停</button>}
       {["running", "paused", "failed"].includes(job.status) && <button className="text-button danger" disabled={pending} onClick={() => void taskAction(job.job_id, "cancel")}>取消</button>}
       {["paused", "failed", "cancelled"].includes(job.status) && <button className="text-button" disabled={pending} onClick={() => void taskAction(job.job_id, "resume")}>{job.status === "paused" ? "继续" : "重试"}</button>}
       <button className="text-button" onClick={() => { setTaskMessage(""); setTaskDetailId(job.job_id); }}>查看详情</button>
+      <button className="text-button danger" disabled={pending || job.status === "running"} title={job.status === "running" ? "请先暂停或取消任务，再删除" : "删除任务和日志，保留生成结果"} onClick={() => void deleteTask(job)}>删除任务</button>
       {job.status === "completed" && job.result?.node && <button className="text-button" onClick={() => setSelectedIds([job.result!.node!.id])}>定位结果</button>}</>;
   }
 
-  async function batchTaskAction(action: "pause" | "cancel" | "resume") {
-    const valid = magicJobs.filter((job) => selectedTaskIds.includes(job.job_id) && (action === "pause" ? job.status === "running" : action === "resume" ? ["paused", "failed", "cancelled"].includes(job.status) : ["running", "paused", "failed"].includes(job.status)));
+  async function batchTaskAction(action: "pause" | "cancel" | "resume" | "delete") {
+    const valid = magicJobs.filter((job) => selectedTaskIds.includes(job.job_id) && (action === "delete" ? job.status !== "running" : action === "pause" ? job.status === "running" : action === "resume" ? ["paused", "failed", "cancelled"].includes(job.status) : ["running", "paused", "failed"].includes(job.status)));
     if (!valid.length) { setTaskMessage("请先勾选支持该操作的任务"); return; }
-    await Promise.all(valid.map((job) => taskAction(job.job_id, action)));
+    await Promise.all(valid.map((job) => action === "delete" ? deleteTask(job) : taskAction(job.job_id, action)));
   }
 
   async function saveAsAsset() {
@@ -856,7 +894,7 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
           <p className="context-note">{inheritedIds.length ? `当前选中的层级将继承 ${inheritedIds.length} 个上游节点。` : "当前层级没有可继承的上游节点。"} 将回读这些节点引用的完整 Wiki 词条。内容简报始终作为默认创作约束；如需例外，请在本次要求中明确说明。原节点保留，结果进入新的下游节点。</p>
           <label>新节点类型<select value={magicType} onChange={(event) => updateDraft({ type: event.target.value })}><option value="insight">洞察</option><option value="challenge">质疑</option><option value="creative_pattern">创意模式</option><option value="note">笔记</option><option value="output">内容输出</option></select></label>
           {WEB_SEARCH_TYPES.has(magicType) && <label className="check"><input type="checkbox" checked={webSearch} onChange={(event) => updateDraft({ web: event.target.checked })} />检索网络资料（自动选择：优先 DeepSeek，其次搜索 MCP，并与 Wiki 资料综合）</label>}
-          {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
+          {magicType === "output" && <><label>内容输出形态<select value={contentFormat} onChange={(event) => updateDraft({ format: event.target.value })}>{contentFormats.map((format) => <option key={format.id} value={format.id}>{format.name}</option>)}</select></label>{contentFormat === "video_script" && <label>目标时长（秒）<input type="number" min="15" max="600" value={contentDuration} step="1" onChange={(event) => updateDraft({ duration: event.target.value.replace(/^0+(?=\d)/, "") })} /></label>}<p className="context-note">默认 Prompt 在“设置 → 内容输出形态与 Prompt”中配置，此处填写本次加工要求。</p></>}
           <label>{magicType === "output" ? "正向 Prompt（要做的事情）" : "处理要求"}<textarea value={magic} onChange={(event) => updateDraft({ magic: event.target.value })} placeholder="例如：结合上游证据补充案例，调整为更有节奏的表达，并保留事实边界。" /></label>
           {magicType === "output" && <label>负向 Prompt（不要做的事情）<textarea value={magicNegativePrompt} onChange={(event) => updateDraft({ negative: event.target.value })} placeholder="例如：不要编造案例；不要使用夸张标题；不要忽略证据不足的部分。" /></label>}
           {magicJobs.filter((job) => job.status === "running" && job.node_ids.some((id) => selectedIds.includes(id))).map((job) => <div className="ai-progress" role="status" key={job.job_id}><span className="ai-progress-spinner" />{job.phase} · {job.progress}% · {job.detail}</div>)}
@@ -868,11 +906,13 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
       <div className="task-manager-heading"><strong>AI 任务监测 · 正在生成 {magicJobs.filter((job) => job.status === "running").length} 个任务</strong><span>暂停 {magicJobs.filter((job) => job.status === "paused").length} · 失败 {magicJobs.filter((job) => job.status === "failed").length} · 共 {magicJobs.length} 项</span><button type="button" className="task-monitor-toggle" aria-expanded={!tasksCollapsed} aria-controls="canvas-task-details" onClick={() => setTasksCollapsed((value) => !value)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d={tasksCollapsed ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} /></svg>{tasksCollapsed ? "展开任务监测" : "折叠任务监测"}</button></div>
       {!tasksCollapsed && <div id="canvas-task-details">
       <p className="task-default-model">后续任务默认模型：{defaultModel ? `${defaultModel.name || "未配置"} · ${defaultModel.model_name || "无模型"} · ${NETWORK_LABELS[defaultModel.network_mode || ""] || "自动"}` : "正在读取"}。可在设置中“保存并设为默认”。</p>
-      <div className="task-manager-toolbar"><label>任务状态<select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}><option value="all">全部任务</option>{Object.entries(TASK_STATUS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><span>已选 {selectedTaskIds.length} 项</span><button className="secondary" onClick={() => void batchTaskAction("pause")}>暂停选中</button><button className="secondary" onClick={() => void batchTaskAction("resume")}>继续 / 重试选中</button><button className="secondary danger" onClick={() => void batchTaskAction("cancel")}>取消选中</button></div>
+      <div className="task-manager-toolbar"><label>任务状态<select value={taskFilter} onChange={(event) => setTaskFilter(event.target.value)}><option value="all">全部任务</option>{Object.entries(TASK_STATUS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><span>已选 {selectedTaskIds.length} 项</span><button className="secondary" onClick={() => void batchTaskAction("pause")}>暂停选中</button><button className="secondary" onClick={() => void batchTaskAction("resume")}>继续 / 重试选中</button><button className="secondary danger" onClick={() => void batchTaskAction("cancel")}>取消选中</button><button className="secondary danger" onClick={() => void batchTaskAction("delete")}>删除已停止的选中任务</button></div>
       {taskMessage && <p className="task-manager-message" role="status">{taskMessage}</p>}
       <div className="canvas-task-list">{magicJobs.filter((job) => taskFilter === "all" || job.status === taskFilter).map((job) => <article className={`canvas-task ${job.status}`} key={job.job_id}>
         <div className="task-row-title"><input type="checkbox" aria-label={`选择任务 ${job.job_id}`} checked={selectedTaskIds.includes(job.job_id)} onChange={(event) => setSelectedTaskIds((current) => event.target.checked ? [...current, job.job_id] : current.filter((id) => id !== job.job_id))} /><button className="task-open" onClick={() => { setTaskMessage(""); setTaskDetailId(job.job_id); }}>{job.node_ids.map((id) => board.nodes.find((node) => node.id === id)?.title || "节点已删除").join("、")}</button><span>{TASK_STATUS[job.status]} · {job.progress}%</span></div>
         <p>{job.phase} · {job.detail}</p>
+        <small>已用 {Math.max(0, Math.floor(((job.status === "running" ? Date.now() : new Date(job.updated_at || job.created_at).getTime()) - new Date(job.created_at).getTime()) / 1000)) || 0} 秒 · 第 {job.attempt || 1} 次执行</small>
+        <TaskTelemetry metrics={[...(job.events || [])].reverse().find((event) => event.attempt === (job.attempt || 1) && event.metrics && Object.keys(event.metrics).length)?.metrics} />
         <small>{job.provider?.name || "旧版未记录模型"} · {job.provider?.model_name || ""} · {NETWORK_LABELS[job.provider?.network_mode || ""] || ""}</small>
         {job.error && <small className="task-error">{job.error}</small>}
         <div className="task-row-actions">{taskControls(job)}</div>

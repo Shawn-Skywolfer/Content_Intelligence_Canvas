@@ -5,11 +5,14 @@ from app.services.web_errors import WebToolError
 import json
 import re
 import threading
+import time
 import uuid
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Query
+from fastapi.responses import StreamingResponse
+from app.services.ai.task_logs import safe_log
 
 from app.container import get_container
 from app.schemas.workspace import (
@@ -348,17 +351,24 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
                    token: CancellationToken, provider: dict[str, Any] | None, attempt: int) -> None:
     workspace = get_container().workspace
     node: dict[str, Any] | None = None
+    started = time.monotonic()
     try:
         with cancellation_scope(token), provider_scope(provider):
             def progress(percent: int, phase: str, detail: str) -> None:
                 token.check()
-                workspace.update_magic_job(job_id, expected_attempt=attempt, progress=percent, phase=phase, detail=detail)
+                workspace.update_magic_job(job_id, expected_attempt=attempt, progress=percent, phase=phase, detail=safe_log(detail))
 
             def network_report(detail: str) -> None:
                 token.check()
-                workspace.update_magic_job(job_id, expected_attempt=attempt, detail=detail)
+                workspace.update_magic_job(job_id, expected_attempt=attempt, detail=safe_log(detail))
+
+            def telemetry(detail: str, metrics: dict[str, Any], level: str) -> None:
+                token.check()
+                workspace.update_magic_job(job_id, expected_attempt=attempt, detail=safe_log(detail),
+                                           metrics=safe_log(metrics), level=level)
 
             token.on_network = network_report
+            token.on_telemetry = telemetry
 
             if request.output_type == "output":
                 progress(18, "准备内容输出", "正在整理选中节点与 Wiki 上下文")
@@ -383,8 +393,9 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
             if node is not None:
                 workspace.delete_node(project_id, node["id"])
             return
-        workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=str(exc), error=str(exc),
-                                   result={"failure": exc.as_dict()} if isinstance(exc, WebToolError) else None)
+        workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=safe_log(str(exc)), error=safe_log(str(exc)),
+                                   metrics={"exception_type": type(exc).__name__, "elapsed_seconds": round(time.monotonic() - started, 1)},
+                                   result={"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else None)
     finally:
         with _magic_lock:
             if _magic_tokens.get(job_id) is token:
@@ -438,6 +449,43 @@ def get_magic_job(job_id: str) -> dict[str, Any]:
     if not job:
         raise HTTPException(404, "任务不存在")
     return job
+
+
+@router.delete("/magic/jobs/{job_id}", status_code=204)
+def delete_magic_job(job_id: str) -> Response:
+    workspace = get_container().workspace
+    with _magic_lock:
+        job = workspace.get_magic_job(job_id)
+        if not job:
+            raise HTTPException(404, "任务不存在")
+        if not workspace.delete_magic_job(job_id):
+            raise HTTPException(409, "运行中的任务不能删除，请先暂停或取消任务")
+    # Output nodes/assets are independent and are deliberately retained.
+    return Response(status_code=204)
+
+
+@router.get("/magic/jobs/{job_id}/logs/export")
+def export_magic_logs(job_id: str, format: str = Query(default="txt", pattern="^(txt|json)$")) -> StreamingResponse:
+    workspace = get_container().workspace
+    job = workspace.get_magic_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    events = safe_log(workspace.magic_job_logs(job_id))
+    header = safe_log({key: job.get(key) for key in ("job_id", "project_id", "node_ids", "status", "phase", "progress", "detail", "error", "created_at", "updated_at", "attempt", "provider", "request")})
+    def lines():
+        if format == "json":
+            yield '{"task":' + json.dumps(header, ensure_ascii=False) + ',"logs":['
+            for index, event in enumerate(events):
+                yield ("," if index else "") + json.dumps(event, ensure_ascii=False)
+            yield "]}"
+        else:
+            yield "内容智能工作台 · AI 任务日志\n" + json.dumps(header, ensure_ascii=False, indent=2) + "\n\n"
+            for event in events:
+                yield f"[{event.get('at', '')}] [{event.get('level', 'info')}] 第 {event.get('attempt', 1)} 次 · {event.get('phase', '')}\n{event.get('detail', '')}\n"
+                if event.get("metrics"):
+                    yield json.dumps(event["metrics"], ensure_ascii=False) + "\n"
+    return StreamingResponse(lines(), media_type="application/json" if format == "json" else "text/plain; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{job_id}-log.{format}"'})
 
 
 @router.post("/magic/jobs/{job_id}/cancel")
