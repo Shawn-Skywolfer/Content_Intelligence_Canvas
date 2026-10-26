@@ -88,7 +88,10 @@ async def upload_wiki_zip(request: Request, name: str = "上传的知识库"):
                 raise HTTPException(413, "解压后不能超过 200 MB 或 10000 个条目")
             for item in entries:
                 path = PurePosixPath(item.filename.replace("\\", "/"))
-                if path.is_absolute() or ".." in path.parts or ":" in str(path) or stat.S_ISLNK(item.external_attr >> 16):
+                if (path.is_absolute() or ".." in path.parts or ":" in str(path) or stat.S_ISLNK(item.external_attr >> 16)
+                        or any(part.rstrip(" .") != part or part.split(".")[0].upper() in
+                               {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+                               for part in path.parts)):
                     raise HTTPException(422, "ZIP 包含不安全的路径或符号链接")
             target.mkdir(parents=True)
             count = 0

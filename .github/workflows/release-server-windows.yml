@@ -5,6 +5,10 @@ on:
     branches: [release/server-v0.3.29]
   workflow_dispatch:
 
+concurrency:
+  group: windows-server-release
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -129,6 +133,13 @@ jobs:
             if (Test-Path (Join-Path $root 'server-stderr.log')) { Get-Content (Join-Path $root 'server-stderr.log') -Tail 60 }
             taskkill /PID $process.Id /T /F | Out-Null
           }
+
+      - name: 固定服务器发布标签
+        shell: pwsh
+        run: |
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push --force origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw '服务器发布标签更新失败' }
 
       - name: 发布独立服务器 Release
         uses: softprops/action-gh-release@v2
