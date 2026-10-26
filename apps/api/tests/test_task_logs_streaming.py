@@ -150,3 +150,33 @@ def test_stream_cancellation_never_returns_late_body(tmp_path, monkeypatch):
 def test_logs_hide_keys_proxy_credentials_and_raw_reasoning():
     hidden = safe_log({"message": "Bearer private-token https://u:pass@proxy.example sk-12345678901234567890 https://example?api_key=private", "reasoning_content": "原始思维链", "api_key": "private"})
     assert "private" not in str(hidden) and "原始思维链" not in str(hidden) and "u:pass" not in str(hidden)
+
+
+def test_finish_reason_finishes_without_waiting_for_done(tmp_path, monkeypatch):
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield sse(chunk(content="完整正文", finish="stop")).encode()
+            raise AssertionError("收到 stop 后不应继续等 DONE")
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=Stream()))
+    with cancellation_scope(token):
+        assert gateway.complete("系统", "要求", provider=provider)[0] == "完整正文"
+
+
+def test_idle_watchdog_keeps_partial_and_interrupts_blocked_reader(tmp_path, monkeypatch):
+    import time
+    from threading import Event
+    released = Event()
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield sse(chunk(content="未完成草稿")).encode()
+            assert released.wait(10)
+            yield b": keepalive\n\n"
+        def close(self):
+            released.set()
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, lambda request: httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=Stream()))
+    provider["timeout_seconds"] = 5
+    started = time.monotonic()
+    with cancellation_scope(token), pytest.raises(RuntimeError, match="未返回新的正文或推理"):
+        gateway.complete("系统", "要求", provider=provider)
+    assert time.monotonic() - started < 9
+    assert token.partial_output == "未完成草稿"
