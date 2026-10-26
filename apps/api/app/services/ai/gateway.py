@@ -444,7 +444,7 @@ class AIProviderGateway:
             **self._reasoning_payload(provider),
         }
         token = current_token()
-        if token and token.on_telemetry:
+        if token and token.on_telemetry and (provider.get("extra") or {}).get("stream_output", False):
             from app.services.ai.streaming import request_stream, StreamUnsupported
             try:
                 response_payload = request_stream(
@@ -471,6 +471,8 @@ class AIProviderGateway:
     def _complete_response(self, provider: dict[str, Any], payload: dict[str, Any], network_mode: str,
                            proxy_url: str | None, username: str | None, password: str | None) -> dict[str, Any]:
         from threading import Event, Thread
+        from contextvars import copy_context
+        from queue import Queue, Empty
         token = current_token()
         stop = Event()
         started = time.monotonic()
@@ -484,10 +486,33 @@ class AIProviderGateway:
         if token and token.on_telemetry:
             Thread(target=waiting, name="ai-nonstream-progress", daemon=True).start()
         try:
-            response = self._request("POST", self._chat_url(provider["base_url"]), headers=self._headers(provider),
-                                     json_payload=payload, timeout=provider.get("timeout_seconds", 60),
-                                     network_mode=network_mode, proxy_url=proxy_url,
-                                     proxy_username=username, proxy_password=password)
+            outcome: Queue = Queue(maxsize=1)
+            def receive() -> None:
+                try:
+                    response = self._request("POST", self._chat_url(provider["base_url"]), headers=self._headers(provider),
+                                             json_payload=payload, timeout=provider.get("timeout_seconds", 60),
+                                             network_mode=network_mode, proxy_url=proxy_url,
+                                             proxy_username=username, proxy_password=password)
+                    outcome.put((True, response))
+                except BaseException as exc:
+                    outcome.put((False, exc))
+            context = copy_context()
+            Thread(target=lambda: context.run(receive), name="ai-complete-response", daemon=True).start()
+            deadline = max(30, min(600, float(provider.get("timeout_seconds", 60)) * 2 + 15))
+            while True:
+                check_cancelled()
+                try:
+                    ok, response = outcome.get(timeout=.2)
+                    break
+                except Empty:
+                    if time.monotonic() - started >= deadline:
+                        message = f"完整响应模式超过 {int(deadline)} 秒总时限，已结束等待；已保存草稿可在任务详情查看"
+                        if token:
+                            token.failure = message
+                        raise RuntimeError(message)
+            check_cancelled()
+            if not ok:
+                raise response
             if response.status_code >= 400:
                 raise RuntimeError(self._http_error_message("模型请求失败", response))
             result = response.json()

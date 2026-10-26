@@ -57,3 +57,29 @@ def test_failed_brief_review_does_not_create_output_node_or_asset(tmp_path):
     assert len(repo.get_canvas(project["id"])["nodes"]) == len(original["nodes"])
     assert not repo.list_assets(project["id"])
     assert repo.list_runs(project["id"])[0]["status"] == "failed"
+
+
+def test_completed_draft_survives_failed_revision_in_persisted_task(tmp_path, monkeypatch):
+    from app.api import workspace as routes
+    from app.repositories.workspace import WorkspaceRepository
+    from app.schemas.workspace import MagicRequest
+    from app.services.workflow import ContentWorkflowService
+    from app.services.ai.cancellation import CancellationToken
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("项目", "主题", "必须明确品牌名称")
+    source = repo.create_node(project["id"], {"title": "输入", "body": "原始材料"})
+    job = repo.create_magic_job(project["id"], [source["id"]])
+    saved = []
+    def review(*_args):
+        saved.append(repo.get_magic_job(job["job_id"])["result"]["completed_draft"])
+        return {"compliant": False, "violations": ["缺少品牌"]}, {}
+    ai = SimpleNamespace(complete=Mock(side_effect=[("已完整收到的第一版正文", {}), RuntimeError("修订连接中断")]), complete_json=review)
+    workflow = ContentWorkflowService(repo, SimpleNamespace(manifest=SimpleNamespace(list_sources=lambda: [])), None, ai, None)
+    monkeypatch.setattr(routes, "get_container", lambda: SimpleNamespace(workspace=repo, workflow=workflow))
+    routes._run_magic_job(job["job_id"], project["id"], MagicRequest(node_ids=[source["id"]], instruction="生成内容", output_type="output"), CancellationToken(), None, 1)
+    result = repo.get_magic_job(job["job_id"])
+    assert result["status"] == "failed"
+    assert saved == ["已完整收到的第一版正文"]
+    assert result["result"]["completed_draft"] == "已完整收到的第一版正文"
+    assert result["result"]["draft_status"] == "简报核对未完成，不能视为定稿"
+    assert not repo.list_assets(project["id"])

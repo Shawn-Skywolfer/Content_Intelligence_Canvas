@@ -367,6 +367,13 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
                 workspace.update_magic_job(job_id, expected_attempt=attempt, detail=safe_log(detail),
                                            metrics=safe_log(metrics), level=level)
 
+            def save_draft(body: str) -> None:
+                token.check()
+                workspace.update_magic_job(job_id, expected_attempt=attempt,
+                    detail="完整草稿已保存，可在任务详情查看；正在核对简报",
+                    result={"completed_draft": body, "draft_status": "待简报核对"})
+
+            token.on_draft = save_draft
             token.on_network = network_report
             token.on_telemetry = telemetry
 
@@ -395,7 +402,7 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
             return
         workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败", detail=safe_log(str(exc)), error=safe_log(str(exc)),
                                    metrics={"exception_type": type(exc).__name__, "elapsed_seconds": round(time.monotonic() - started, 1)},
-                                   result={"partial_body": token.partial_output, "incomplete": True, **({"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else {})})
+                                   result={"completed_draft": token.completed_draft, "draft_status": "简报核对未完成，不能视为定稿", "partial_body": token.partial_output, "incomplete": True, **({"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else {})})
     finally:
         with _magic_lock:
             if _magic_tokens.get(job_id) is token:

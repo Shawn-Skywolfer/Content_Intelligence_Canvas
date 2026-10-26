@@ -17,6 +17,8 @@ class CancellationToken:
         self.client: Any = None
         self.on_network: Any = None
         self.on_telemetry: Any = None
+        self.on_draft: Any = None
+        self.completed_draft = ""
         self.failure: str | None = None
         self.partial_output = ""
 
@@ -69,3 +71,12 @@ def check_cancelled() -> None:
 
 def current_token() -> CancellationToken | None:
     return _current_token.get()
+
+
+def checkpoint_draft(body: str) -> None:
+    token = current_token()
+    if token and body.strip():
+        token.check()
+        token.completed_draft = body
+        if token.on_draft:
+            token.on_draft(body)
