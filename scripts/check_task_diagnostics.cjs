@@ -17,7 +17,7 @@ module.exports = async function checkTaskDiagnostics({ page, api, apiUrl, tempor
       if (!payload.stream) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: text }, finish_reason: 'stop' }] })); return; }
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
       const send = (delta, finish = null) => response.write('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: finish }] }) + '\n\n');
-      send({ reasoning_content: '不应出现在页面或日志中的原始推理内容' });
+      send({ reasoning_content: '供应商返回：正在核对 Wiki 相关材料。' });
       await new Promise((resolve) => setTimeout(resolve, system.includes('检索规划助手') ? 1500 : 2200));
       for (let index = 0; index < text.length; index += 12) {
         if (response.destroyed) return;
@@ -57,12 +57,12 @@ module.exports = async function checkTaskDiagnostics({ page, api, apiUrl, tempor
     assert.equal(denied.status, 409);
     await row.getByRole('button', { name: '查看详情', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '任务完整详情', exact: true });
-    await dialog.getByText(/推理 .*字符（仅计数）/).first().waitFor();
+    await dialog.getByText(/推理 .*字符/).first().waitFor();
     await dialog.getByText(/正文 .*字符/).first().waitFor();
     let result;
     await until(async () => { result = await api(`/api/projects/${project.id}/magic/jobs`); return result.find((item) => item.job_id === job.job_id)?.status === 'completed'; }, '真实流式任务完成');
     await until(async () => (await dialog.innerText()).includes('生成完成'), '详情实时更新完成状态');
-    assert.ok(!(await dialog.innerText()).includes('不应出现在页面或日志'));
+    assert.ok((await dialog.innerText()).includes('供应商返回：正在核对 Wiki 相关材料。'));
     const downloadPromise = page.waitForEvent('download');
     await dialog.getByRole('link', { name: '导出 LOG（JSON）', exact: true }).click();
     const download = await downloadPromise;
@@ -71,7 +71,7 @@ module.exports = async function checkTaskDiagnostics({ page, api, apiUrl, tempor
     assert.ok(exported.logs.some((event) => event.metrics?.http_status === 200));
     assert.ok(exported.logs.some((event) => event.metrics?.reasoning_chars > 0));
     assert.ok(exported.logs.some((event) => event.metrics?.usage?.total_tokens === 160));
-    assert.ok(!JSON.stringify(exported).includes('不应出现在页面或日志'));
+    assert.ok(exported.logs.map((event) => event.metrics?.provider_reasoning || '').join('').includes('供应商返回：正在核对 Wiki 相关材料。'));
     await dialog.screenshot({ path: path.join(temporary, 'task-logs.png') });
     await dialog.getByRole('button', { name: '关闭详情', exact: true }).click();
     await row.getByRole('button', { name: '删除任务', exact: true }).click();
@@ -83,6 +83,6 @@ module.exports = async function checkTaskDiagnostics({ page, api, apiUrl, tempor
     await until(async () => (await api(`/api/projects/${project.id}/magic/jobs`)).find((item) => item.job_id === failed.job_id)?.status === 'failed', 'HTTP 429 任务明确失败');
     const errorLog = await (await fetch(`${apiUrl}/api/magic/jobs/${failed.job_id}/logs/export?format=json`)).json();
     assert.ok(errorLog.logs.some((event) => event.level === 'error' && event.detail.includes('HTTP 429')));
-    console.log(JSON.stringify({ v26_checks: 'passed', log_events: exported.logs.length, checks: ['真实流式网关与页面实时进展', '推理仅计数', 'HTTP和用量', 'LOG下载与持久化', '运行任务禁止删除', '停止后删除保留生成结果', '视频时长清空输入', 'HTTP429错误诊断'] }));
+    console.log(JSON.stringify({ v26_checks: 'passed', log_events: exported.logs.length, checks: ['真实流式网关与页面实时进展', '供应商推理文本实时查看与完整记录', 'HTTP和用量', 'LOG下载与持久化', '运行任务禁止删除', '停止后删除保留生成结果', '视频时长清空输入', 'HTTP429错误诊断'] }));
   } finally { fixture.closeAllConnections(); await new Promise((resolve) => fixture.close(resolve)); }
 };

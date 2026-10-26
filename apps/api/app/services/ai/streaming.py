@@ -1,10 +1,10 @@
-"""Streaming progress for monitored calls. Raw reasoning is never stored or emitted."""
+"""Streaming diagnostics, including reasoning explicitly returned by the user's provider API."""
 from __future__ import annotations
 
 import json
 import time
 import uuid
-from threading import Event, Thread
+from threading import Event, Thread, Lock
 from typing import Any
 
 import httpx
@@ -27,16 +27,24 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                              "reasoning_chars": 0, "chunks": 0}
     stop = Event()
     last_emit = 0.0
+    pending_reasoning: list[str] = []
+    telemetry_lock = Lock()
 
     def report(detail: str, *, force: bool = True, level: str = "info") -> None:
         nonlocal last_emit
-        now = time.monotonic()
-        if not force and now - last_emit < 1:
-            return
-        last_emit = now
-        metrics = {**state, "elapsed_seconds": round(now - started, 1)}
-        if token and token.on_telemetry and not token.event.is_set():
-            token.on_telemetry(detail, metrics, level)
+        with telemetry_lock:
+            now = time.monotonic()
+            if not force and now - last_emit < 1:
+                return
+            last_emit = now
+            metrics = {**state, "elapsed_seconds": round(now - started, 1)}
+            if pending_reasoning:
+                # Keep deltas once in persisted logs, rather than duplicating the full transcript each second.
+                metrics["provider_reasoning"] = "".join(pending_reasoning)
+                metrics["reasoning_source"] = "供应商 API 的 reasoning_content / reasoning 字段"
+                pending_reasoning.clear()
+            if token and token.on_telemetry and not token.event.is_set():
+                token.on_telemetry(detail, metrics, level)
 
     def heartbeat() -> None:
         while not stop.wait(5):
@@ -45,7 +53,7 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
             elapsed = int(time.monotonic() - started)
             label = {"connecting": "连接接口", "waiting": "等待模型首段响应", "reasoning": "模型推理中", "output": "接收模型正文"}.get(state["stage"], "等待模型响应")
             try:
-                report(f"{label} · 已用 {elapsed} 秒 · 已收到正文 {state['content_chars']} 字符、推理 {state['reasoning_chars']} 字符（仅计数）")
+                report(f"{label} · 已用 {elapsed} 秒 · 已收到正文 {state['content_chars']} 字符、推理 {state['reasoning_chars']} 字符")
             except RuntimeError:
                 return
 
@@ -82,6 +90,12 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 response.read()
                                 data = response.json()
                                 text = gateway._extract_content(data)
+                                message = ((data.get("choices") or [{}])[0].get("message") or {})
+                                reasoning = message.get("reasoning_content") or message.get("reasoning")
+                                if isinstance(reasoning, str) and reasoning:
+                                    with telemetry_lock:
+                                        pending_reasoning.append(reasoning)
+                                        state["reasoning_chars"] = len(reasoning)
                                 state.update(stage="complete", content_chars=len(text), usage=data.get("usage"))
                                 report("供应商返回非流式结果，已接收完整响应")
                                 return data
@@ -114,8 +128,10 @@ def request_stream(gateway: Any, url: str, *, headers: dict[str, str], payload: 
                                 if isinstance(reasoning, str) and reasoning:
                                     received = True
                                     changed = state["stage"] != "reasoning"
-                                    state.update(stage="reasoning", reasoning_chars=state["reasoning_chars"] + len(reasoning))
-                                    report(f"模型正在推理 · 已收到 {state['reasoning_chars']} 个推理字符（仅计数）", force=changed)
+                                    with telemetry_lock:
+                                        pending_reasoning.append(reasoning)
+                                        state.update(stage="reasoning", reasoning_chars=state["reasoning_chars"] + len(reasoning))
+                                    report(f"模型正在推理 · 已收到 {state['reasoning_chars']} 个推理字符", force=changed)
                                 if isinstance(content, str) and content:
                                     received = True
                                     changed = state["stage"] != "output"

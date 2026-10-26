@@ -1,4 +1,4 @@
-"""Safe, user-exportable diagnostics; never include credentials or raw reasoning."""
+"""Safe, user-exportable diagnostics; hide credentials; provider reasoning is recorded only in the explicit provider_reasoning field."""
 from __future__ import annotations
 import re
 from typing import Any

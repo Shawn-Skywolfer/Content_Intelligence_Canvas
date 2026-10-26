@@ -180,7 +180,8 @@ function TaskTelemetry({ metrics }: { metrics?: Record<string, unknown> }) {
     {metrics.http_status != null && <span>HTTP {String(metrics.http_status)}</span>}
     {metrics.elapsed_seconds != null && <span>本次调用 {String(metrics.elapsed_seconds)} 秒</span>}
     {metrics.content_chars != null && <span>正文 {String(metrics.content_chars)} 字符</span>}
-    {metrics.reasoning_chars != null && <span>推理 {String(metrics.reasoning_chars)} 字符（仅计数）</span>}
+    {metrics.reasoning_chars != null && <span>推理 {String(metrics.reasoning_chars)} 字符</span>}
+    {typeof metrics.provider_reasoning === "string" && !!metrics.provider_reasoning && <details className="provider-reasoning-delta"><summary>查看供应商推理输出片段</summary><pre>{metrics.provider_reasoning}</pre></details>}
     {metrics.finish_reason != null && <span>结束原因：{String(metrics.finish_reason)}</span>}
     {metrics.exception_type != null && <span>错误类型：{String(metrics.exception_type)}</span>}
     {metrics.usage != null && <details><summary>用量统计</summary><pre>{JSON.stringify(metrics.usage, null, 2)}</pre></details>}
@@ -201,6 +202,7 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
   const [outputType, setOutputType] = useState(String(job.request?.output_type ?? "insight"));
   const [format, setFormat] = useState(String(job.request?.format ?? "wechat"));
   const editable = ["paused", "failed", "cancelled"].includes(job.status);
+  const reasoningEvents = (job.events || []).filter((event) => event.attempt === (job.attempt || 1) && typeof event.metrics?.provider_reasoning === "string" && event.metrics.provider_reasoning);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="task-details-dialog" role="dialog" aria-modal="true" aria-label="任务完整详情">
       <header><div><small>{TASK_STATUS[job.status]} · 第 {job.attempt ?? 1} 次执行</small><h2>AI 任务详情</h2></div><button className="secondary" onClick={onClose}>关闭详情</button></header>
@@ -211,7 +213,8 @@ function TaskDetails({ job, nodes, formats, controls, pending, message, onClose,
       <p>本次调用：{job.provider?.name || "旧版未记录"} · {job.provider?.model_name || "模型未记录"} · {NETWORK_LABELS[job.provider?.network_mode || ""] || "网络未记录"}</p>
       {job.provider?.base_url && <p>接口：{job.provider.base_url}</p>}
       <div className="task-detail-actions">{controls}</div><TaskLogExport jobId={job.job_id} />
-      <h3>实时执行 LOG</h3><p className="context-note">实时记录处理阶段、连接线路、HTTP、接收进度及错误。推理仅显示阶段和计数。此处显示最近 200 条；导出包含全部日志与历次重试记录。</p>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index} className={`task-log-${event.level || "info"}`}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次 · {event.level === "error" ? "错误" : event.level === "warning" ? "警告" : "信息"}</small><strong>{event.phase}</strong><p>{event.detail}</p><TaskTelemetry metrics={event.metrics} /></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
+      <details className="provider-reasoning-panel" open><summary>供应商模型推理输出（实时）</summary><p className="context-note">仅展示本任务所选模型 API 实际返回的 reasoning_content / reasoning 文本，不生成或推测。此处按最近 200 条日志汇总，本次调用及历次执行的完整内容可导出 LOG。</p>{reasoningEvents.length ? <div className="provider-reasoning-text">{reasoningEvents.map((event, index) => <pre key={index}>{String(event.metrics!.provider_reasoning)}</pre>)}</div> : <p>供应商尚未返回推理文本；未开启思考或不提供此字段的模型仍可正常生成正文。</p>}</details>
+      <h3>实时执行 LOG</h3><p className="context-note">实时记录处理阶段、连接线路、HTTP、接收进度及错误。供应商返回的推理文本也会独立记录。此处显示最近 200 条；导出包含全部日志与历次重试记录。</p>{job.events?.length ? <ol className="task-event-list">{job.events.map((event, index) => <li key={index} className={`task-log-${event.level || "info"}`}><small>{new Date(event.at).toLocaleTimeString()} · 第 {event.attempt} 次 · {event.level === "error" ? "错误" : event.level === "warning" ? "警告" : "信息"}</small><strong>{event.phase}</strong><p>{event.detail}</p><TaskTelemetry metrics={event.metrics} /></li>)}</ol> : <p>旧版任务没有逐步记录。</p>}
       <h3>创作要求与输入</h3>
       {!job.request?.instruction && <p>旧版任务没有保存原始 Prompt，请补充要求后重新执行。</p>}
       <label>正向 Prompt<textarea value={instruction} maxLength={1000} disabled={!editable} onChange={(event) => setInstruction(event.target.value)} placeholder="输入本任务需要完成的事情" /></label>

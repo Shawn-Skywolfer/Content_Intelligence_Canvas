@@ -494,7 +494,9 @@ class AIProviderGateway:
             if token and token.on_telemetry:
                 token.on_telemetry("已接收非流式模型完整结果", {"stage": "complete", "http_status": response.status_code,
                     "elapsed_seconds": round(time.monotonic() - started, 1), "content_chars": len(self._extract_content(result)),
-                    "usage": result.get("usage")}, "info")
+                    "usage": result.get("usage"),
+                    "provider_reasoning": str(((result.get("choices") or [{}])[0].get("message") or {}).get("reasoning_content") or ""),
+                    "reasoning_source": "供应商 API 的 reasoning_content 字段"}, "info")
             return result
         finally:
             stop.set()

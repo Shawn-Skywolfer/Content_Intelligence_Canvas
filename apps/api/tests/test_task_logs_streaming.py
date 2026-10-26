@@ -94,20 +94,20 @@ def chunk(content=None, reasoning=None, finish=None):
     return {"choices": [{"delta": {"content": content, "reasoning_content": reasoning}, "finish_reason": finish}]}
 
 
-def test_stream_reasoning_is_only_counted_body_aggregated_usage_and_http_reported(tmp_path, monkeypatch):
+def test_stream_provider_reasoning_recorded_once_body_aggregated_usage_and_http_reported(tmp_path, monkeypatch):
     def handler(request):
         payload = json.loads(request.content)
         assert payload["stream"] and payload["max_tokens"] == 393216
-        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, text=sse(chunk(reasoning="绝不应展示的原始推理"), chunk(content="生成"), chunk(content="正文"), {"choices": [], "usage": {"total_tokens": 33}}, chunk(finish="stop"), "[DONE]"))
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, text=sse(chunk(reasoning="供应商"), chunk(reasoning="返回的"), chunk(reasoning="推理说明"), chunk(content="生成"), chunk(content="正文"), {"choices": [], "usage": {"total_tokens": 33}}, chunk(finish="stop"), "[DONE]"))
     gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, handler)
     with cancellation_scope(token):
         answer, _ = gateway.complete("系统", "问题", provider=provider)
     assert answer == "生成正文"
     assert events[-1]["metrics"]["content_chars"] == 4
-    assert events[-1]["metrics"]["reasoning_chars"] == len("绝不应展示的原始推理")
+    assert events[-1]["metrics"]["reasoning_chars"] == len("供应商返回的推理说明")
     assert events[-1]["metrics"]["usage"]["total_tokens"] == 33
     assert events[-1]["metrics"]["http_status"] == 200
-    assert "绝不应展示" not in json.dumps(events, ensure_ascii=False)
+    assert "".join(event["metrics"].get("provider_reasoning", "") for event in events) == "供应商返回的推理说明"
 
 
 @pytest.mark.parametrize("mode,expected", [("http", "HTTP 429"), ("cut", "意外中断"), ("length", "长度上限"), ("malformed", "无效的流式数据"), ("error", "额度耗尽")])

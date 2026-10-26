@@ -109,7 +109,7 @@ describe("任务日志、删除与视频时长", () => {
   it("运行任务禁止删除，停止任务可删除；详情展示实时日志与导出入口", async () => {
     localStorage.removeItem("cic.canvas.tasks.collapsed");
     const jobs = [
-      { job_id: "running", project_id: project.id, node_ids: [ids[0]], status: "running" as const, phase: "模型处理中", progress: 45, detail: "正在接收正文", created_at: new Date().toISOString(), attempt: 1, events: [{ at: new Date().toISOString(), attempt: 1, phase: "模型处理中", detail: "HTTP 200 已连接", level: "info", metrics: { http_status: 200, content_chars: 120, reasoning_chars: 80, route: "直连", elapsed_seconds: 4 } }] },
+      { job_id: "running", project_id: project.id, node_ids: [ids[0]], status: "running" as const, phase: "模型处理中", progress: 45, detail: "正在接收正文", created_at: new Date().toISOString(), attempt: 1, events: [{ at: new Date().toISOString(), attempt: 1, phase: "模型处理中", detail: "HTTP 200 已连接", level: "info", metrics: { http_status: 200, content_chars: 120, reasoning_chars: 80, provider_reasoning: "正在核对 Wiki 适用条件。", route: "直连", elapsed_seconds: 4 } }] },
       { job_id: "stopped", project_id: project.id, node_ids: [ids[1]], status: "failed" as const, phase: "生成失败", progress: 30, detail: "HTTP 429 额度不足", error: "HTTP 429 额度不足", created_at: new Date().toISOString() },
     ];
     vi.spyOn(api, "listMagicJobs").mockResolvedValue(jobs);
@@ -124,7 +124,9 @@ describe("任务日志、删除与视频时长", () => {
     expect(within(dialog).getByText("实时执行 LOG")).toBeTruthy();
     expect(within(dialog).getByText("HTTP 200 已连接")).toBeTruthy();
     expect(within(dialog).getByText("正文 120 字符")).toBeTruthy();
-    expect(within(dialog).getByText("推理 80 字符（仅计数）")).toBeTruthy();
+    expect(within(dialog).getByText("供应商模型推理输出（实时）")).toBeTruthy();
+    expect(within(dialog).getAllByText("正在核对 Wiki 适用条件。").length).toBeGreaterThan(0);
+    expect(within(dialog).getByText("推理 80 字符")).toBeTruthy();
     expect(within(dialog).getByRole("link", { name: "导出 LOG（JSON）" }).getAttribute("href")).toContain("/api/magic/jobs/running/logs/export?format=json");
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭详情" }));
     fireEvent.click(within(stopped).getByRole("button", { name: "删除任务" }));
