@@ -53,9 +53,9 @@ let child, gateway, browser;
   page.on('request', request=>requests.push(new URL(request.url()).pathname));
   for (const suffix of ['', '/']) {
     await page.goto(origin+prefix+suffix);
-    await page.getByText('云端前缀验收', {exact:true}).first().waitFor();
+    await page.locator('.project-card-main').filter({hasText:'云端前缀验收'}).first().waitFor();
   }
-  await page.getByText('云端前缀验收',{exact:true}).first().click();
+  await page.locator('.project-card-main').filter({hasText:'云端前缀验收'}).first().click();
   await page.locator('.react-flow__node').first().waitFor();
   assert(requests.some(url=>url.startsWith(prefix+'/assets/')));
   assert(requests.some(url=>url.startsWith(prefix+'/api/projects')));
