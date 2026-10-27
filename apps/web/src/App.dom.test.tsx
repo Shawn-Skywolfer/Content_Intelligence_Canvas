@@ -133,7 +133,8 @@ describe("历史研究与项目入口", () => {
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
-    await waitFor(() => expect(view.getByRole("button", { name: "短文本实测" })).toBeTruthy());
+    // 按钮在配置加载前已存在，但尚不可操作；等待已有模型完成初始化。
+    await waitFor(() => expect((view.getByRole("button", { name: "短文本实测" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(view.getByRole("button", { name: "短文本实测" }));
     await waitFor(() => expect(view.getByText(/失败：模型未返回可用文本/)).toBeTruthy());
     vi.spyOn(api, "saveProvider").mockRejectedValue(new Error("最大输出 token：不得大于 262144"));
