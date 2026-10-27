@@ -485,8 +485,10 @@ def export_magic_logs(job_id: str, format: str = Query(default="txt", pattern="^
     job = workspace.get_magic_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在")
-    events = safe_log(workspace.magic_job_logs(job_id))
+    from app.cloud_deployment import utc_output
+    events = utc_output(safe_log(workspace.magic_job_logs(job_id)))
     header = safe_log({key: job.get(key) for key in ("job_id", "project_id", "node_ids", "status", "phase", "progress", "detail", "error", "created_at", "updated_at", "attempt", "provider", "request")})
+    header = utc_output(header)
     def lines():
         if format == "json":
             yield '{"task":' + json.dumps(header, ensure_ascii=False) + ',"logs":['

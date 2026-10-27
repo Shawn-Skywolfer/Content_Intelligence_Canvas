@@ -30,6 +30,7 @@ jobs:
       - name: 构建中文前端
         working-directory: apps/web
         run: |
+          python ../../scripts/prepare_public_ci_lock.py
           npm ci
           npm run test
           npm run build
@@ -49,7 +50,7 @@ jobs:
 
           Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile (Join-Path $env:RUNNER_TEMP "get-pip.py")
           & (Join-Path $runtime "python.exe") (Join-Path $env:RUNNER_TEMP "get-pip.py") --disable-pip-version-check
-          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target (Join-Path $runtime "Lib\site-packages") "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2.10,<3" "lancedb>=0.20,<1" "numpy>=2,<3" "httpx>=0.28,<1" "psutil>=7,<8" "truststore>=0.10,<1"
+          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target (Join-Path $runtime "Lib\site-packages") "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2.10,<3" "pydantic-settings>=2.7,<3" "lancedb>=0.20,<1" "numpy>=2,<3" "httpx>=0.28,<1" "psutil>=7,<8" "truststore>=0.10,<1"
 
           Copy-Item -Recurse -Force apps/api/app (Join-Path $runtime "apps\api\app")
           Copy-Item -Force apps/api/standalone_entry.py $runtime

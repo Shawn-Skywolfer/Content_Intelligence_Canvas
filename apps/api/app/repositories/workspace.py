@@ -5,13 +5,13 @@ import logging
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.utcnow().isoformat()
 
 
 logger = logging.getLogger(__name__)
@@ -753,6 +753,8 @@ class WorkspaceRepository:
         viewport: dict[str, Any],
         base_updated_at: str | None = None,
     ) -> dict[str, Any]:
+        if base_updated_at:
+            base_updated_at = base_updated_at.removesuffix("Z").removesuffix("+00:00")
         current_canvas = self.get_canvas(project_id)
         existing = {node["id"]: node for node in current_canvas["nodes"]}
         concurrent_nodes = {node_id for node_id, node in existing.items()

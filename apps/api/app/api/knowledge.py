@@ -80,7 +80,7 @@ async def upload_wiki_zip(request: Request, name: str = "上传的知识库"):
         chunks.extend(chunk)
         if len(chunks) > 50 * 1024 * 1024:
             raise HTTPException(413, "Wiki ZIP 不能超过 50 MB")
-    target = Settings.from_env().data_dir / "uploaded-wikis" / uuid.uuid4().hex
+    target = Settings.from_env().uploaded_wikis_dir / uuid.uuid4().hex
     try:
         with zipfile.ZipFile(io.BytesIO(chunks)) as archive:
             entries = archive.infolist()
@@ -131,7 +131,7 @@ def delete_source(source_id: str) -> Response:
 @router.post("/system/select-folder")
 def select_folder() -> dict[str, str]:
     """Open a native Windows folder picker from the local portable application."""
-    if os.getenv("CIC_SERVER_MODE") == "1":
+    if os.getenv("CIC_SERVER_MODE") in {"1", "cloud"}:
         raise HTTPException(501, "服务器版不能浏览访问者电脑的文件夹，请上传 Wiki ZIP，或填写服务器上的知识库目录")
     if os.name != "nt":
         raise HTTPException(501, "文件夹浏览仅在 Windows 本地版中可用")

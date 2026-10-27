@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -60,7 +60,7 @@ class KnowledgeManifestRepository:
             )
 
     def upsert_source(self, source_id: str, name: str, root_path: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.utcnow().isoformat()
         with self._connect() as db:
             db.execute(
                 """
@@ -106,7 +106,7 @@ class KnowledgeManifestRepository:
         return result
 
     def upsert_document(self, document: ParsedWikiDocument, size: int) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.utcnow().isoformat()
         with self._connect() as db:
             db.execute(
                 """

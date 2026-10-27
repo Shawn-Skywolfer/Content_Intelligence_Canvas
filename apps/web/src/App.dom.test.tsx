@@ -103,6 +103,8 @@ describe("历史研究与项目入口", () => {
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
+    // 初始表单也有 3000，必须等待已有模型载入后再编辑，避免测试与异步初始化竞争。
+    await waitFor(() => expect((view.getByLabelText("当前调用模型") as HTMLInputElement).value).toBe(provider.model_name));
     await waitFor(() => expect(view.getByDisplayValue("3000")).toBeTruthy());
     const input = view.getByLabelText("最大输出 token") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "" } });

@@ -7,7 +7,7 @@ import ssl
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
@@ -356,7 +356,7 @@ class AIProviderGateway:
                 "response_excerpt": content[:200] if content else "",
                 "sent_prompt": "请只回复 OK",
                 "test_max_tokens": test_tokens,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": detail,
             }
         except httpx.HTTPStatusError as exc:
@@ -371,7 +371,7 @@ class AIProviderGateway:
                 "tested_model": test_model,
                 "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": self._http_error_message("模型调用失败", exc.response),
             }
         except Exception as exc:  # Provider error must not crash the workspace.
@@ -384,7 +384,7 @@ class AIProviderGateway:
                 "tested_model": test_model,
                 "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"连接失败：{exc}",
             }
 
