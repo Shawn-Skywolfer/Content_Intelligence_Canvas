@@ -1,3 +1,4 @@
+import { t, getLocale, uiMessage } from "./i18n";
 const API_BASE = (import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "")).replace(/\/$/, "");
 
 // 统一拼接部署前缀，下载链接也必须经过同一入口。
@@ -98,11 +99,11 @@ export type McpSearchConfig = { name: string; url: string; tool_name: string; en
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Accept-Language": getLocale(), "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
     const raw = await response.text();
-    let message = raw || `请求失败（${response.status}）`;
+    let message = raw || t("请求失败（{0}）", response.status);
     try { const data = JSON.parse(raw); message = formatApiError(data.error ?? data.detail ?? data.message ?? data); } catch { /* 保留原始错误 */ }
     throw new Error(message);
   }
@@ -111,23 +112,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function formatApiError(value: unknown): string {
-  const labels: Record<string, string> = { name: "配置名称", base_url: "接口地址", api_key: "API Key", model_name: "模型 ID", protocol: "接口协议", temperature: "温度", max_tokens: "最大输出 token", timeout_seconds: "请求超时" };
-  if (typeof value === "string") return value;
+  const labels: Record<string, string> = { name: t("配置名称"), base_url: t("接口地址"), api_key: "API Key", model_name: t("模型 ID"), protocol: t("接口协议"), temperature: t("温度"), max_tokens: t("最大输出 token"), timeout_seconds: t("请求超时") };
+  if (typeof value === "string") return uiMessage(value);
   if (Array.isArray(value)) return value.map((item) => {
     if (item && typeof item === "object" && "msg" in item) {
       const error = item as { loc?: (string | number)[]; msg: string; type?: string; ctx?: Record<string, unknown> };
       const field = error.loc?.filter((part) => part !== "body").map((part) => labels[String(part)] ?? String(part)).join(" / ");
-      const messages: Record<string, string> = { greater_than_equal: `不得小于 ${error.ctx?.ge}`, less_than_equal: `不得大于 ${error.ctx?.le}`, int_parsing: "请输入整数", float_parsing: "请输入数字", missing: "此项不能为空", string_too_short: `至少输入 ${error.ctx?.min_length} 个字符`, string_too_long: `最多输入 ${error.ctx?.max_length} 个字符`, literal_error: "选项无效，请重新选择" };
+      const messages: Record<string, string> = { greater_than_equal: t("不得小于 {0}", error.ctx?.ge), less_than_equal: t("不得大于 {0}", error.ctx?.le), int_parsing: t("请输入整数"), float_parsing: t("请输入数字"), missing: t("此项不能为空"), string_too_short: t("至少输入 {0} 个字符", error.ctx?.min_length), string_too_long: t("最多输入 {0} 个字符", error.ctx?.max_length), literal_error: t("选项无效，请重新选择") };
       return `${field ? `${field}：` : ""}${messages[error.type ?? ""] ?? error.msg}`;
     }
     return formatApiError(item);
   }).join("；");
   if (value && typeof value === "object" && "reason" in value) {
     const failure = value as WebFailure;
-    return `${failure.http_status != null ? `HTTP ${failure.http_status}` : "未收到 HTTP 响应"} · ${failure.reason}${failure.suggestion ? `。建议：${failure.suggestion}` : ""}`;
+    return `${failure.http_status != null ? `HTTP ${failure.http_status}` : t("未收到 HTTP 响应")} · ${failure.reason}${failure.suggestion ? t("。建议：{0}", failure.suggestion) : ""}`;
   }
   if (value && typeof value === "object") return JSON.stringify(value);
-  return String(value ?? "请求失败");
+  return String(value ?? t("请求失败"));
 }
 
 export const downloadUrl = apiUrl;

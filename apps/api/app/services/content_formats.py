@@ -12,9 +12,15 @@ DEFAULT_CONTENT_FORMATS: list[dict[str, str]] = [
 ]
 
 
-def list_content_formats(repository: WorkspaceRepository) -> list[dict[str, Any]]:
+DEFAULT_CONTENT_FORMATS_EN = [{'id': 'wechat', 'name': 'WeChat article', 'positive_prompt': 'Include a title, introduction, section headings, body, and conclusion. Cite evidence for factual claims.', 'negative_prompt': 'Do not invent facts, quotations, or examples.'}, {'id': 'video_script', 'name': 'Short-form video script', 'positive_prompt': 'Include an opening hook, shot-by-shot visuals, voiceover, captions, pacing, and a closing call to action.', 'negative_prompt': 'Do not present uncertain judgments as established facts.'}, {'id': 'poster_campaign', 'name': 'Poster / campaign', 'positive_prompt': 'Include a headline, subheading, key message, call to action, and visual direction.', 'negative_prompt': 'Do not overstate the evidence or use unverified figures.'}]
+
+def list_content_formats(repository: WorkspaceRepository, language: str = "zh-CN") -> list[dict[str, Any]]:
     saved = repository.get_setting("content_formats")
-    return saved if isinstance(saved, list) else DEFAULT_CONTENT_FORMATS
+    if isinstance(saved, list):
+        return saved
+    if language.lower().startswith("en"):
+        return [dict(item) for item in DEFAULT_CONTENT_FORMATS_EN]
+    return DEFAULT_CONTENT_FORMATS
 
 
 def get_content_format(repository: WorkspaceRepository, format_id: str) -> dict[str, Any]:

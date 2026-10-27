@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Response, Query
+from fastapi import APIRouter, HTTPException, Response, Query, Header
 from fastapi.responses import StreamingResponse
 from app.services.ai.task_logs import safe_log
 
@@ -136,9 +136,9 @@ def list_projects() -> list[dict[str, Any]]:
 
 
 @router.post("/projects", response_model=ProjectResponse)
-def create_project(request: ProjectCreateRequest) -> dict[str, Any]:
+def create_project(request: ProjectCreateRequest, accept_language: str = Header(default="zh-CN")) -> dict[str, Any]:
     name = request.name.strip() or request.idea.strip()[:36]
-    return get_container().workspace.create_project(name, request.idea.strip(), request.brief.strip())
+    return get_container().workspace.create_project(name, request.idea.strip(), request.brief.strip(), language=accept_language)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -618,8 +618,8 @@ def delete_asset(project_id: str, asset_id: str) -> Response:
 
 
 @router.get("/content-formats")
-def content_formats() -> list[dict[str, Any]]:
-    return list_content_formats(get_container().workspace)
+def content_formats(accept_language: str = Header(default="zh-CN")) -> list[dict[str, Any]]:
+    return list_content_formats(get_container().workspace, language=accept_language)
 
 
 @router.put("/content-formats")
