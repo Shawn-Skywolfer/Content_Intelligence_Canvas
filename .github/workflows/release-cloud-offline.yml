@@ -1,0 +1,45 @@
+name: 发布 Linux 离线依赖包
+on:
+  push:
+    branches: [release/cloud-offline-v0.3.29]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: cloud-offline-release
+  cancel-in-progress: true
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+      - name: 构建前端并验证
+        working-directory: apps/web
+        env:
+          VITE_API_BASE: /ContentWorkbench
+        run: |
+          python ../../scripts/prepare_public_ci_lock.py
+          npm ci
+          npm run test
+          npm run build
+      - name: 下载全部锁定的 Linux 二进制依赖
+        run: |
+          python -m pip download --only-binary=:all: -r packaging/cloud/requirements.lock.txt --dest /tmp/cic-wheelhouse
+          python scripts/build_cloud_release.py --wheelhouse /tmp/cic-wheelhouse --output release-artifacts
+          PACKAGE=$(find release-artifacts -maxdepth 1 -name 'ContentWorkbench-*.zip')
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          sha256sum "$PACKAGE"
+      - name: 断开外网后从实际发布包安装并验收
+        run: |
+          sudo --preserve-env=LD_LIBRARY_PATH unshare --net bash -c 'ip link set lo up; "$1" scripts/verify_offline_release.py "$2"' _ "$(command -v python)" "$PACKAGE"
+      - name: 发布全新离线依赖版
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.3.29-cloud.2 "$PACKAGE" --target "$GITHUB_SHA" --title '内容智能工作台 Linux 离线依赖版' --notes-file packaging/cloud/OFFLINE.md
