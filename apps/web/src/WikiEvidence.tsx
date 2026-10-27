@@ -13,7 +13,7 @@ export default function WikiEvidence({ item, sourceId }: { item: Evidence; sourc
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
-  return <details className="wiki-evidence"><summary>{item.title || item.path || "Wiki 引用"}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small>
+  return <details className="wiki-evidence"><summary>{item.title || item.path || t("Wiki 引用")}</summary><small>{item.path}｜{item.heading?.join(" › ")}</small>
     {item.excerpt && <MarkdownContent>{item.excerpt}</MarkdownContent>}
     <button type="button" className="secondary" disabled={busy} onClick={() => void load()}>{busy ? t("正在读取 Wiki 原文…") : original ? t("重新读取原始词条") : t("查看完整 Wiki 原始词条")}</button>
     {error && <p className="settings-error" role="status">{uiMessage(error)}</p>}

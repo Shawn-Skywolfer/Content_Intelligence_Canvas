@@ -17,7 +17,7 @@ export default function GlobalNetworkSettings() {
       if (test) {
         setMessage(t("正在检测网络可达性，单次请求超时 8 秒…"));
         const result = await api.testGlobalNetwork();
-        setMessage(`${result.reachable ? t("收到响应") : t("连接失败")} · ${result.http_status == null ? t("未收到 HTTP 响应") : `HTTP ${result.http_status}`} · ${result.route || "所选网络"} · ${result.latency_ms} ms。${result.message}`);
+        setMessage(`${result.reachable ? t("收到响应") : t("连接失败")} · ${result.http_status == null ? t("未收到 HTTP 响应") : `HTTP ${result.http_status}`} · ${result.route || t("所选网络")} · ${result.latency_ms} ms。${result.message}`);
       }
     } catch (error) { setMessage(t("操作失败：{0}", error instanceof Error ? error.message : String(error))); }
     finally { setBusy(false); }
