@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
+const API_BASE = (import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "http://localhost:8000" : "")).replace(/\/$/, "");
+
+// 统一拼接部署前缀，下载链接也必须经过同一入口。
+export const apiUrl = (path: string) => `${API_BASE}/${path.replace(/^\//, "")}`;
 
 export type Source = { id: string; name: string; connector_type: string; root_path: string; enabled: boolean };
 export type RefreshJob = {
@@ -93,14 +96,14 @@ export type WebTestJob = { failure?: WebFailure; job_id: string; status: "runnin
 export type McpSearchConfig = { name: string; url: string; tool_name: string; enabled: boolean; has_api_key: boolean; api_key?: string; network_mode: NetworkMode; proxy_url: string; proxy_username: string; proxy_password?: string; has_proxy_password: boolean };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
     const raw = await response.text();
     let message = raw || `请求失败（${response.status}）`;
-    try { const data = JSON.parse(raw); message = formatApiError(data.detail ?? data.message ?? data); } catch { /* 保留原始错误 */ }
+    try { const data = JSON.parse(raw); message = formatApiError(data.error ?? data.detail ?? data.message ?? data); } catch { /* 保留原始错误 */ }
     throw new Error(message);
   }
   if (response.status === 204) return undefined as T;
@@ -127,7 +130,7 @@ export function formatApiError(value: unknown): string {
   return String(value ?? "请求失败");
 }
 
-export const downloadUrl = (path: string) => `${API_BASE}${path}`;
+export const downloadUrl = apiUrl;
 
 export const api = {
   wikiOriginal: (ref: Evidence) => request<WikiOriginal>("/api/knowledge/original", { method: "POST", body: JSON.stringify({ chunk_id: ref.chunk_id || "", source_id: ref.source_id || null, path: ref.path || "" }) }),

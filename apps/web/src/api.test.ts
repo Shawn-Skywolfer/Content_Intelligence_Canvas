@@ -9,3 +9,11 @@ describe("接口字段错误", () => {
     expect(text).not.toContain("secret-must-not-appear");
   });
 });
+
+import { apiUrl, downloadUrl } from "./api";
+describe("统一接口与导出路径", () => {
+  it("接口与下载链接使用同一入口", () => {
+    expect(apiUrl("/api/projects")).toBe(downloadUrl("api/projects"));
+    expect(apiUrl("/api/projects")).toMatch(/\/api\/projects$/);
+  });
+});

@@ -9,12 +9,13 @@ from app.api.knowledge import router as knowledge_router
 from app.api.settings import router as settings_router
 from app.api.workspace import router as workspace_router
 from app.config import Settings
+from app.cloud_deployment import CloudJSONResponse
 
 settings = Settings.from_env()
-app = FastAPI(title="Content Intelligence Canvas API", version="0.3.29")
+app = FastAPI(title="Content Intelligence Canvas API", version="0.3.29", default_response_class=CloudJSONResponse)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.web_origin],
+    allow_origins=settings.web_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
