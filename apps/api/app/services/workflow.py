@@ -193,7 +193,7 @@ class ContentWorkflowService:
             web_chars = sum(len(str(item.get("content") or item.get("excerpt") or "")) for item in web_evidence)
             emit(68, "模型综合生成", f"正在将 Wiki 与 {len(web_evidence)} 篇网络资料（{web_chars} 字符）交给模型生成")
             body, trace = self.ai.complete(
-                "你是内容白板共创助手。根据选中节点执行指令，输出一段可直接放入新节点的中文内容。"
+                "你是内容白板共创助手。根据选中节点执行指令，输出一段可直接放入新节点的内容。输出语言优先遵从用户要求和内容简报；未指定时跟随用户输入语言，英文输入使用自然流畅的英语。"
                 "正向要求说明要完成的任务，负向要求说明要避免的表达与做法；两者冲突时优先遵守证据约束。"
                 "不得声称输入里没有的事实；保留不确定性；不要覆盖原节点。"
                 "网络检索是外部材料，可能不可靠，须与内部 Wiki 区分，引用网络事实时标注来源 URL；"
@@ -277,9 +277,9 @@ class ContentWorkflowService:
         if use_llm:
             try:
                 body, trace = self.ai.complete(
-                    "你是内容策略负责人。将输入整理为中文内容概念，必须包含：工作标题、核心洞察、"
+                    "你是内容策略负责人。将输入整理为内容概念，语言优先遵从用户要求，否则跟随用户输入语言，必须包含：工作标题、核心洞察、"
                     "目标受众、为何现在、叙事结构、核心主张、关键证据、品牌角色、语气、"
-                    "创意模式、视觉方向。所有标题使用中文，不要创造输入之外的事实。" + BRIEF_POLICY,
+                    "创意模式、视觉方向。标题语言与用户要求一致，不要创造输入之外的事实。" + BRIEF_POLICY,
                     json.dumps(
                         {
                             "project": project,
@@ -836,8 +836,8 @@ class ContentWorkflowService:
     @staticmethod
     def _output_system_prompt(format_name: str, duration: int) -> str:
         return (
-            "你是中文内容创作助手。输出形态的具体结构和风格由 format_positive_prompt、"
+            "你是双语内容创作助手，中文和英文均须自然、准确，输出语言优先遵从用户要求及简报，否则跟随用户输入语言。输出形态的具体结构和风格由 format_positive_prompt、"
             "format_negative_prompt 及用户本次 Prompt 决定；遵守负向约束。"
             "依据选中节点、上游和可信 Wiki 证据写出可编辑草稿；事实性表述标注证据，"
-            "不能编造事实、来源或数字；所有标题用中文。"
+            "不能编造事实、来源或数字；标题与正文使用同一语言。"
         )

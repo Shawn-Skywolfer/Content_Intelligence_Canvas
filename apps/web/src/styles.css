@@ -560,3 +560,15 @@ summary { cursor: pointer; font-weight: 750; }
 .provider-reasoning-panel > summary { font-weight: 650; cursor: pointer; }
 .provider-reasoning-text { max-height: 240px; overflow: auto; }
 .provider-reasoning-text pre { display: inline; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.7; }
+
+/* 英文文案较长，工具与表单允许换行，不压缩正文编辑区域。 */
+.sidebar-tools { gap: 8px; align-items: center; }
+.language-switch { display:flex; align-items:center; gap:6px; min-width:0; margin-right:auto; }
+.language-switch select { width:112px; min-height:32px; padding:4px 6px; font-size:12px; }
+.sidebar-collapsed .language-switch { display:none; }
+html[lang="en"] .brand strong { font-size:19px; line-height:1.2; }
+html[lang="en"] .brand small { line-height:1.45; }
+html[lang="en"] button { white-space:normal; overflow-wrap:break-word; }
+html[lang="en"] .settings-tabs { flex-wrap:wrap; }
+html[lang="en"] .task-manager-toolbar { flex-wrap:wrap; }
+html[lang="en"] .tool-tooltip { max-width:230px; white-space:normal; }

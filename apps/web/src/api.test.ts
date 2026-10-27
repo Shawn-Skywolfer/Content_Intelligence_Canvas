@@ -1,3 +1,6 @@
+import { beforeEach as resetTestLanguage } from "vitest";
+import { setLocale as setTestLocale } from "./i18n";
+resetTestLanguage(() => setTestLocale("zh-CN"));
 import { describe, expect, it } from "vitest";
 import { formatApiError } from "./api";
 

@@ -1,3 +1,6 @@
+import { beforeEach as resetTestLanguage } from "vitest";
+import { setLocale as setTestLocale } from "./i18n";
+resetTestLanguage(() => setTestLocale("zh-CN"));
 // @vitest-environment jsdom
 import { useState } from "react";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";

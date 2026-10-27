@@ -1,3 +1,6 @@
+import { beforeEach as resetTestLanguage } from "vitest";
+import { setLocale as setTestLocale } from "./i18n";
+resetTestLanguage(() => setTestLocale("zh-CN"));
 import { expect, it } from "vitest";
 import { cleanSourcePath } from "./sourcePath";
 it("保留中文、空格、单引号和 UNC 目录，剥离工具警告", () => {

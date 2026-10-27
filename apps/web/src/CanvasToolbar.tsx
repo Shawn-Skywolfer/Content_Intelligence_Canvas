@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { PointerEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 type Dock = "top" | "bottom" | "left" | "right";
@@ -86,14 +87,14 @@ export default function CanvasToolbar({ tools }: { tools: CanvasTool[] }) {
   return <>
     {preview && <div className={`toolbar-dock-preview dock-${preview}`} aria-hidden="true" />}
     <div ref={toolbar} className={`canvas-toolbox dock-${preferences.dock} layout-${preferences.layout}`} data-dock={preferences.dock} data-layout={preferences.layout} onKeyDown={(event) => { if (event.key === "Escape" && settingsOpen) { event.stopPropagation(); setSettingsOpen(false); } }}>
-      <div role="toolbar" aria-label="白板工具栏" aria-orientation={preferences.layout} className="canvas-tool-strip">
-        <button type="button" className="tool-grip" title="拖动到画布四边吸附；也可在工具栏设置中选择位置" aria-label="拖动工具栏" onPointerDown={begin} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}><Icon name="grip" /></button>
+      <div role="toolbar" aria-label={t("白板工具栏")} aria-orientation={preferences.layout} className="canvas-tool-strip">
+        <button type="button" className="tool-grip" title={t("拖动到画布四边吸附；也可在工具栏设置中选择位置")} aria-label={t("拖动工具栏")} onPointerDown={begin} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}><Icon name="grip" /></button>
         <span className="tool-separator" />
         {tools.map((tool) => <button type="button" key={tool.icon} className={`canvas-tool tool-${tool.icon}`} aria-label={tool.label} title={`${tool.label}${tool.shortcut ? `（${tool.shortcut}）` : ""}`} disabled={tool.disabled} onClick={tool.onClick}><Icon name={tool.icon} /><span className="tool-tooltip">{tool.label}</span></button>)}
         <span className="tool-separator" />
-        <button type="button" className="canvas-tool" aria-label="工具栏设置" title="工具栏设置" aria-expanded={settingsOpen} aria-controls="canvas-toolbar-settings" onClick={() => setSettingsOpen((value) => !value)}><Icon name="settings" /></button>
+        <button type="button" className="canvas-tool" aria-label={t("工具栏设置")} title={t("工具栏设置")} aria-expanded={settingsOpen} aria-controls="canvas-toolbar-settings" onClick={() => setSettingsOpen((value) => !value)}><Icon name="settings" /></button>
       </div>
-      {settingsOpen && <div ref={settings} className="canvas-toolbar-settings" id="canvas-toolbar-settings" role="group" aria-label="工具栏布局与停靠"><strong>工具栏</strong><p>显示方向</p><div>{([["horizontal", "横向"], ["vertical", "纵向"]] as const).map(([layout, label]) => <button type="button" key={layout} aria-pressed={preferences.layout === layout} onClick={() => setPreferences((value) => ({ ...value, layout }))}>{label}</button>)}</div><p>吸附位置</p><div>{([["top", "上边缘"], ["bottom", "下边缘"], ["left", "左边缘"], ["right", "右边缘"]] as const).map(([dock, label]) => <button type="button" key={dock} aria-pressed={preferences.dock === dock} onClick={() => setPreferences({ dock, layout: dock === "left" || dock === "right" ? "vertical" : "horizontal" })}>{label}</button>)}</div><small>拖动六点手柄可快速停靠，位置和方向会自动记住。</small></div>}
+      {settingsOpen && <div ref={settings} className="canvas-toolbar-settings" id="canvas-toolbar-settings" role="group" aria-label={t("工具栏布局与停靠")}><strong>{t("工具栏")}</strong><p>{t("显示方向")}</p><div>{([["horizontal", t("横向")], ["vertical", t("纵向")]] as const).map(([layout, label]) => <button type="button" key={layout} aria-pressed={preferences.layout === layout} onClick={() => setPreferences((value) => ({ ...value, layout }))}>{t(label)}</button>)}</div><p>{t("吸附位置")}</p><div>{([["top", t("上边缘")], ["bottom", t("下边缘")], ["left", t("左边缘")], ["right", t("右边缘")]] as const).map(([dock, label]) => <button type="button" key={dock} aria-pressed={preferences.dock === dock} onClick={() => setPreferences({ dock, layout: dock === "left" || dock === "right" ? "vertical" : "horizontal" })}>{t(label)}</button>)}</div><small>{t("拖动六点手柄可快速停靠，位置和方向会自动记住。")}</small></div>}
     </div>
   </>;
 }

@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.29
+      - release/v0.3.30
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.29"
+      RELEASE_TAG: "v0.3.30"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,13 +27,29 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: 构建中文前端
+      - name: 构建中英双语前端
         working-directory: apps/web
         run: |
           python ../../scripts/prepare_public_ci_lock.py
           npm ci
           npm run test
           npm run build
+
+      - name: Chromium 验证中英切换与英文页面
+        run: |
+          cd apps/web
+          npx playwright install chromium
+          cd ../..
+          node scripts/check_bilingual.cjs
+          if ($LASTEXITCODE -ne 0) { throw "双语浏览器验收失败" }
+
+      - name: 保存双语界面验收截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilingual-ui-screenshots
+          path: bilingual-screenshots
+          if-no-files-found: ignore
 
       - name: 准备 Windows Python 运行时和后端依赖
         shell: pwsh
@@ -94,10 +110,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.29_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.30_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.29.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.29.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.30.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.30.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -106,7 +122,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.29.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.30.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -145,7 +161,7 @@ jobs:
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：冷启动"
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.29"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.30"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -213,8 +229,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
-          git push --force origin "refs/tags/$env:RELEASE_TAG"
+          git tag $env:RELEASE_TAG $env:GITHUB_SHA
+          git push origin "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0) { throw "发布标签更新失败：$LASTEXITCODE" }
 
       - name: 发布 GitHub Release
@@ -222,14 +238,16 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.29
+          name: Content Intelligence Canvas v0.3.30
           body: |
-            Windows portable public test build.
+            Windows portable bilingual release / Windows 中英双语绿色版。
 
-            大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
+            Switch between 简体中文 and English from the sidebar. The app remembers your choice and follows your browser language on first launch. Projects, Wiki files, and user prompts are preserved when switching languages.
 
-            v0.3.29 默认使用完整响应模式，流式接收改为模型配置中的实验选项。完整草稿在简报审阅及修订前持久保存，并可在任务详情查看；后续修订失败不再丢失完整草稿。保留节点 Prompt 历史与 Wiki 全文上下文。
+            English UI covers projects, research, canvas editing, AI tasks, content management, and settings. AI output follows explicit language requirements or the language of your input. Startup dialogs include English guidance.
 
-            这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.29.exe
+            单体 EXE 自带运行环境。新增侧边栏语言切换，保留当前项目和未提交编辑；首次启动参考浏览器语言。模型输出遵循用户要求和输入语言。
+
+            Public test build. No private Wiki, database, or API keys are included. Configure your model and knowledge sources in Settings after launch.
+          files: Content_Intelligence_Canvas_Portable_v0.3.30.exe
           generate_release_notes: true

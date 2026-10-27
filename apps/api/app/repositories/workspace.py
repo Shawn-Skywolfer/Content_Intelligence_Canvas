@@ -242,7 +242,7 @@ class WorkspaceRepository:
             item["is_external"] = bool(item["is_external"])
         return item
 
-    def create_project(self, name: str, idea: str, brief: str = "") -> dict[str, Any]:
+    def create_project(self, name: str, idea: str, brief: str = "", language: str = "zh-CN") -> dict[str, Any]:
         project_id = f"prj_{uuid.uuid4().hex}"
         canvas_id = f"cnv_{uuid.uuid4().hex}"
         now = utc_now()
@@ -270,6 +270,10 @@ class WorkspaceRepository:
             },
         )
         self.ensure_canvas(project_id)
+        if language.lower().startswith("en"):
+            # 只本地化本次新建的系统种子；不改用户输入与已有项目。
+            from app.services.ui_locale import localize_new_project
+            localize_new_project(self, project_id, bool(brief))
         return self.get_project(project_id) or {}
 
     def list_projects(self) -> list[dict[str, Any]]:
