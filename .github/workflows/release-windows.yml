@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build-and-release:
@@ -17,6 +18,18 @@ jobs:
       PYTHON_VERSION: "3.12.10"
       RELEASE_TAG: "v0.3.30"
     steps:
+      - name: 取消该发布分支的过时构建
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runs = gh api "repos/${{ github.repository }}/actions/workflows/release-windows.yml/runs?branch=${{ github.ref_name }}&per_page=10" | ConvertFrom-Json
+          foreach ($run in $runs.workflow_runs) {
+            if ($run.id -ne [long]"${{ github.run_id }}" -and $run.status -ne "completed") {
+              gh api --method POST "repos/${{ github.repository }}/actions/runs/$($run.id)/cancel"
+            }
+          }
+
       - name: Checkout
         uses: actions/checkout@v4
 
