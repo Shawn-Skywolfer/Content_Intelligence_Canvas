@@ -180,7 +180,7 @@ static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar
     if (file_exists(ready) && runtime_complete(runtime)) { log_event(L"复用已校验运行环境"); return 1; }
     progress(L"Setting up the local runtime / 正在准备运行环境\nFirst launch may take a few minutes. Please wait. / 首次启动请稍候。");
     wchar_t zip[PATH_CAP], stage[PATH_CAP], old[PATH_CAP], command[32768], system[PATH_CAP];
-    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.30.zip", root);
+    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.31.zip", root);
     swprintf(stage, PATH_CAP, L"%ls.extracting-%lu-%llu", runtime, GetCurrentProcessId(), GetTickCount64());
     if (!write_payload(self, zip)) {
         wchar_t message[400]; swprintf(message, 400, L"Cannot read application data. Stage %d, system error %lu. Download the complete EXE again. / 安装数据读取失败，请重新下载。", payload_stage, payload_error); fail(message); return 0;
@@ -206,7 +206,7 @@ static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar
     if (!MoveFileW(stage, runtime)) { fail(L"Cannot finalize the runtime. Check folder permissions. / 无法提交运行环境，请检查目录权限。"); return 0; }
     HANDLE marker = CreateFileW(ready, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (marker == INVALID_HANDLE_VALUE) { fail(L"Cannot save the runtime validation marker. / 无法保存校验标记。"); return 0; }
-    DWORD written; WriteFile(marker, "v0.3.30", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
+    DWORD written; WriteFile(marker, "v0.3.31", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
     DeleteFileW(zip); log_event(L"运行环境完整释放并提交"); return 1;
 }
 
@@ -256,7 +256,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     if (!separator) return 1;
     *separator = L'\0'; swprintf(portable, PATH_CAP, L"%ls\\ContentIntelligenceCanvas_Data", self); *separator = L'\\';
     SetEnvironmentVariableW(L"CIC_PORTABLE_HOME", portable);
-    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.30", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
+    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.31", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
     progress(L"Content Intelligence Workspace: starting… / 正在启动…");
     HANDLE mutex = CreateMutexW(NULL, FALSE, L"Local\\ContentIntelligenceCanvas.Launcher");
     if (!mutex) { fail(L"Cannot create the startup lock. / 无法创建启动锁。"); return 2; }

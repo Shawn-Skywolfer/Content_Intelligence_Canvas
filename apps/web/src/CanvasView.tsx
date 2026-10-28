@@ -266,6 +266,8 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
   const [taskMessage, setTaskMessage] = useState("");
   const [taskOperations, setTaskOperations] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<{ name?: string; model_name: string | null; network_mode?: string } | null>(null);
+  const mountedRef = useRef(false);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const completedJobsRef = useRef(new Set<string>());
   const [submittingMagic, setSubmittingMagic] = useState(false);
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
@@ -397,9 +399,10 @@ export default function CanvasView({ project, canvas, selectedIds, setSelectedId
     try {
       if (beforeGenerate) await beforeGenerate();
       else if (boardRef.current) await api.saveCanvas(projectId, boardRef.current);
+      if (!mountedRef.current) return;
       const result = await api.summarizeNode(projectId, node.id, force);
       const current = boardRef.current;
-      if (current?.project_id === projectId && result.summary) {
+      if (mountedRef.current && current?.project_id === projectId && result.summary) {
         const next = { ...current, nodes: current.nodes.map((item) =>
           item.id === node.id && item.title === result.title && item.body === result.body
             ? { ...item, summary: result.summary, summary_model: result.summary_model } : item) };

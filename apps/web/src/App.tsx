@@ -86,13 +86,22 @@ export default function App() {
   });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const projectRef = useRef(projectId);
+  projectRef.current = projectId;
+  const readSequence = useRef(0);
   const [sources, setSources] = useState<Source[]>([]);
   const [canvas, setCanvas] = useState<CanvasData | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [status, setStatus] = useState(t("正在连接本地工作台…"));
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirtyState] = useState(false);
+  const dirtyRef = useRef(false);
+  const canvasRef = useRef<CanvasData | null>(null);
+  const editRevision = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function setDirty(value: boolean) { dirtyRef.current = value; setDirtyState(value); }
+  function installCanvas(value: CanvasData | null) { canvasRef.current = value; setCanvas(value); }
   const [canvasError, setCanvasError] = useState("");
   const saveSequence = useRef(0);
   const saveInFlight = useRef<Promise<CanvasData> | null>(null);
@@ -113,55 +122,69 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!projectId) { setCanvas(null); setAssets([]); return; }
+    if (!projectId) { installCanvas(null); setAssets([]); return; }
     if (view !== "canvas" && view !== "content") return;
     if (canvas?.project_id === projectId && !canvasError) return;
     let active = true;
     setCanvasError("");
     Promise.all([api.getCanvas(projectId), api.listAssets(projectId)])
-      .then(([canvasData, assetItems]) => { if (active) { setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); setCanvasError(""); } })
+      .then(([canvasData, assetItems]) => { if (active) { installCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); setCanvasError(""); } })
       .catch((error) => { if (active) { setCanvasError(errorText(error)); setStatus(t("白板加载失败：{0}", errorText(error))); } });
     return () => { active = false; };
   }, [projectId, view]);
 
   useEffect(() => {
     if (!dirty || !canvas || !projectId) return;
-    const sequence = ++saveSequence.current;
-    const timer = window.setTimeout(() => {
-      const pending = api.saveCanvas(projectId, canvas);
-      saveInFlight.current = pending;
-      pending.then((saved) => {
-        if (sequence === saveSequence.current) { setCanvas(normalizeCanvas(saved)); setDirty(false); setStatus(t("白板已自动保存")); }
-      }).catch((error) => setStatus(t("自动保存失败：{0}", errorText(error))))
-        .finally(() => { if (saveInFlight.current === pending) saveInFlight.current = null; });
+    saveTimer.current = setTimeout(() => {
+      void flushCanvas().then(() => setStatus(t("白板已自动保存")))
+        .catch((error) => setStatus(t("自动保存失败：{0}", errorText(error))));
     }, 700);
-    return () => window.clearTimeout(timer);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [canvas, dirty, projectId]);
 
-  function changeCanvas(next: CanvasData) { setCanvas(next); setDirty(true); }
+  function changeCanvas(next: CanvasData) {
+    // 离开项目后的迟到回调不能覆盖当前项目。
+    if (projectRef.current !== next.project_id) return;
+    editRevision.current += 1;
+    installCanvas(next); setDirty(true);
+  }
 
   async function flushCanvas() {
-    ++saveSequence.current;
-    if (saveInFlight.current) await saveInFlight.current;
-    if (dirty && canvas && canvas.project_id === projectId) {
-      await api.saveCanvas(projectId, canvas);
-      setDirty(false);
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    while (dirtyRef.current && canvasRef.current) {
+      if (saveInFlight.current) { await saveInFlight.current; continue; }
+      const snapshot = canvasRef.current;
+      const revision = editRevision.current;
+      const pending = api.saveCanvas(snapshot.project_id, snapshot);
+      saveInFlight.current = pending;
+      try {
+        const saved = await pending;
+        if (canvasRef.current?.project_id === snapshot.project_id && editRevision.current === revision) {
+          // 服务端可能合入刚生成的节点和连线；必须安装返回的完整图及新版本号。
+          installCanvas(normalizeCanvas(saved)); setDirty(false);
+        }
+      } finally { if (saveInFlight.current === pending) saveInFlight.current = null; }
     }
   }
 
   async function refreshCanvas(skipPendingSave = false) {
     if (!projectId) return;
     ++saveSequence.current;
-    if (!skipPendingSave) await flushCanvas();
+    // 所有入口共用串行保存，再读取完整图，避免旧定时器在读取后回写。
+    await flushCanvas();
+    const revision = editRevision.current;
+    const sequence = ++readSequence.current;
     const [canvasData, assetItems] = await Promise.all([api.getCanvas(projectId), api.listAssets(projectId)]);
-    setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
+    if (projectRef.current !== projectId || sequence !== readSequence.current || revision !== editRevision.current) return;
+    installCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
   }
 
   async function openCanvas(id: string) {
     if (id !== projectId) {
       try { await flushCanvas(); } catch (error) { setStatus(t("切换项目前保存失败：{0}", errorText(error))); return; }
-      ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id);
+      ++saveSequence.current; installCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id);
     }
+    if (id === projectId) await refreshCanvas();
     setView("canvas");
     if (id === projectId && canvasError) {
       try { await refreshCanvas(); } catch (error) { setCanvasError(errorText(error)); setStatus(t("白板加载失败：{0}", errorText(error))); }
@@ -170,8 +193,17 @@ export default function App() {
 
   async function switchProject(id: string) {
     if (id === projectId) return;
-    try { await flushCanvas(); ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id); }
+    try { await flushCanvas(); ++saveSequence.current; installCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id); }
     catch (error) { setStatus(t("切换项目前保存失败：{0}", errorText(error))); }
+  }
+
+  async function navigate(target: View) {
+    try {
+      if (target === "canvas" && projectId) { await openCanvas(projectId); return; }
+      if (target === "research") { await openResearch(); return; }
+      if (!dirtyRef.current && !saveInFlight.current) { setView(target); return; }
+      await flushCanvas(); setView(target);
+    } catch (error) { setStatus(errorText(error)); }
   }
 
   async function openResearch() {
@@ -196,7 +228,7 @@ export default function App() {
       if (project.id === projectId) await flushCanvas();
       const updated = await api.updateProject(project.id, { status: project.status === "archived" ? "active" : "archived" });
       setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
-      if (project.id === projectId && updated.status === "archived") { setProjectId(projects.find((item) => item.id !== project.id && item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); }
+      if (project.id === projectId && updated.status === "archived") { setProjectId(projects.find((item) => item.id !== project.id && item.status !== "archived")?.id ?? ""); installCanvas(null); setSelectedIds([]); setAssets([]); }
       setStatus(updated.status === "archived" ? t("项目“{0}”已归档", project.name) : t("项目“{0}”已恢复", project.name));
     } catch (error) { setStatus(errorText(error)); }
   }
@@ -209,14 +241,14 @@ export default function App() {
       await api.deleteProject(project.id);
       const remaining = projects.filter((item) => item.id !== project.id);
       setProjects(remaining);
-      if (project.id === projectId) { setProjectId(remaining.find((item) => item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); setDirty(false); }
+      if (project.id === projectId) { setProjectId(remaining.find((item) => item.status !== "archived")?.id ?? ""); installCanvas(null); setSelectedIds([]); setAssets([]); setDirty(false); }
       setStatus(t("项目“{0}”已删除", project.name));
     } catch (error) { setStatus(errorText(error)); }
   }
 
   const content = (() => {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} onArchive={archiveProject} onDelete={deleteProject} />;
-    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onProjectChanged={(updated) => { setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); setCanvas(null); setDirty(false); }} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
+    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onProjectChanged={(updated) => { setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); installCanvas(null); setDirty(false); }} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
     if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>{t("白板加载失败")}</strong><p>{uiMessage(canvasError)}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>{t("重新读取白板")}</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} beforeGenerate={flushCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <AssetView project={activeProject} assets={assets} onChanged={() => refreshCanvas(true)} onOpenNode={(id) => { setSelectedIds([id]); void openCanvas(projectId); }} setStatus={setStatus} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
@@ -226,7 +258,7 @@ export default function App() {
     <aside className="sidebar" id="global-sidebar">
       <div className="sidebar-tools"><label className="language-switch"><span aria-hidden="true">◎</span><select aria-label="Language / 界面语言" value={locale} onChange={(event) => setLocale(event.target.value as "en" | "zh-CN")}><option value="zh-CN">简体中文</option><option value="en">English</option></select></label><button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? t("展开侧边栏") : t("折叠侧边栏")} title={sidebarCollapsed ? t("展开侧边栏") : t("折叠侧边栏")} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)}><span aria-hidden="true">{sidebarCollapsed ? "»" : "«"}</span></button></div>
       <div className="brand"><span className="brand-mark">{t("智")}</span><div><strong>{t("内容智能工作台")}</strong><small>{t("可信知识驱动的内容工作台")}</small></div></div>
-      <nav aria-label={t("主要导航")}>{NAV.map((item) => <button aria-label={t(item.label)} title={sidebarCollapsed ? t(item.label) : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "research" ? void openResearch() : item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
+      <nav aria-label={t("主要导航")}>{NAV.map((item) => <button aria-label={t(item.label)} title={sidebarCollapsed ? t(item.label) : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => { void navigate(item.id); }}>
         <span aria-hidden="true">{getLocale() === "en" ? ({ home: "P", research: "R", canvas: "C", content: "L", settings: "S" }[item.id]) : item.icon}</span><b>{t(item.label)}</b>
       </button>)}</nav>
       <div className="sidebar-project">
