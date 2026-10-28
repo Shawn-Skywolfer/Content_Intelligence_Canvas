@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from app.repositories.workspace import WorkspaceRepository
 
@@ -74,7 +75,7 @@ class CanvasEdgePersistenceTests(unittest.TestCase):
             pending = executor.submit(self.save, board)
             try:
                 self.assertTrue(entered.wait(5))
-                with sqlite3.connect(self.path) as db:
+                with closing(sqlite3.connect(self.path)) as db:
                     ids = {r[0] for r in db.execute('SELECT id FROM canvas_edges WHERE project_id=?',(self.project_id,))}
                 self.assertIn(edge['id'],ids)
             finally: release.set()
