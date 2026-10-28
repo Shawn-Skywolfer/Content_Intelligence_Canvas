@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.30
+      - release/v0.3.31
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.30"
+      RELEASE_TAG: "v0.3.31"
     steps:
       - name: 取消该发布分支的过时构建
         shell: pwsh
@@ -54,6 +54,8 @@ jobs:
           npx playwright install chromium
           cd ../..
           node scripts/check_bilingual.cjs
+          if ($LASTEXITCODE -ne 0) { throw "双语验收失败" }
+          node scripts/check_edge_tabs.cjs
           if ($LASTEXITCODE -ne 0) { throw "双语浏览器验收失败" }
 
       - name: 保存双语界面验收截图
@@ -123,10 +125,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.30_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.31_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.30.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.30.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.31.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.31.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -135,7 +137,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.30.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.31.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -174,7 +176,7 @@ jobs:
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：冷启动"
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.30"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.31"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -251,16 +253,16 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.30
+          name: Content Intelligence Canvas v0.3.31
           body: |
-            Windows portable bilingual release / Windows 中英双语绿色版。
+            Windows portable v0.3.31 / 中英双语绿色版。
 
-            Switch between 简体中文 and English from the sidebar. The app remembers your choice and follows your browser language on first launch. Projects, Wiki files, and user prompts are preserved when switching languages.
+            修复切换设置等页面后白板连线丢失：保存时保留快照之后新增的连线；节点、连线和视口在同一事务中提交。前端统一串行保存，并采用服务端返回的完整图；回到白板时重新读取。离开页面后的迟到摘要不会回写旧图。
 
-            English UI covers projects, research, canvas editing, AI tasks, content management, and settings. AI output follows explicit language requirements or the language of your input. Startup dialogs include English guidance.
+            升级后会依据 AI 节点中明确保存的来源 ID 一次性恢复缺失的来源连线。没有来源记录的手工连线无法推测恢复；后续主动删除的连线不会反复恢复。建议首次升级前备份现有数据目录。
 
-            单体 EXE 自带运行环境。新增侧边栏语言切换，保留当前项目和未提交编辑；首次启动参考浏览器语言。模型输出遵循用户要求和输入语言。
+            Keeps canvas connections when switching tabs, including links to newly generated AI nodes. Saves are atomic and protect connections added after the loaded snapshot. The canvas reloads on return, and late summary responses cannot overwrite the graph after leaving.
 
-            Public test build. No private Wiki, database, or API keys are included. Configure your model and knowledge sources in Settings after launch.
-          files: Content_Intelligence_Canvas_Portable_v0.3.30.exe
+            A one-time upgrade recovery uses recorded AI source IDs only. Manual connections without provenance cannot be reconstructed. Chinese/English switching and existing projects are retained. No private Wiki or API keys are included.
+          files: Content_Intelligence_Canvas_Portable_v0.3.31.exe
           generate_release_notes: true

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -41,11 +42,16 @@ class WorkspaceRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._transactions = threading.local()
         self._initialize()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path)
+        active = getattr(self._transactions, "connection", None)
+        if active is not None:
+            yield active
+            return
+        connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         try:
@@ -53,6 +59,23 @@ class WorkspaceRepository:
             connection.commit()
         finally:
             connection.close()
+
+    @contextmanager
+    def _graph_transaction(self):
+        # 合并保存的读、删、写必须在同一事务中，其他连接只能看到完整版本。
+        if getattr(self._transactions, "connection", None) is not None:
+            yield
+            return
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._transactions.connection = db
+            try:
+                yield
+            except BaseException:
+                db.rollback()
+                raise
+            finally:
+                self._transactions.connection = None
 
     def _initialize(self) -> None:
         with self._connect() as db:
@@ -469,8 +492,37 @@ class WorkspaceRepository:
             frontier = next_frontier
         return result
 
+    def _restore_generated_edges_once(self, project_id: str) -> None:
+        # 升级时仅根据明确的生成来源补回一次；之后用户删除连线不再被自动恢复。
+        marker = f"generated_edges_recovered_v31:{project_id}"
+        with self._connect() as db:
+            if db.execute("SELECT 1 FROM app_settings WHERE key=?", (marker,)).fetchone():
+                return
+            nodes = db.execute("SELECT * FROM canvas_nodes WHERE project_id=?", (project_id,)).fetchall()
+            ids = {node["id"] for node in nodes}
+            connections = {(edge["source_node_id"], edge["target_node_id"]) for edge in
+                           db.execute("SELECT * FROM canvas_edges WHERE project_id=?", (project_id,))}
+            for node in nodes:
+                if node["created_by"] != "ai":
+                    continue
+                metadata = read_metadata(node["metadata_json"])
+                sources = metadata.get("source_node_ids")
+                sources = list(sources) if isinstance(sources, list) else []
+                if node["parent_id"]:
+                    sources.append(node["parent_id"])
+                for source in sources:
+                    if isinstance(source, str) and source in ids and source != node["id"] and (source, node["id"]) not in connections:
+                        self.create_edge(project_id, source, node["id"], "derived_from")
+                        connections.add((source, node["id"]))
+            db.execute("INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)", (marker, 'true', utc_now()))
+
     def get_canvas(self, project_id: str) -> dict[str, Any]:
+        with self._graph_transaction():
+            return self._get_canvas(project_id)
+
+    def _get_canvas(self, project_id: str) -> dict[str, Any]:
         self.ensure_canvas(project_id)
+        self._restore_generated_edges_once(project_id)
         try:
             self._layout_completed_research(project_id)
         except (ValueError, TypeError, sqlite3.DatabaseError):
@@ -625,6 +677,10 @@ class WorkspaceRepository:
             )
 
     def create_node(self, project_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        with self._graph_transaction():
+            return self._create_node(project_id, values)
+
+    def _create_node(self, project_id: str, values: dict[str, Any]) -> dict[str, Any]:
         node_id = values.get("id") or f"nod_{uuid.uuid4().hex}"
         now = utc_now()
         canvas_id = self._canvas_id(project_id)
@@ -734,22 +790,41 @@ class WorkspaceRepository:
         metadata: dict[str, Any] | None = None,
         edge_id: str | None = None,
     ) -> dict[str, Any]:
+        with self._graph_transaction():
+            return self._create_edge(project_id, source, target, relation, metadata, edge_id)
+
+    def _create_edge(
+        self,
+        project_id: str,
+        source: str,
+        target: str,
+        relation: str = "context",
+        metadata: dict[str, Any] | None = None,
+        edge_id: str | None = None,
+    ) -> dict[str, Any]:
         edge_id = edge_id or f"edg_{uuid.uuid4().hex}"
         canvas_id = self._canvas_id(project_id)
         now = utc_now()
         with self._connect() as db:
             db.execute(
                 """
-                INSERT OR REPLACE INTO canvas_edges(
+                INSERT INTO canvas_edges(
                   id,project_id,canvas_id,source_node_id,target_node_id,relation,metadata_json,created_at
                 ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET source_node_id=excluded.source_node_id, target_node_id=excluded.target_node_id, relation=excluded.relation, metadata_json=excluded.metadata_json
                 """,
                 (edge_id, project_id, canvas_id, source, target, relation, json.dumps(metadata or {}), now),
             )
+            db.execute("UPDATE canvases SET updated_at=? WHERE project_id=?", (now, project_id))
             row = db.execute("SELECT * FROM canvas_edges WHERE id=?", (edge_id,)).fetchone()
         return self._decode(row, "metadata_json") or {}
 
-    def replace_canvas(
+    def replace_canvas(self, project_id: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+                       viewport: dict[str, Any], base_updated_at: str | None = None) -> dict[str, Any]:
+        with self._graph_transaction():
+            return self._replace_canvas(project_id, nodes, edges, viewport, base_updated_at)
+
+    def _replace_canvas(
         self,
         project_id: str,
         nodes: list[dict[str, Any]],
@@ -773,8 +848,12 @@ class WorkspaceRepository:
                 if "metadata" in values:
                     current_metadata = existing[node_id].get("metadata") or {}
                     incoming_metadata = values.get("metadata") or {}
-                    if current_metadata.get("asset_id") and not incoming_metadata.get("asset_id"):
-                        values["metadata"] = {**incoming_metadata, "asset_id": current_metadata["asset_id"]}
+                    values["metadata"] = {**current_metadata, **incoming_metadata}
+                    # 生成任务写入的来源与 Prompt 历史不是白板表单的可编辑字段。
+                    for field in ("asset_id", "ai_prompt_history", "source_node_ids", "source_node_titles",
+                                  "inherited_upstream_ids", "inherited_upstream_depth", "ai_run_id"):
+                        if field in current_metadata:
+                            values["metadata"][field] = current_metadata[field]
                 if existing[node_id]["locked"]:
                     allowed_locked = ["x", "y", "width", "height", "locked"]
                     if values.get("locked") is False:
@@ -789,8 +868,12 @@ class WorkspaceRepository:
                 if node_id not in concurrent_nodes:
                     self.delete_node(project_id, node_id)
         incoming_ids.update(concurrent_nodes)
+        incoming_edge_ids = {edge.get("id") for edge in edges}
         with self._connect() as db:
-            db.execute("DELETE FROM canvas_edges WHERE project_id=?", (project_id,))
+            for edge in current_canvas["edges"]:
+                new_since_base = bool(base_updated_at and edge["created_at"] > base_updated_at)
+                if edge["id"] not in incoming_edge_ids and not new_since_base:
+                    db.execute("DELETE FROM canvas_edges WHERE project_id=? AND id=?", (project_id, edge["id"]))
         for edge in edges:
             source = edge.get("source_node_id") or edge.get("source")
             target = edge.get("target_node_id") or edge.get("target")
@@ -803,9 +886,6 @@ class WorkspaceRepository:
                     edge.get("metadata", {}),
                     edge.get("id"),
                 )
-        for edge in current_canvas["edges"]:
-            if (edge["source_node_id"] in concurrent_nodes or edge["target_node_id"] in concurrent_nodes) and edge["source_node_id"] in incoming_ids and edge["target_node_id"] in incoming_ids:
-                self.create_edge(project_id, edge["source_node_id"], edge["target_node_id"], edge["relation"], edge.get("metadata", {}), edge["id"])
         with self._connect() as db:
             db.execute(
                 "UPDATE canvases SET viewport_json=?,updated_at=? WHERE project_id=?",

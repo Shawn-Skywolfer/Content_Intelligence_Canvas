@@ -12,7 +12,7 @@ from app.config import Settings
 from app.cloud_deployment import CloudJSONResponse
 
 settings = Settings.from_env()
-app = FastAPI(title="Content Intelligence Canvas API", version="0.3.30", default_response_class=CloudJSONResponse)
+app = FastAPI(title="Content Intelligence Canvas API", version="0.3.31", default_response_class=CloudJSONResponse)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.web_origins,
@@ -27,4 +27,4 @@ app.include_router(settings_router)
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "phase": "v0.3.30-server.1" if os.getenv("CIC_SERVER_MODE") == "1" else "v0.3.30-portable"}
+    return {"status": "ok", "phase": "v0.3.31-server.1" if os.getenv("CIC_SERVER_MODE") == "1" else "v0.3.31-portable"}
