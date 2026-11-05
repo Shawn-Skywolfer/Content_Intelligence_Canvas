@@ -103,3 +103,32 @@ def test_mcp_enabled_for_all_research_node_types_on_start_and_retry(tmp_path, mo
         retried = routes.resume_magic_job(job["job_id"])
         assert retried["request"]["output_type"] == output_type and retried["request"]["web_search"] is True
         routes.cancel_magic_job(job["job_id"])
+
+
+def test_watchdog_stops_a_task_stalled_before_model_call_and_rejects_late_output(tmp_path, monkeypatch):
+    repo = WorkspaceRepository(tmp_path / "app.db")
+    project = repo.create_project("超时保护", "研究问题", "")
+    source = repo.create_node(project["id"], {"title": "原始节点"})
+    entered, released = Event(), Event()
+    class Workflow:
+        def magic(self, *_args, **kwargs):
+            entered.set()
+            released.wait(3)
+            check_cancelled()
+            raise AssertionError("过期任务不应生成新节点")
+    monkeypatch.setattr(routes, "get_container", lambda: SimpleNamespace(workspace=repo, workflow=Workflow()))
+    monkeypatch.setattr(routes, "MAGIC_IDLE_SECONDS", .15)
+    monkeypatch.setattr(routes, "MAGIC_WATCH_INTERVAL", .02)
+    before = len(repo.get_canvas(project["id"])["nodes"])
+    job = routes.start_magic_job(project["id"], MagicRequest(node_ids=[source["id"]], instruction="对比研究"))
+    try:
+        assert entered.wait(1)
+        wait_for(lambda: repo.get_magic_job(job["job_id"])["status"] == "failed")
+        saved = repo.get_magic_job(job["job_id"])
+        assert "没有阶段或模型活动" in saved["error"] and "线程诊断" in saved["error"]
+        assert saved["events"][-1]["metrics"]["stage"] == "task_watchdog"
+        assert saved["result"]["incomplete"]
+    finally:
+        released.set()
+    wait_for(lambda: job["job_id"] not in routes._magic_tokens)
+    assert len(repo.get_canvas(project["id"])["nodes"]) == before

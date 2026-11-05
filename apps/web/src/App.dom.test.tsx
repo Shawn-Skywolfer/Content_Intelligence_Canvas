@@ -73,7 +73,12 @@ describe("历史研究与项目入口", () => {
     const count = view.getByLabelText("研究发现数量") as HTMLInputElement;
     expect(count.value).toBe("20");
     expect(count.max).toBe("20");
-    expect(view.getByText(/数量越多，研究耗时越长/)).toBeTruthy();
+    expect(view.queryByText(/数量越多，研究耗时越长/)).toBeNull();
+    const countHelp = count.closest(".inline-fields")!.querySelector("button")!;
+    fireEvent.focus(countHelp);
+    expect(view.getByRole("tooltip").textContent).toContain("数量越多，研究耗时越长");
+    fireEvent.keyDown(countHelp, { key: "Escape" });
+    fireEvent.blur(countHelp);
     fireEvent.change(count, { target: { value: "21" } });
     expect((view.getByRole("button", { name: "开始快速研究" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(count, { target: { value: "" } });

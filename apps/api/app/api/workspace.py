@@ -347,28 +347,66 @@ def magic_bar(project_id: str, request: MagicRequest) -> WorkflowResponse:
     return WorkflowResponse(nodes=[node], run_id=run_id, used_llm=used_llm, message=message)
 
 
+MAGIC_IDLE_SECONDS = 180
+MAGIC_TOTAL_SECONDS = 3600
+MAGIC_WATCH_INTERVAL = 5
+
+
 def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
                    token: CancellationToken, provider: dict[str, Any] | None, attempt: int) -> None:
     workspace = get_container().workspace
     node: dict[str, Any] | None = None
     started = time.monotonic()
+    finished = threading.Event()
+    activity = {"at": started}
+    worker_id = threading.get_ident()
+    def watch() -> None:
+        while not finished.wait(MAGIC_WATCH_INTERVAL):
+            if token.event.is_set():
+                return
+            now = time.monotonic()
+            if now - activity["at"] < MAGIC_IDLE_SECONDS and now - started < MAGIC_TOTAL_SECONDS:
+                continue
+            import sys
+            import traceback
+            frame = sys._current_frames().get(worker_id)
+            stack = traceback.extract_stack(frame)[-8:] if frame else []
+            location = " > ".join(f"{entry.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{entry.lineno}({entry.name})" for entry in stack)
+            reason = f"任务连续 {int(now - activity['at'])} 秒没有阶段或模型活动" if now - activity["at"] >= MAGIC_IDLE_SECONDS else "任务超过 60 分钟总时限"
+            message = reason + "，已停止等待。可在任务详情查看日志并重试。线程诊断：" + location
+            with _magic_lock:
+                current = workspace.get_magic_job(job_id)
+                if finished.is_set() or token.event.is_set() or not current or current["status"] != "running" or current["attempt"] != attempt:
+                    return
+                token.failure = message
+                token.cancel()
+                workspace.update_magic_job(job_id, expected_attempt=attempt, status="failed", phase="生成失败",
+                    detail=safe_log(message), error=safe_log(message),
+                    metrics={"stage": "task_watchdog", "app_version": "0.3.32", "elapsed_seconds": round(now - started, 1)},
+                    result={"completed_draft": token.completed_draft, "partial_body": token.partial_output, "incomplete": True})
+            return
+    threading.Thread(target=watch, name=f"task-watch-{job_id[-8:]}", daemon=True).start()
     try:
         with cancellation_scope(token), provider_scope(provider):
             def progress(percent: int, phase: str, detail: str) -> None:
                 token.check()
+                activity["at"] = time.monotonic()
                 workspace.update_magic_job(job_id, expected_attempt=attempt, progress=percent, phase=phase, detail=safe_log(detail))
 
             def network_report(detail: str) -> None:
                 token.check()
+                activity["at"] = time.monotonic()
                 workspace.update_magic_job(job_id, expected_attempt=attempt, detail=safe_log(detail))
 
             def telemetry(detail: str, metrics: dict[str, Any], level: str) -> None:
                 token.check()
+                activity["at"] = time.monotonic()
                 workspace.update_magic_job(job_id, expected_attempt=attempt, detail=safe_log(detail),
                                            metrics=safe_log(metrics), level=level)
 
             def save_draft(body: str) -> None:
                 token.check()
+                activity["at"] = time.monotonic()
                 workspace.update_magic_job(job_id, expected_attempt=attempt,
                     detail="完整草稿已保存，可在任务详情查看；正在核对简报",
                     result={"completed_draft": body, "draft_status": "待简报核对"})
@@ -404,6 +442,7 @@ def _run_magic_job(job_id: str, project_id: str, request: MagicRequest,
                                    metrics={"exception_type": type(exc).__name__, "elapsed_seconds": round(time.monotonic() - started, 1)},
                                    result={"completed_draft": token.completed_draft, "draft_status": "简报核对未完成，不能视为定稿", "partial_body": token.partial_output, "incomplete": True, **({"failure": safe_log(exc.as_dict())} if isinstance(exc, WebToolError) else {})})
     finally:
+        finished.set()
         with _magic_lock:
             if _magic_tokens.get(job_id) is token:
                 _magic_tokens.pop(job_id, None)

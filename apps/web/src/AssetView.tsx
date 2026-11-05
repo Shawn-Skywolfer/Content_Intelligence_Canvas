@@ -1,3 +1,4 @@
+import InfoTip from "./InfoTip";
 import { t, getLocale } from "./i18n";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "./MarkdownContent";
@@ -37,7 +38,7 @@ export default function AssetView({ project, assets, onChanged, onOpenNode, setS
     finally { setBusy(false); }
   }
   return <>
-    <header className="page-header"><div><p className="eyebrow">{t("内容资产")}</p><h1>{project.name}  {t("· 最终内容")}</h1><p>{t("仅管理从白板输出节点确认保存的稿件。可继续编辑、导出或删除，修改会同步到白板。")}</p></div><div className="header-actions"><a className="button secondary" href={downloadUrl(`/api/projects/${project.id}/export?format=markdown`)}>{t("导出整个项目")}</a></div></header>
+    <header className="page-header"><div><h1>{project.name}  {t("· 最终内容")}</h1><InfoTip>{t("仅管理从白板输出节点确认保存的稿件。可继续编辑、导出或删除，修改会同步到白板。")}</InfoTip></div><div className="header-actions"><a className="button secondary" href={downloadUrl(`/api/projects/${project.id}/export?format=markdown`)}>{t("导出整个项目")}</a></div></header>
     <section className="section-block"><div className="section-title"><h2>{t("已保存内容")}</h2><span>{assets.length}  {t("项 · 按项目隔离")}</span></div>
       {assets.length ? <div className="asset-manager-list">{assets.map((asset) => <article className={`asset-card ${openId === asset.id ? "open" : ""}`} key={asset.id}>
         <button className="asset-summary" onClick={() => { setOpenId(openId === asset.id ? null : asset.id); setEditId(null); }}><div><span>{formats.find((item) => item.id === asset.format)?.name ?? asset.format}</span><h3>{asset.title}</h3><small>{t("版本")} {asset.version} · {asset.evidence.length}  {t("条证据 · 更新于")} {new Date(asset.updated_at).toLocaleString(getLocale())}</small></div><b>{openId === asset.id ? t("收起") : t("展开")}</b></button>

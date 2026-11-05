@@ -3,7 +3,7 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.31
+      - release/v0.3.32
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.31"
+      RELEASE_TAG: "v0.3.32"
     steps:
       - name: 取消该发布分支的过时构建
         shell: pwsh
@@ -125,10 +125,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.31_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.32_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.31.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.31.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.32.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.32.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -137,7 +137,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.31.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.32.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -176,7 +176,7 @@ jobs:
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：冷启动"
             $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.31"
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.32"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -253,16 +253,18 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.31
+          name: Content Intelligence Canvas v0.3.32
           body: |
-            Windows portable v0.3.31 / 中英双语绿色版。
+            Windows portable v0.3.32 / 中英双语绿色版。
 
-            修复切换设置等页面后白板连线丢失：保存时保留快照之后新增的连线；节点、连线和视口在同一事务中提交。前端统一串行保存，并采用服务端返回的完整图；回到白板时重新读取。离开页面后的迟到摘要不会回写旧图。
+            修复 Wiki 检索规划长时间停滞：首轮总览与领域图仍完整阅读；可选关系规划只发送关系资料和已完成计划，60 秒超时后沿用首轮计划继续。规划调用使用独立输出预算和总时限，不改变最终写作配置。
 
-            升级后会依据 AI 节点中明确保存的来源 ID 一次性恢复缺失的来源连线。没有来源记录的手工连线无法推测恢复；后续主动删除的连线不会反复恢复。建议首次升级前备份现有数据目录。
+            非流式接收在关闭 TLS 连接前交付已收到的正文；网络读取、JSON 解析受统一时限监督，日志写入不会阻塞正文交付。LOG 新增应用版本、调用 ID、阶段、输入字符数、预算和线程诊断。白板任务连续 180 秒无活动会停止并保留草稿，避免无限等待。
 
-            Keeps canvas connections when switching tabs, including links to newly generated AI nodes. Saves are atomic and protect connections added after the loaded snapshot. The canvas reloads on return, and late summary responses cannot overwrite the graph after leaving.
+            清理项目、研究、白板、内容资产和设置页面的冗余说明，统一对齐；必要帮助改为支持键盘的提示，高级模型配置默认收起。保留中英双语、实际进度、错误详情、危险操作后果提示和 v0.3.31 白板连线修复。
 
-            A one-time upgrade recovery uses recorded AI source IDs only. Manual connections without provenance cannot be reconstructed. Chinese/English switching and existing projects are retained. No private Wiki or API keys are included.
-          files: Content_Intelligence_Canvas_Portable_v0.3.31.exe
+            Bounded Wiki planning, recoverable relation refinement, and complete-response delivery before TLS cleanup. Logging cannot hold up a received answer. Cleaner bilingual pages, accessible help, aligned forms, and keyboard navigation for settings tabs.
+
+            Portable Windows EXE. Existing data stays in the current data directory. No private Wiki, logs or API keys are included in this public release. Back up your data before upgrading.
+          files: Content_Intelligence_Canvas_Portable_v0.3.32.exe
           generate_release_notes: true
