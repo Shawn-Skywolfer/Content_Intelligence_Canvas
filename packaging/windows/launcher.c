@@ -147,19 +147,20 @@ static int runtime_complete(const wchar_t *runtime) {
     return 1;
 }
 
-static void stop_previous(const wchar_t *root) {
+static int stop_previous(const wchar_t *root) {
+    int stopped = 1;
     wchar_t path[PATH_CAP]; swprintf(path, PATH_CAP, L"%ls\\runtime-process.json", root);
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE) return 1;
     char record[16000] = {0}; DWORD size = 0; ReadFile(file, record, sizeof(record) - 1, &size, NULL); CloseHandle(file);
     char *pid_field = strstr(record, "\"pid\""), *time_field = strstr(record, "\"create_time\"");
-    if (!pid_field || !time_field || !strstr(record, "standalone_entry.py")) return;
+    if (!pid_field || !time_field || !strstr(record, "standalone_entry.py")) return 1;
     pid_field = strchr(pid_field, ':'); time_field = strchr(time_field, ':');
-    if (!pid_field || !time_field) return;
+    if (!pid_field || !time_field) return 1;
     DWORD pid = strtoul(pid_field + 1, NULL, 10); double expected = strtod(time_field + 1, NULL);
-    if (!pid || expected <= 0 || pid == GetCurrentProcessId()) return;
+    if (!pid || expected <= 0 || pid == GetCurrentProcessId()) return 1;
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-    if (!process) return;
+    if (!process) return 1;
     wchar_t executable[PATH_CAP], prefix[PATH_CAP]; DWORD length = PATH_CAP;
     FILETIME created, exited, kernel, user;
     swprintf(prefix, PATH_CAP, L"%ls\\runtime-", root);
@@ -170,10 +171,17 @@ static void stop_previous(const wchar_t *root) {
         double actual = (double)ticks.QuadPart / 10000000.0 - 11644473600.0;
         if (name && (!_wcsicmp(name + 1, L"pythonw.exe") || !_wcsicmp(name + 1, L"python.exe")) && fabs(actual - expected) < 1.0) {
             log_event(L"已验证应用专用路径、PID 与创建时间，替换上一应用实例");
-            TerminateProcess(process, 0); WaitForSingleObject(process, 5000);
+            BOOL terminated = TerminateProcess(process, 0);
+            DWORD termination_error = terminated ? ERROR_SUCCESS : GetLastError();
+            DWORD wait_result = WaitForSingleObject(process, 5000);
+            wchar_t diagnostic[240];
+            swprintf(diagnostic, 240, L"旧实例 PID=%lu 创建时间=%.6f 终止结果=%lu 等待结果=%lu", pid, actual, termination_error, wait_result);
+            log_event(diagnostic);
+            if (wait_result != WAIT_OBJECT_0) stopped = 0;
         }
     }
     CloseHandle(process);
+    return stopped;
 }
 
 static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar_t *runtime, const wchar_t *ready) {
@@ -187,14 +195,21 @@ static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar
     }
     if (!CreateDirectoryW(stage, NULL)) { fail(L"Cannot create the runtime folder. Check disk space and permissions. / 无法创建临时目录，请检查磁盘及权限。"); return 0; }
     GetSystemDirectoryW(system, PATH_CAP);
-    swprintf(command, 32768, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", system, zip, stage);
-    log_event(L"使用系统 tar 解包（不依赖 PowerShell 执行策略）");
-    int extracted = run_and_wait(command, root);
+    // Keep tar's argv ASCII. The Unicode working directory is supplied via
+    // CreateProcessW, so paths do not pass through tar's narrow argv decoder.
+    swprintf(command, 32768, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", system, wcsrchr(zip, L'\\') + 1, wcsrchr(stage, L'\\') + 1);
+    wchar_t extractor[32] = {0};
+    GetEnvironmentVariableW(L"CIC_EXTRACTOR", extractor, 32);
+    int extracted = 0;
+    if (_wcsicmp(extractor, L"dotnet") != 0) {
+        log_event(L"使用系统 tar 解包（不依赖 PowerShell 执行策略）");
+        extracted = run_and_wait(command, root);
+    }
     if (!extracted) {
-        log_event(L"系统 tar 不可用，使用 PowerShell 严格模式解包");
+        log_event(L"系统 tar 不可用，使用 .NET Unicode 路径解包");
         SetEnvironmentVariableW(L"CIC_EXTRACT_ZIP", zip); SetEnvironmentVariableW(L"CIC_EXTRACT_DIR", stage);
         // Paths are environment values, never interpolated into PowerShell source.
-        swprintf(command, 32768, L"\"%ls\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; try { Expand-Archive -LiteralPath $env:CIC_EXTRACT_ZIP -DestinationPath $env:CIC_EXTRACT_DIR -Force; exit 0 } catch { Write-Error $_; exit 1 }\"", system);
+        swprintf(command, 32768, L"\"%ls\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Directory]::Delete($env:CIC_EXTRACT_DIR,$true); [System.IO.Compression.ZipFile]::ExtractToDirectory($env:CIC_EXTRACT_ZIP,$env:CIC_EXTRACT_DIR); exit 0 } catch { Write-Error $_; exit 1 }\"", system);
         extracted = run_and_wait(command, root);
         SetEnvironmentVariableW(L"CIC_EXTRACT_ZIP", NULL); SetEnvironmentVariableW(L"CIC_EXTRACT_DIR", NULL);
     }
@@ -263,7 +278,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     DWORD wait = WAIT_TIMEOUT; ULONGLONG deadline = GetTickCount64() + 300000;
     while ((wait = WaitForSingleObject(mutex, 100)) == WAIT_TIMEOUT && GetTickCount64() < deadline) pump();
     if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) { CloseHandle(mutex); fail(L"Another startup is still in progress. Check the startup logs. / 另一个启动过程尚未完成，请查看日志。"); return 3; }
-    stop_previous(root);
+    if (!stop_previous(root)) {
+        ReleaseMutex(mutex); CloseHandle(mutex);
+        fail(L"The previous app instance could not exit. Check launcher.log. / 旧应用实例未能退出，请查看启动日志。");
+        return 5;
+    }
     int ok = 0, diagnosed = 0;
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (!prepare_runtime(self, root, runtime, ready)) { diagnosed = 1; break; }
