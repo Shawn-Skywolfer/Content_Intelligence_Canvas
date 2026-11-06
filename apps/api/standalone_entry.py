@@ -296,5 +296,5 @@ if __name__ == "__main__":
         except Exception:
             pass
         if not os.getenv("CIC_STARTUP_URL_FILE"):
-            _message("内容智能工作台启动失败", f"应用未能启动：\n\n{exc}")
+            _message("Workspace startup failed / 工作台启动失败", f"The application could not start. See startup-python.log for details. / 应用未能启动：\n\n{exc}")
         sys.exit(1)
