@@ -71,7 +71,8 @@ def test_research_reads_relations_only_on_demand_and_searches_original_entries(t
     context = AgentContextService(Manifest(tmp_path), model)
     hits, trace = WikiReasoningService(retrieval, None, model, context).gather("wiki", "800V 如何影响供电？")
     assert list(model_inputs[0]["agent_context"]) == ["overview.md", "domain-map.md"]
-    assert "relations.md" in model_inputs[1]["agent_context"]
+    assert list(model_inputs[1]["agent_context"]) == ["relations.md"]
+    assert model_inputs[1]["initial_plan"]["queries"] == ["AIDC 供电"]
     assert retrieval.queries == ["800V 如何影响供电？", "800V 供电关系", "AIDC 供电"]
     assert hits[0].source_path == "power.md"
     assert trace["agent_context"]["relations.md"].startswith("# 关系")
@@ -104,9 +105,12 @@ def test_refresh_reports_model_failure_without_exposing_raw_documents(tmp_path: 
     assert result == {"status": "failed", "message": "模型服务暂不可用"}
 
 
-def test_stalled_relation_refinement_keeps_completed_model_plan(tmp_path):
+@pytest.mark.parametrize("failure", ["stream", "complete", "connection"])
+def test_stalled_relation_refinement_keeps_completed_model_plan(tmp_path, failure):
     from app.services.ai.streaming import ModelStreamTimeout
     from app.services.ai.cancellation import CancellationToken, cancellation_scope
+    from app.services.ai.gateway import ModelRequestTimeout, ProviderConnectionError
+    error_type = {"stream": ModelStreamTimeout, "complete": ModelRequestTimeout, "connection": ProviderConnectionError}[failure]
     make_wiki(tmp_path)
     class Model:
         calls = 0
@@ -114,7 +118,7 @@ def test_stalled_relation_refinement_keeps_completed_model_plan(tmp_path):
             self.calls += 1
             if self.calls == 1:
                 return {"queries": ["构网 原始证据"], "read_relations": True}, {"model": "mock"}
-            raise ModelStreamTimeout("接收两个字符后连接停滞")
+            raise error_type("接收两个字符后连接停滞")
     class Retrieval:
         queries = []
         def search(self, _source, query, **_kwargs):

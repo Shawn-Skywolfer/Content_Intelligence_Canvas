@@ -1,0 +1,44 @@
+// 使用实际生产前端和浏览器验收语言切换、长文案与白板；接口使用固定测试资料，不调用付费模型。
+const {chromium}=require('../apps/web/node_modules/playwright');
+const http=require('node:http'), fs=require('node:fs'), path=require('node:path'), assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'../apps/web/dist');
+const project={id:'p1',name:'User-owned 中文原文',idea:'How can AI data centers reduce power costs?',brief:'',status:'active',created_at:'2026-10-27T00:00:00Z',updated_at:'2026-10-27T00:00:00Z'};
+const canvas={id:'c1',project_id:'p1',viewport:{x:0,y:0,zoom:1},updated_at:'2026-10-27T00:00:00Z',edges:[],nodes:[{id:'n1',type:'idea',title:'Original idea',body:'Keep my original 中文 text',summary:'An original research question',status:'exploring',locked:false,x:100,y:120,width:340,height:240,metadata:{},created_by:'user'}]};
+const server=http.createServer((req,res)=>{const target=path.join(root,new URL(req.url,'http://localhost').pathname);if(!target.startsWith(root+path.sep)&&target!==root+path.sep){res.writeHead(403).end();return;}const f=target.endsWith(path.sep)?target+'index.html':target;if(!fs.existsSync(f)){res.writeHead(404).end();return;}res.setHeader('Content-Type',f.endsWith('.js')?'text/javascript':f.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(f));});
+let browser;
+(async()=>{
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));browser=await chromium.launch({headless:true, ...(process.env.CIC_BROWSER_EXECUTABLE ? {executablePath:process.env.CIC_BROWSER_EXECUTABLE} : {})});const context=await browser.newContext({locale:'en-US',viewport:{width:1440,height:1000}});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/api/**',async route=>{const p=new URL(route.request().url()).pathname;let value=[];
+ if(p==='/api/health')value={status:'ok'};else if(p==='/api/projects')value=[project];else if(p.endsWith('/canvas'))value=canvas;else if(p.endsWith('/security'))value={protect_internal_data:true};else if(p.endsWith('/providers/active'))value={provider_id:null,model_name:null};else if(p.endsWith('/settings/network'))value={network_mode:'auto',proxy_url:'',proxy_username:'',has_proxy_password:false};else if(p.includes('deepseek-web'))value={base_url:'https://api.deepseek.com',count:5,timeout_seconds:30,network_mode:'inherit',search_enabled:false,fetch_enabled:false};else if(p.includes('mcp-search'))value={name:'Tavily',url:'https://example.com/mcp',tool_name:'search',enabled:false,network_mode:'inherit',proxy_url:'',proxy_username:''};await route.fulfill({json:value});});
+ await page.goto(`http://127.0.0.1:${server.address().port}/`);await page.getByRole('button',{name:'Create project and explore'}).waitFor();
+ await page.locator('.hero-create textarea').fill('Draft stays intact 未提交原文');await page.getByLabel('Language / 界面语言').selectOption('zh-CN');await page.getByRole('button',{name:'创建项目并开始探索'}).waitFor();assert.equal(await page.locator('.hero-create textarea').inputValue(),'Draft stays intact 未提交原文');
+ await page.getByLabel('Language / 界面语言').selectOption('en');fs.mkdirSync('bilingual-screenshots',{recursive:true});await page.screenshot({path:'bilingual-screenshots/home-en.png',fullPage:true});
+ await page.getByRole('button',{name:'Settings',exact:true}).click();for(const name of ['Knowledge sources','Models & proxies','Global network & proxy','MCP & web search','Content formats','Data protection']){await page.getByRole('tab',{name,exact:true}).click();await page.getByRole('tabpanel',{name,exact:true}).waitFor();await page.screenshot({path:`bilingual-screenshots/settings-${name.replace(/[^a-z]/gi,'')}.png`,fullPage:true});}
+ await page.getByRole('tab',{name:'Knowledge sources',exact:true}).click();
+ await page.getByRole('tab',{name:'Knowledge sources',exact:true}).press('ArrowRight');
+ assert.equal(await page.getByRole('tab',{name:'Models & proxies',exact:true}).getAttribute('aria-selected'),'true');
+ await page.getByRole('tabpanel',{name:'Models & proxies',exact:true}).waitFor();
+ assert.equal(await page.locator('details.model-advanced').getAttribute('open'),null);
+ const budget=await page.getByLabel('Maximum output tokens',{exact:true}).boundingBox(), timeout=await page.getByLabel('Request timeout (seconds)',{exact:true}).boundingBox();
+ assert.ok(Math.abs(budget.y-timeout.y)<3,'Model numeric fields must align');
+ await page.getByRole('button',{name:'Quick research',exact:true}).click();
+ await page.getByLabel('Research question',{exact:true}).waitFor();
+ assert.equal(await page.locator('.research-notes').count(),0);
+ await page.getByLabel('Research question',{exact:true}).fill('Research draft remains editable');
+ const countHelp=page.locator('.research-form .inline-fields .info-tip-trigger');
+ await countHelp.focus();await page.getByRole('tooltip').waitFor();await countHelp.press('Escape');assert.equal(await page.getByRole('tooltip').count(),0);
+ await page.screenshot({path:'bilingual-screenshots/research-en.png',fullPage:true});
+ await page.getByRole('button',{name:'Add knowledge source',exact:true}).click();
+ await page.getByRole('tabpanel',{name:'Knowledge sources',exact:true}).waitFor();
+ await page.setViewportSize({width:900,height:900});
+ await page.getByRole('button',{name:'Collapse sidebar',exact:true}).click();
+ await page.getByRole('tab',{name:'Models & proxies',exact:true}).click();
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'Settings must fit the viewport');
+ const heading=await page.locator('.page-header h1').boundingBox(), backup=await page.locator('.settings-backup-bar').boundingBox();assert.ok(Math.abs(heading.x-backup.x)<2,'Page title must align with the content');
+ await page.screenshot({path:'bilingual-screenshots/settings-compact-en.png',fullPage:true});
+ await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:'Expand sidebar',exact:true}).click();
+ await page.getByRole('button',{name:'Canvas',exact:true}).click();await page.locator('.react-flow__node').first().waitFor();await page.getByText('An original research question',{exact:true}).click();await page.getByText('Create with AI',{exact:true}).waitFor();await page.screenshot({path:'bilingual-screenshots/canvas-en.png',fullPage:true});
+ assert.equal(await page.locator('html').getAttribute('lang'),'en');await page.reload();await page.getByRole('button',{name:'Settings',exact:true}).waitFor();assert.equal(await page.getByLabel('Language / 界面语言').inputValue(),'en');assert.equal(errors.length,0,errors.join('\n'));
+ console.log('通过：English 首次启动、即时中英切换、草稿保留、六个设置页、设置键盘导航、研究与知识源入口、帮助提示、窄屏、表单对齐、白板与节点面板、刷新后语言保留。');
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();await new Promise(r=>server.close(r));});

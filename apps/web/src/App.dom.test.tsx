@@ -1,3 +1,6 @@
+import { beforeEach as resetTestLanguage } from "vitest";
+import { setLocale as setTestLocale } from "./i18n";
+resetTestLanguage(() => setTestLocale("zh-CN"));
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,7 +73,12 @@ describe("历史研究与项目入口", () => {
     const count = view.getByLabelText("研究发现数量") as HTMLInputElement;
     expect(count.value).toBe("20");
     expect(count.max).toBe("20");
-    expect(view.getByText(/数量越多，研究耗时越长/)).toBeTruthy();
+    expect(view.queryByText(/数量越多，研究耗时越长/)).toBeNull();
+    const countHelp = count.closest(".inline-fields")!.querySelector("button")!;
+    fireEvent.focus(countHelp);
+    expect(view.getByRole("tooltip").textContent).toContain("数量越多，研究耗时越长");
+    fireEvent.keyDown(countHelp, { key: "Escape" });
+    fireEvent.blur(countHelp);
     fireEvent.change(count, { target: { value: "21" } });
     expect((view.getByRole("button", { name: "开始快速研究" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(count, { target: { value: "" } });
@@ -103,6 +111,8 @@ describe("历史研究与项目入口", () => {
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
+    // 初始表单也有 3000，必须等待已有模型载入后再编辑，避免测试与异步初始化竞争。
+    await waitFor(() => expect((view.getByLabelText("当前调用模型") as HTMLInputElement).value).toBe(provider.model_name));
     await waitFor(() => expect(view.getByDisplayValue("3000")).toBeTruthy());
     const input = view.getByLabelText("最大输出 token") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "" } });
@@ -131,7 +141,8 @@ describe("历史研究与项目入口", () => {
     const view = render(<App />);
     fireEvent.click(view.getByRole("button", { name: "设置" }));
     fireEvent.click(view.getByRole("tab", { name: "大模型与代理" }));
-    await waitFor(() => expect(view.getByRole("button", { name: "短文本实测" })).toBeTruthy());
+    // 按钮在配置加载前已存在，但尚不可操作；等待已有模型完成初始化。
+    await waitFor(() => expect((view.getByRole("button", { name: "短文本实测" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(view.getByRole("button", { name: "短文本实测" }));
     await waitFor(() => expect(view.getByText(/失败：模型未返回可用文本/)).toBeTruthy());
     vi.spyOn(api, "saveProvider").mockRejectedValue(new Error("最大输出 token：不得大于 262144"));
