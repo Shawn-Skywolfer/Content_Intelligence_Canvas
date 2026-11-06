@@ -20,8 +20,8 @@ static void log_event(const wchar_t *text);
 static void fail(const wchar_t *message) {
     log_event(message);
     wchar_t detail[PATH_CAP + 1400];
-    swprintf(detail, PATH_CAP + 1400, L"%ls\n\n启动日志目录：\n%ls\n请保留 launcher.log 与 startup-python.log 便于定位。", message, log_path);
-    MessageBoxW(NULL, detail, L"内容智能工作台启动失败", MB_OK | MB_ICONERROR);
+    swprintf(detail, PATH_CAP + 1400, L"%ls\n\nStartup log location / 启动日志目录：\n%ls\nKeep launcher.log and startup-python.log for troubleshooting. / 请保留日志。", message, log_path);
+    MessageBoxW(NULL, detail, L"Workspace could not start / 工作台启动失败", MB_OK | MB_ICONERROR);
 }
 
 static void pump(void) {
@@ -147,19 +147,20 @@ static int runtime_complete(const wchar_t *runtime) {
     return 1;
 }
 
-static void stop_previous(const wchar_t *root) {
+static int stop_previous(const wchar_t *root) {
+    int stopped = 1;
     wchar_t path[PATH_CAP]; swprintf(path, PATH_CAP, L"%ls\\runtime-process.json", root);
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE) return 1;
     char record[16000] = {0}; DWORD size = 0; ReadFile(file, record, sizeof(record) - 1, &size, NULL); CloseHandle(file);
     char *pid_field = strstr(record, "\"pid\""), *time_field = strstr(record, "\"create_time\"");
-    if (!pid_field || !time_field || !strstr(record, "standalone_entry.py")) return;
+    if (!pid_field || !time_field || !strstr(record, "standalone_entry.py")) return 1;
     pid_field = strchr(pid_field, ':'); time_field = strchr(time_field, ':');
-    if (!pid_field || !time_field) return;
+    if (!pid_field || !time_field) return 1;
     DWORD pid = strtoul(pid_field + 1, NULL, 10); double expected = strtod(time_field + 1, NULL);
-    if (!pid || expected <= 0 || pid == GetCurrentProcessId()) return;
+    if (!pid || expected <= 0 || pid == GetCurrentProcessId()) return 1;
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-    if (!process) return;
+    if (!process) return 1;
     wchar_t executable[PATH_CAP], prefix[PATH_CAP]; DWORD length = PATH_CAP;
     FILETIME created, exited, kernel, user;
     swprintf(prefix, PATH_CAP, L"%ls\\runtime-", root);
@@ -170,43 +171,57 @@ static void stop_previous(const wchar_t *root) {
         double actual = (double)ticks.QuadPart / 10000000.0 - 11644473600.0;
         if (name && (!_wcsicmp(name + 1, L"pythonw.exe") || !_wcsicmp(name + 1, L"python.exe")) && fabs(actual - expected) < 1.0) {
             log_event(L"已验证应用专用路径、PID 与创建时间，替换上一应用实例");
-            TerminateProcess(process, 0); WaitForSingleObject(process, 5000);
+            BOOL terminated = TerminateProcess(process, 0);
+            DWORD termination_error = terminated ? ERROR_SUCCESS : GetLastError();
+            DWORD wait_result = WaitForSingleObject(process, 5000);
+            wchar_t diagnostic[240];
+            swprintf(diagnostic, 240, L"旧实例 PID=%lu 创建时间=%.6f 终止结果=%lu 等待结果=%lu", pid, actual, termination_error, wait_result);
+            log_event(diagnostic);
+            if (wait_result != WAIT_OBJECT_0) stopped = 0;
         }
     }
     CloseHandle(process);
+    return stopped;
 }
 
 static int prepare_runtime(const wchar_t *self, const wchar_t *root, const wchar_t *runtime, const wchar_t *ready) {
     if (file_exists(ready) && runtime_complete(runtime)) { log_event(L"复用已校验运行环境"); return 1; }
-    progress(L"内容智能工作台：正在释放并校验本地运行环境\n首次启动可能需要一至数分钟，请稍候…");
+    progress(L"Setting up the local runtime / 正在准备运行环境\nFirst launch may take a few minutes. Please wait. / 首次启动请稍候。");
     wchar_t zip[PATH_CAP], stage[PATH_CAP], old[PATH_CAP], command[32768], system[PATH_CAP];
-    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.29.zip", root);
+    swprintf(zip, PATH_CAP, L"%ls\\payload-v0.3.32.zip", root);
     swprintf(stage, PATH_CAP, L"%ls.extracting-%lu-%llu", runtime, GetCurrentProcessId(), GetTickCount64());
     if (!write_payload(self, zip)) {
-        wchar_t message[400]; swprintf(message, 400, L"读取安装数据失败。阶段 %d，系统错误 %lu。请确认 EXE 下载完整。", payload_stage, payload_error); fail(message); return 0;
+        wchar_t message[400]; swprintf(message, 400, L"Cannot read application data. Stage %d, system error %lu. Download the complete EXE again. / 安装数据读取失败，请重新下载。", payload_stage, payload_error); fail(message); return 0;
     }
-    if (!CreateDirectoryW(stage, NULL)) { fail(L"无法创建运行环境临时目录，请检查可用磁盘空间和目录权限。"); return 0; }
+    if (!CreateDirectoryW(stage, NULL)) { fail(L"Cannot create the runtime folder. Check disk space and permissions. / 无法创建临时目录，请检查磁盘及权限。"); return 0; }
     GetSystemDirectoryW(system, PATH_CAP);
-    swprintf(command, 32768, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", system, zip, stage);
-    log_event(L"使用系统 tar 解包（不依赖 PowerShell 执行策略）");
-    int extracted = run_and_wait(command, root);
+    // Keep tar's argv ASCII. The Unicode working directory is supplied via
+    // CreateProcessW, so paths do not pass through tar's narrow argv decoder.
+    swprintf(command, 32768, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", system, wcsrchr(zip, L'\\') + 1, wcsrchr(stage, L'\\') + 1);
+    wchar_t extractor[32] = {0};
+    GetEnvironmentVariableW(L"CIC_EXTRACTOR", extractor, 32);
+    int extracted = 0;
+    if (_wcsicmp(extractor, L"dotnet") != 0) {
+        log_event(L"使用系统 tar 解包（不依赖 PowerShell 执行策略）");
+        extracted = run_and_wait(command, root);
+    }
     if (!extracted) {
-        log_event(L"系统 tar 不可用，使用 PowerShell 严格模式解包");
+        log_event(L"系统 tar 不可用，使用 .NET Unicode 路径解包");
         SetEnvironmentVariableW(L"CIC_EXTRACT_ZIP", zip); SetEnvironmentVariableW(L"CIC_EXTRACT_DIR", stage);
         // Paths are environment values, never interpolated into PowerShell source.
-        swprintf(command, 32768, L"\"%ls\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; try { Expand-Archive -LiteralPath $env:CIC_EXTRACT_ZIP -DestinationPath $env:CIC_EXTRACT_DIR -Force; exit 0 } catch { Write-Error $_; exit 1 }\"", system);
+        swprintf(command, 32768, L"\"%ls\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; try { Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Directory]::Delete($env:CIC_EXTRACT_DIR,$true); [System.IO.Compression.ZipFile]::ExtractToDirectory($env:CIC_EXTRACT_ZIP,$env:CIC_EXTRACT_DIR); exit 0 } catch { Write-Error $_; exit 1 }\"", system);
         extracted = run_and_wait(command, root);
         SetEnvironmentVariableW(L"CIC_EXTRACT_ZIP", NULL); SetEnvironmentVariableW(L"CIC_EXTRACT_DIR", NULL);
     }
-    if (!extracted || !runtime_complete(stage)) { fail(L"运行环境释放或校验失败。旧环境与用户数据均保留；请查看启动日志。 "); return 0; }
+    if (!extracted || !runtime_complete(stage)) { fail(L"Runtime extraction or validation failed. Your data is preserved. Check the startup logs. / 运行环境校验失败，请查看日志。"); return 0; }
     if (GetFileAttributesW(runtime) != INVALID_FILE_ATTRIBUTES) {
         swprintf(old, PATH_CAP, L"%ls.incomplete-%lu-%llu", runtime, GetCurrentProcessId(), GetTickCount64());
-        if (!MoveFileW(runtime, old)) { fail(L"无法替换损坏的运行环境，目录可能被占用。请查看日志中的系统错误。"); return 0; }
+        if (!MoveFileW(runtime, old)) { fail(L"Cannot replace the damaged runtime. The folder may be in use. Check the logs. / 无法替换运行环境，目录可能被占用。"); return 0; }
     }
-    if (!MoveFileW(stage, runtime)) { fail(L"无法提交完整运行环境，请检查目录权限。"); return 0; }
+    if (!MoveFileW(stage, runtime)) { fail(L"Cannot finalize the runtime. Check folder permissions. / 无法提交运行环境，请检查目录权限。"); return 0; }
     HANDLE marker = CreateFileW(ready, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (marker == INVALID_HANDLE_VALUE) { fail(L"无法保存运行环境校验标记。"); return 0; }
-    DWORD written; WriteFile(marker, "v0.3.29", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
+    if (marker == INVALID_HANDLE_VALUE) { fail(L"Cannot save the runtime validation marker. / 无法保存校验标记。"); return 0; }
+    DWORD written; WriteFile(marker, "v0.3.32", 7, &written, NULL); FlushFileBuffers(marker); CloseHandle(marker);
     DeleteFileW(zip); log_event(L"运行环境完整释放并提交"); return 1;
 }
 
@@ -220,7 +235,7 @@ static int start_application(const wchar_t *runtime, const wchar_t *root) {
     startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
     if (!CreateProcessW(NULL, command, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, runtime, &startup, &child)) { log_event(L"CreateProcessW 启动 Python 失败"); return 0; }
     CloseHandle(child.hThread);
-    progress(L"内容智能工作台：正在加载知识库与本地服务\n服务就绪后将自动打开浏览器，请稍候…");
+    progress(L"Starting the workspace / 正在加载本地服务\nYour browser will open when ready. / 就绪后自动打开浏览器。");
     ULONGLONG deadline = GetTickCount64() + 90000;
     int ok = 0;
     while (GetTickCount64() < deadline) {
@@ -234,7 +249,7 @@ static int start_application(const wchar_t *runtime, const wchar_t *root) {
             if (wcsncmp(url, L"http://127.0.0.1:", 17) == 0) port = wcstoul(url + 17, &end, 10);
             if (port > 0 && port <= 65535 && end && !*end) {
                 if (!GetEnvironmentVariableW(L"CIC_NO_BROWSER", command, PATH_CAP)) {
-                    if ((INT_PTR)ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL) <= 32) MessageBoxW(NULL, url, L"服务已启动，请在浏览器打开此地址", MB_OK);
+                    if ((INT_PTR)ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL) <= 32) MessageBoxW(NULL, url, L"Workspace ready. Open this URL / 请在浏览器打开此地址", MB_OK);
                 }
                 ok = 1; DeleteFileW(signal); log_event(L"本地服务健康检查通过"); break;
             }
@@ -249,21 +264,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     (void)instance; (void)previous; (void)arguments; (void)show;
     wchar_t self[PATH_CAP], local[PATH_CAP], root[PATH_CAP], runtime[PATH_CAP], ready[PATH_CAP], portable[PATH_CAP];
     DWORD length = GetModuleFileNameW(NULL, self, PATH_CAP);
-    if (!length || length >= PATH_CAP || !GetEnvironmentVariableW(L"LOCALAPPDATA", local, PATH_CAP)) { fail(L"无法定位程序或本地用户目录。"); return 1; }
+    if (!length || length >= PATH_CAP || !GetEnvironmentVariableW(L"LOCALAPPDATA", local, PATH_CAP)) { fail(L"Cannot locate the application or local user folder. / 无法定位程序或用户目录。"); return 1; }
     swprintf(root, PATH_CAP, L"%ls\\ContentIntelligenceCanvas", local); CreateDirectoryW(root, NULL);
     swprintf(log_path, PATH_CAP, L"%ls\\launcher.log", root);
     wchar_t *separator = wcsrchr(self, L'\\');
     if (!separator) return 1;
     *separator = L'\0'; swprintf(portable, PATH_CAP, L"%ls\\ContentIntelligenceCanvas_Data", self); *separator = L'\\';
     SetEnvironmentVariableW(L"CIC_PORTABLE_HOME", portable);
-    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.29", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
-    progress(L"内容智能工作台：正在准备启动…");
+    swprintf(runtime, PATH_CAP, L"%ls\\runtime-v0.3.32", root); swprintf(ready, PATH_CAP, L"%ls\\.ready", runtime);
+    progress(L"Content Intelligence Workspace: starting… / 正在启动…");
     HANDLE mutex = CreateMutexW(NULL, FALSE, L"Local\\ContentIntelligenceCanvas.Launcher");
-    if (!mutex) { fail(L"无法创建启动锁。"); return 2; }
+    if (!mutex) { fail(L"Cannot create the startup lock. / 无法创建启动锁。"); return 2; }
     DWORD wait = WAIT_TIMEOUT; ULONGLONG deadline = GetTickCount64() + 300000;
     while ((wait = WaitForSingleObject(mutex, 100)) == WAIT_TIMEOUT && GetTickCount64() < deadline) pump();
-    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) { CloseHandle(mutex); fail(L"另一个启动过程尚未完成，请查看启动日志。"); return 3; }
-    stop_previous(root);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) { CloseHandle(mutex); fail(L"Another startup is still in progress. Check the startup logs. / 另一个启动过程尚未完成，请查看日志。"); return 3; }
+    if (!stop_previous(root)) {
+        ReleaseMutex(mutex); CloseHandle(mutex);
+        fail(L"The previous app instance could not exit. Check launcher.log. / 旧应用实例未能退出，请查看启动日志。");
+        return 5;
+    }
     int ok = 0, diagnosed = 0;
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (!prepare_runtime(self, root, runtime, ready)) { diagnosed = 1; break; }
@@ -273,6 +292,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int
     }
     ReleaseMutex(mutex); CloseHandle(mutex);
     if (IsWindow(progress_window)) DestroyWindow(progress_window);
-    if (!ok && !diagnosed) fail(L"本地服务未能启动，已保存完整启动日志。请查看 startup-python.log 的最后一段错误。");
+    if (!ok && !diagnosed) fail(L"The local service could not start. See the last error in startup-python.log. / 本地服务未能启动，请查看日志。");
     return ok ? 0 : 4;
 }
