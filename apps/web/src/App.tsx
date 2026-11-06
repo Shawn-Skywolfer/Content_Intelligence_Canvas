@@ -1,3 +1,4 @@
+import InfoTip from "./InfoTip";
 import { t, labels, useLocale, getLocale, setLocale, uiMessage } from "./i18n";
 import { Component, ErrorInfo, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useRef, useState } from "react";
 import MarkdownContent from "./MarkdownContent";
@@ -86,13 +87,22 @@ export default function App() {
   });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const projectRef = useRef(projectId);
+  projectRef.current = projectId;
+  const readSequence = useRef(0);
   const [sources, setSources] = useState<Source[]>([]);
   const [canvas, setCanvas] = useState<CanvasData | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [status, setStatus] = useState(t("正在连接本地工作台…"));
   const [busy, setBusy] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirtyState] = useState(false);
+  const dirtyRef = useRef(false);
+  const canvasRef = useRef<CanvasData | null>(null);
+  const editRevision = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function setDirty(value: boolean) { dirtyRef.current = value; setDirtyState(value); }
+  function installCanvas(value: CanvasData | null) { canvasRef.current = value; setCanvas(value); }
   const [canvasError, setCanvasError] = useState("");
   const saveSequence = useRef(0);
   const saveInFlight = useRef<Promise<CanvasData> | null>(null);
@@ -113,55 +123,69 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!projectId) { setCanvas(null); setAssets([]); return; }
+    if (!projectId) { installCanvas(null); setAssets([]); return; }
     if (view !== "canvas" && view !== "content") return;
     if (canvas?.project_id === projectId && !canvasError) return;
     let active = true;
     setCanvasError("");
     Promise.all([api.getCanvas(projectId), api.listAssets(projectId)])
-      .then(([canvasData, assetItems]) => { if (active) { setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); setCanvasError(""); } })
+      .then(([canvasData, assetItems]) => { if (active) { installCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setSelectedIds([]); setCanvasError(""); } })
       .catch((error) => { if (active) { setCanvasError(errorText(error)); setStatus(t("白板加载失败：{0}", errorText(error))); } });
     return () => { active = false; };
   }, [projectId, view]);
 
   useEffect(() => {
     if (!dirty || !canvas || !projectId) return;
-    const sequence = ++saveSequence.current;
-    const timer = window.setTimeout(() => {
-      const pending = api.saveCanvas(projectId, canvas);
-      saveInFlight.current = pending;
-      pending.then((saved) => {
-        if (sequence === saveSequence.current) { setCanvas(normalizeCanvas(saved)); setDirty(false); setStatus(t("白板已自动保存")); }
-      }).catch((error) => setStatus(t("自动保存失败：{0}", errorText(error))))
-        .finally(() => { if (saveInFlight.current === pending) saveInFlight.current = null; });
+    saveTimer.current = setTimeout(() => {
+      void flushCanvas().then(() => setStatus(t("白板已自动保存")))
+        .catch((error) => setStatus(t("自动保存失败：{0}", errorText(error))));
     }, 700);
-    return () => window.clearTimeout(timer);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [canvas, dirty, projectId]);
 
-  function changeCanvas(next: CanvasData) { setCanvas(next); setDirty(true); }
+  function changeCanvas(next: CanvasData) {
+    // 离开项目后的迟到回调不能覆盖当前项目。
+    if (projectRef.current !== next.project_id) return;
+    editRevision.current += 1;
+    installCanvas(next); setDirty(true);
+  }
 
   async function flushCanvas() {
-    ++saveSequence.current;
-    if (saveInFlight.current) await saveInFlight.current;
-    if (dirty && canvas && canvas.project_id === projectId) {
-      await api.saveCanvas(projectId, canvas);
-      setDirty(false);
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    while (dirtyRef.current && canvasRef.current) {
+      if (saveInFlight.current) { await saveInFlight.current; continue; }
+      const snapshot = canvasRef.current;
+      const revision = editRevision.current;
+      const pending = api.saveCanvas(snapshot.project_id, snapshot);
+      saveInFlight.current = pending;
+      try {
+        const saved = await pending;
+        if (canvasRef.current?.project_id === snapshot.project_id && editRevision.current === revision) {
+          // 服务端可能合入刚生成的节点和连线；必须安装返回的完整图及新版本号。
+          installCanvas(normalizeCanvas(saved)); setDirty(false);
+        }
+      } finally { if (saveInFlight.current === pending) saveInFlight.current = null; }
     }
   }
 
   async function refreshCanvas(skipPendingSave = false) {
     if (!projectId) return;
     ++saveSequence.current;
-    if (!skipPendingSave) await flushCanvas();
+    // 所有入口共用串行保存，再读取完整图，避免旧定时器在读取后回写。
+    await flushCanvas();
+    const revision = editRevision.current;
+    const sequence = ++readSequence.current;
     const [canvasData, assetItems] = await Promise.all([api.getCanvas(projectId), api.listAssets(projectId)]);
-    setCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
+    if (projectRef.current !== projectId || sequence !== readSequence.current || revision !== editRevision.current) return;
+    installCanvas(normalizeCanvas(canvasData)); setAssets(assetItems); setDirty(false); setCanvasError("");
   }
 
   async function openCanvas(id: string) {
     if (id !== projectId) {
       try { await flushCanvas(); } catch (error) { setStatus(t("切换项目前保存失败：{0}", errorText(error))); return; }
-      ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id);
+      ++saveSequence.current; installCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id);
     }
+    if (id === projectId) await refreshCanvas();
     setView("canvas");
     if (id === projectId && canvasError) {
       try { await refreshCanvas(); } catch (error) { setCanvasError(errorText(error)); setStatus(t("白板加载失败：{0}", errorText(error))); }
@@ -170,8 +194,17 @@ export default function App() {
 
   async function switchProject(id: string) {
     if (id === projectId) return;
-    try { await flushCanvas(); ++saveSequence.current; setCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id); }
+    try { await flushCanvas(); ++saveSequence.current; installCanvas(null); setAssets([]); setSelectedIds([]); setProjectId(id); }
     catch (error) { setStatus(t("切换项目前保存失败：{0}", errorText(error))); }
+  }
+
+  async function navigate(target: View) {
+    try {
+      if (target === "canvas" && projectId) { await openCanvas(projectId); return; }
+      if (target === "research") { await openResearch(); return; }
+      if (!dirtyRef.current && !saveInFlight.current) { setView(target); return; }
+      await flushCanvas(); setView(target);
+    } catch (error) { setStatus(errorText(error)); }
   }
 
   async function openResearch() {
@@ -196,7 +229,7 @@ export default function App() {
       if (project.id === projectId) await flushCanvas();
       const updated = await api.updateProject(project.id, { status: project.status === "archived" ? "active" : "archived" });
       setProjects((current) => current.map((item) => item.id === updated.id ? updated : item));
-      if (project.id === projectId && updated.status === "archived") { setProjectId(projects.find((item) => item.id !== project.id && item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); }
+      if (project.id === projectId && updated.status === "archived") { setProjectId(projects.find((item) => item.id !== project.id && item.status !== "archived")?.id ?? ""); installCanvas(null); setSelectedIds([]); setAssets([]); }
       setStatus(updated.status === "archived" ? t("项目“{0}”已归档", project.name) : t("项目“{0}”已恢复", project.name));
     } catch (error) { setStatus(errorText(error)); }
   }
@@ -209,14 +242,14 @@ export default function App() {
       await api.deleteProject(project.id);
       const remaining = projects.filter((item) => item.id !== project.id);
       setProjects(remaining);
-      if (project.id === projectId) { setProjectId(remaining.find((item) => item.status !== "archived")?.id ?? ""); setCanvas(null); setSelectedIds([]); setAssets([]); setDirty(false); }
+      if (project.id === projectId) { setProjectId(remaining.find((item) => item.status !== "archived")?.id ?? ""); installCanvas(null); setSelectedIds([]); setAssets([]); setDirty(false); }
       setStatus(t("项目“{0}”已删除", project.name));
     } catch (error) { setStatus(errorText(error)); }
   }
 
   const content = (() => {
     if (view === "home") return <HomeView projects={projects} activeId={projectId} busy={busy} onCreate={createProject} onOpen={openCanvas} onArchive={archiveProject} onDelete={deleteProject} />;
-    if (view === "research") return <ResearchView sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onProjectChanged={(updated) => { setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); setCanvas(null); setDirty(false); }} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
+    if (view === "research") return <ResearchView onConfigureSources={() => { void navigate("settings"); }} sources={sources} project={activeProject} busy={busy} setBusy={setBusy} setStatus={setStatus} beforeRun={flushCanvas} onProjectChanged={(updated) => { setProjects((current) => current.map((item) => item.id === updated.id ? updated : item)); installCanvas(null); setDirty(false); }} onDone={async (nodeIds) => { await flushCanvas(); await refreshCanvas(true); setSelectedIds(nodeIds); setView("canvas"); }} />;
     if (view === "canvas") return canvasError ? <div className="canvas-recovery"><strong>{t("白板加载失败")}</strong><p>{uiMessage(canvasError)}</p><button className="primary" onClick={() => { void refreshCanvas().catch((error) => setCanvasError(errorText(error))); }}>{t("重新读取白板")}</button></div> : <CanvasErrorBoundary key={projectId} onRetry={refreshCanvas}><CanvasView project={activeProject} canvas={canvas} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onChange={changeCanvas} onRefresh={refreshCanvas} beforeGenerate={flushCanvas} setStatus={setStatus} /></CanvasErrorBoundary>;
     if (view === "content") return <AssetView project={activeProject} assets={assets} onChanged={() => refreshCanvas(true)} onOpenNode={(id) => { setSelectedIds([id]); void openCanvas(projectId); }} setStatus={setStatus} />;
     return <SettingsView sources={sources} setSources={setSources} setStatus={setStatus} />;
@@ -225,13 +258,13 @@ export default function App() {
   return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar" id="global-sidebar">
       <div className="sidebar-tools"><label className="language-switch"><span aria-hidden="true">◎</span><select aria-label="Language / 界面语言" value={locale} onChange={(event) => setLocale(event.target.value as "en" | "zh-CN")}><option value="zh-CN">简体中文</option><option value="en">English</option></select></label><button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? t("展开侧边栏") : t("折叠侧边栏")} title={sidebarCollapsed ? t("展开侧边栏") : t("折叠侧边栏")} aria-expanded={!sidebarCollapsed} onClick={() => setSidebarCollapsed((value) => !value)}><span aria-hidden="true">{sidebarCollapsed ? "»" : "«"}</span></button></div>
-      <div className="brand"><span className="brand-mark">{t("智")}</span><div><strong>{t("内容智能工作台")}</strong><small>{t("可信知识驱动的内容工作台")}</small></div></div>
-      <nav aria-label={t("主要导航")}>{NAV.map((item) => <button aria-label={t(item.label)} title={sidebarCollapsed ? t(item.label) : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => item.id === "research" ? void openResearch() : item.id === "canvas" && projectId ? openCanvas(projectId) : item.id === "content" ? void flushCanvas().then(() => setView(item.id)).catch((error) => setStatus(errorText(error))) : setView(item.id)}>
+      <div className="brand"><span className="brand-mark">{t("智")}</span><div><strong>{t("内容智能工作台")}</strong></div></div>
+      <nav aria-label={t("主要导航")}>{NAV.map((item) => <button aria-label={t(item.label)} title={sidebarCollapsed ? t(item.label) : undefined} className={view === item.id ? "active" : ""} key={item.id} onClick={() => { void navigate(item.id); }}>
         <span aria-hidden="true">{getLocale() === "en" ? ({ home: "P", research: "R", canvas: "C", content: "L", settings: "S" }[item.id]) : item.icon}</span><b>{t(item.label)}</b>
       </button>)}</nav>
       <div className="sidebar-project">
-        <label>{t("当前项目")}</label>
-        <select value={projectId} onChange={(event) => { void switchProject(event.target.value); }}>
+        <label htmlFor="global-project">{t("当前项目")}</label>
+        <select id="global-project" value={projectId} onChange={(event) => { void switchProject(event.target.value); }}>
           <option value="">{t("尚未选择")}</option>
           {projects.filter((project) => project.status !== "archived").map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
         </select>
@@ -242,8 +275,8 @@ export default function App() {
   </div>;
 }
 
-function PageHeader({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description: string; actions?: React.ReactNode }) {
-  return <header className="page-header"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p></div>{actions && <div className="header-actions">{actions}</div>}</header>;
+function PageHeader({ title, actions }: { title: string; actions?: React.ReactNode }) {
+  return <header className="page-header"><div><h1>{title}</h1></div>{actions && <div className="header-actions">{actions}</div>}</header>;
 }
 
 function EmptyProject() {
@@ -257,15 +290,15 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen, onArchive, onDel
 }) {
   const [idea, setIdea] = useState(""); const [name, setName] = useState(""); const [brief, setBrief] = useState("");
   return <>
-    <PageHeader eyebrow={t("项目入口")} title={t("今天想探索什么内容？")} description={t("从一句粗想法开始，内部知识库会成为后续研究、白板共创和内容输出的证据底座。")} />
+    <PageHeader title={t("项目")} />
     <section className="hero-create card">
-      <textarea value={idea} onChange={(event) => setIdea(event.target.value)} placeholder={t("例如：人工智能数据中心的电力问题，正在带来哪些新的内容机会？")} />
-      <div className="create-details"><input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("项目名称（可选）")} /><input value={brief} onChange={(event) => setBrief(event.target.value)} placeholder={t("受众、目标或限制条件（可选）")} /></div>
+      <textarea aria-label={t("研究主题")} value={idea} onChange={(event) => setIdea(event.target.value)} placeholder={t("例如：人工智能数据中心的电力问题，正在带来哪些新的内容机会？")} />
+      <div className="create-details"><input aria-label={t("项目名称（可选）")} value={name} onChange={(event) => setName(event.target.value)} placeholder={t("项目名称（可选）")} /><input aria-label={t("内容简报")} value={brief} onChange={(event) => setBrief(event.target.value)} placeholder={t("受众、目标或限制条件（可选）")} /></div>
       <button className="primary large" disabled={busy || idea.trim().length < 2} onClick={() => onCreate(idea, name, brief)}>{t("创建项目并开始探索")}</button>
     </section>
     <section className="section-block"><div className="section-title"><h2>{t("最近项目")}</h2><span>{projects.filter((item) => item.status !== "archived").length}  {t("个进行中 ·")} {projects.filter((item) => item.status === "archived").length}  {t("个已归档")}</span></div>
       <div className="project-grid">{projects.filter((item) => item.status !== "archived").map((project) => <article className={`project-card ${activeId === project.id ? "current" : ""}`} key={project.id}>
-        <button className="project-card-main" onClick={() => onOpen(project.id)}><span className="project-state">{t("进行中")}</span><h3>{project.name}</h3><p>{project.idea}</p><small>{t("更新于")} {new Date(project.updated_at).toLocaleString(getLocale())}</small></button>
+        <button className="project-card-main" onClick={() => onOpen(project.id)}><span className="project-state">{t("进行中")}</span><h3>{project.name}</h3>{project.idea !== project.name && <p>{project.idea}</p>}<small>{t("更新于")} {new Date(project.updated_at).toLocaleString(getLocale())}</small></button>
         <div className="project-card-actions"><button className="secondary" onClick={() => onArchive(project)}>{t("归档")}</button><button className="text-button danger" onClick={() => onDelete(project)}>{t("删除")}</button></div>
       </article>)}{!projects.length && <div className="empty-state"><strong>{t("还没有项目")}</strong><p>{t("上方输入一句想法即可创建。")}</p></div>}</div>
       {projects.some((item) => item.status === "archived") && <details className="archived-projects"><summary>{t("已归档项目（")}{projects.filter((item) => item.status === "archived").length}）</summary><div className="project-grid">{projects.filter((item) => item.status === "archived").map((project) => <article className="project-card" key={project.id}><span className="project-state">{t("已归档")}</span><h3>{project.name}</h3><p>{project.idea}</p><div className="project-card-actions"><button className="secondary" onClick={() => onArchive(project)}>{t("恢复项目")}</button><button className="text-button danger" onClick={() => onDelete(project)}>{t("删除")}</button></div></article>)}</div></details>}
@@ -273,7 +306,7 @@ function HomeView({ projects, activeId, busy, onCreate, onOpen, onArchive, onDel
   </>;
 }
 
-function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, onProjectChanged, onDone }: { sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onProjectChanged: (project: Project) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
+function ResearchView({ onConfigureSources, sources, project, busy, setBusy, setStatus, beforeRun, onProjectChanged, onDone }: { onConfigureSources: () => void; sources: Source[]; project: Project | null; busy: boolean; setBusy: (value: boolean) => void; setStatus: (value: string) => void; beforeRun: () => Promise<void>; onProjectChanged: (project: Project) => void; onDone: (nodeIds: string[]) => Promise<void> }) {
   const [sourceId, setSourceId] = useState(sources[0]?.id ?? ""); const [query, setQuery] = useState(project?.idea ?? ""); const [count, setCount] = useState("20");
   const [brief, setBrief] = useState(project?.brief ?? "");
   const [savingBrief, setSavingBrief] = useState(false);
@@ -290,7 +323,7 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
     }).catch((error) => { if (active) setStatus(t("读取研究历史失败：{0}", errorText(error))); });
     return () => { active = false; };
   }, [project?.id, setStatus]);
-  if (!project) return <><PageHeader eyebrow={t("快速研究")} title={t("只基于内部知识库形成研究发现")} description={t("默认不联网，事实、信号、内部知识和洞察会分层进入白板。")} /><EmptyProject /></>;
+  if (!project) return <><PageHeader title={t("快速研究")} /><EmptyProject /></>;
   const activeProject = project;
   async function persistBrief(flush = true) {
     if (flush) await beforeRun();
@@ -332,14 +365,13 @@ function ResearchView({ sources, project, busy, setBusy, setStatus, beforeRun, o
     }
     catch (error) { setStatus(errorText(error)); } finally { setBusy(false); }
   }
-  return <><PageHeader eyebrow={t("快速研究")} title={t("从问题到研究发现与创意方向")} description={t("模型先理解 Wiki，再生成最多 20 条有据可查的研究发现，以及三条内容方向。")} />
-    <section className="research-layout"><div className="card research-form"><div className="field"><label>{t("研究问题")}</label><textarea value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      <div className="research-brief"><div className="section-title"><h3>{t("内容简报")}</h3><button type="button" className="text-button" disabled={busy || savingBrief || !!brief.trim()} onClick={() => setBrief(t("目标受众：\n传播目标：\n输出形式：\n核心关注：\n语气与限制："))}>{t("插入简报模板")}</button></div><label>{t("受众、目标与创作要求（可选）")}<textarea value={brief} maxLength={5000} rows={6} disabled={busy || savingBrief} onChange={(event) => { setBrief(event.target.value); setBriefMessage(t("简报有修改，开始研究时会自动保存，也可单独保存")); }} placeholder={t("例如：面向 AIDC 客户的技术决策者，形成公众号文章。重点比较供电可靠性与 TCO，语气客观，所有数据注明来源。")} /></label><p>{t("保存后会显示在白板「01 输入与简报」的「内容简报」节点；开始研究时自动保存，并作为研究与后续内容创作的要求。")}</p><button type="button" className="secondary" disabled={busy || savingBrief} onClick={saveBrief}>{savingBrief ? t("正在保存…") : t("保存简报")}</button>{briefMessage && <p role="status" className="brief-feedback">{briefMessage}</p>}</div>
-      <div className="field"><label>{t("内部知识源")}</label><select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select></div>
-      <div className="inline-fields"><label>{t("研究发现数量")}<input type="number" min="3" max="20" aria-describedby="research-count-hint" value={count} onChange={(e) => setCount(e.target.value)} /></label><span id="research-count-hint">{t("可填 3–20 条，默认 20 条。数量越多，研究耗时越长；证据不足时会少于目标数量，不凑数。另生成三条内容方向。")}</span></div>
+  return <><PageHeader title={t("快速研究")} />
+    <section className="research-layout"><div className="card research-form"><div className="field"><label htmlFor="research-question">{t("研究问题")}</label><textarea id="research-question" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+      <div className="research-brief"><div className="section-title"><div className="heading-with-info"><h3>{t("内容简报")}</h3><InfoTip>{t("保存后会显示在白板「01 输入与简报」的「内容简报」节点；开始研究时自动保存，并作为研究与后续内容创作的要求。")}</InfoTip></div><button type="button" className="text-button" disabled={busy || savingBrief || !!brief.trim()} onClick={() => setBrief(t("目标受众：\n传播目标：\n输出形式：\n核心关注：\n语气与限制："))}>{t("插入简报模板")}</button></div><label>{t("受众、目标与创作要求（可选）")}<textarea value={brief} maxLength={5000} rows={6} disabled={busy || savingBrief} onChange={(event) => { setBrief(event.target.value); setBriefMessage(t("简报有修改，开始研究时会自动保存，也可单独保存")); }} /></label><button type="button" className="secondary" disabled={busy || savingBrief} onClick={saveBrief}>{savingBrief ? t("正在保存…") : t("保存简报")}</button>{briefMessage && <p role="status" className="brief-feedback">{briefMessage}</p>}</div>
+      <div className="field"><label htmlFor="research-source">{t("内部知识源")}</label><select id="research-source" disabled={!sources.length} value={sourceId} onChange={(e) => setSourceId(e.target.value)}>{!sources.length && <option value="">{t("尚未添加知识源")}</option>}{sources.map((source) => <option value={source.id} key={source.id}>{source.name}</option>)}</select>{!sources.length && <button type="button" className="secondary" onClick={onConfigureSources}>{t("添加知识源")}</button>}</div>
+      <div className="inline-fields"><label>{t("研究发现数量")} (3–20)<input type="number" min="3" max="20" aria-label={t("研究发现数量")} value={count} onChange={(e) => setCount(e.target.value)} /></label><InfoTip>{t("可填 3–20 条，默认 20 条。数量越多，研究耗时越长；证据不足时会少于目标数量，不凑数。另生成三条内容方向。")}</InfoTip></div>
       <button className="primary large" disabled={busy || savingBrief || !sourceId || !query.trim() || !count.trim() || !Number.isInteger(Number(count)) || Number(count) < 3 || Number(count) > 20} onClick={run}>{busy ? t("正在研究…") : t("开始快速研究")}</button>
       {job && <div className={`research-progress ${job.status}`} aria-live="polite"><div className="progress-heading"><div><small>{job.status === "failed" ? t("任务失败") : job.status === "completed" ? t("任务完成") : t("实时研究进度")}</small><strong>{uiMessage(job.phase)}</strong></div><b>{Math.round(job.progress)}%</b></div><div className="progress-track"><i style={{ width: `${Math.max(2, job.progress)}%` }} /></div><p>{uiMessage(job.detail)}</p></div>}</div>
-      <div className="research-notes"><div><span>01</span><h3>{t("内部优先")}</h3><p>{t("快速模式只读取已启用知识库，不主动联网。")}</p></div><div><span>02</span><h3>{t("保留证据")}</h3><p>{t("每条研究发现都保存文件、标题层级、段落与参考来源。")}</p></div><div><span>03</span><h3>{t("进入白板")}</h3><p>{t("生成新节点与关联边，不覆盖已有思考。")}</p></div></div>
     </section>
     <section className="research-history" aria-label={t("历史研究")}><div className="section-title"><h2>{t("历史研究")}</h2><span>{t("当前项目 ·")} {history.length}  {t("次")}</span></div>
       {history.length ? <div className="research-history-list">{history.map((item) => <article className="research-history-item" key={item.id}>
@@ -363,7 +395,7 @@ function LegacyCanvasView({ project, canvas, selectedIds, setSelectedIds, onChan
     function up() { drag.current = null; }
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
   }, [canvas, onChange, zoom]);
-  if (!project) return <><PageHeader eyebrow={t("内容白板")} title={t("把研究变成可持续积累的内容资产")} description={t("节点、证据、分支和内容输出都保存在同一个项目中。")} /><EmptyProject /></>;
+  if (!project) return <><PageHeader title={t("内容白板")} /><EmptyProject /></>;
   if (!canvas) return <div className="empty-state">{t("正在加载白板…")}</div>;
   const activeProject = project;
   const board = canvas;
@@ -376,7 +408,7 @@ function LegacyCanvasView({ project, canvas, selectedIds, setSelectedIds, onChan
   async function concept() { if (!selectedIds.length) return; setBusy(true); try { const result = await api.createConcept(activeProject.id, selectedIds); setStatus(result.message); await onRefresh(); setSelectedIds(result.nodes.map((node) => node.id)); } catch (error) { setStatus(errorText(error)); } finally { setBusy(false); } }
   async function removeNode() { if (!primary) return; try { await api.deleteNode(activeProject.id, primary.id); setSelectedIds([]); await onRefresh(); setStatus(t("节点已删除")); } catch (error) { setStatus(errorText(error)); } }
   const byId = new Map(board.nodes.map((node) => [node.id, node]));
-  return <div className="canvas-page"><PageHeader eyebrow={t("内容白板")} title={activeProject.name} description={t("拖拽布局、连接观点、锁定结论；大模型加工始终生成新节点。")} actions={<><button className="secondary" onClick={addNote}>{t("新建笔记")}</button><button className="secondary" disabled={selected.length !== 2} onClick={connectSelected}>{t("连接两项")}</button><button className="secondary" disabled={selected.length < 2} onClick={createGroup}>{t("创建分组")}</button></>} />
+  return <div className="canvas-page"><PageHeader title={activeProject.name} actions={<><button className="secondary" onClick={addNote}>{t("新建笔记")}</button><button className="secondary" disabled={selected.length !== 2} onClick={connectSelected}>{t("连接两项")}</button><button className="secondary" disabled={selected.length < 2} onClick={createGroup}>{t("创建分组")}</button></>} />
     <div className="canvas-workspace"><section className="board-wrap"><div className="board-toolbar"><button onClick={() => setZoom(Math.max(.45, zoom - .1))}>{t("缩小")}</button><span>{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(Math.min(1.3, zoom + .1))}>{t("放大")}</button><span className="autosave">{t("自动保存已开启")}</span></div><div className="board-scroll" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}><div className="board-size" style={{ width: 2800 * zoom, height: 1900 * zoom }}><div className="board" style={{ transform: `scale(${zoom})` }}>
       <svg className="edge-layer" width="2800" height="1900"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{board.edges.map((edge) => { const source = byId.get(edge.source_node_id); const target = byId.get(edge.target_node_id); if (!source || !target) return null; return <line key={edge.id} x1={source.x + source.width} y1={source.y + source.height / 2} x2={target.x} y2={target.y + target.height / 2} markerEnd="url(#arrow)" />; })}</svg>
       {[...board.nodes].sort((a, b) => Number(b.type === "frame") - Number(a.type === "frame")).map((node) => <article key={node.id} style={{ left: node.x, top: node.y, width: node.width, minHeight: node.height }} onPointerDown={(event) => startDrag(event, node)} className={`canvas-node node-${node.type} ${selectedIds.includes(node.id) ? "selected" : ""} ${node.locked ? "locked" : ""}`}>
@@ -441,33 +473,41 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
   async function removeSource(source: Source) { if (!window.confirm(t("确定移除知识源“{0}”及其本地索引吗？源文件不会被删除。", source.name))) return; setBusy(true); try { await api.deleteSource(source.id); setSources(await api.listSources()); setSourceMessage(t("已移除知识源“{0}”，源文件未被修改", source.name)); } catch (error) { setSourceMessage(errorText(error)); } finally { setBusy(false); } }
   async function refreshSource(id: string) { setSourceMessage(""); try { const job = await api.startRefresh(id); setRefreshJobs((current) => ({ ...current, [id]: job })); } catch (error) { setSourceMessage(t("刷新启动失败：{0}", errorText(error))); } }
   async function saveProtect(value: boolean) { setProtect(value); try { await api.saveSecurity(value); setStatus(value ? t("内部数据保护已开启") : t("内部数据保护已关闭，请确认模型服务的数据边界")); } catch (error) { setStatus(errorText(error)); } }
-  return <><PageHeader eyebrow={t("工作台配置")} title={t("设置")} description={t("管理知识源、模型、搜索与数据边界。")} />
-    <div className="settings-backup-bar"><div><strong>{t("配置备份")}</strong><span>{t("包含全局代理、模型、知识源路径、搜索 MCP、DeepSeek 网页工具、内容形态和密钥；不包含 Wiki 原文及项目内容。")}</span></div><div className="form-actions"><button type="button" className="secondary" onClick={exportSettings}>{t("一键导出")}</button><label className="secondary file-import-button">{t("一键导入")}<input type="file" accept=".json,application/json" onChange={(event) => { void importSettings(event.target.files?.[0]); event.target.value = ""; }} /></label></div></div>
+  return <><PageHeader title={t("设置")} />
+    <div className="settings-backup-bar"><div><strong>{t("配置备份")}</strong><span>{t("导出文件包含明文密钥，请妥善保管。")}</span></div><div className="form-actions"><button type="button" className="secondary" onClick={exportSettings}>{t("一键导出")}</button><label className="secondary file-import-button">{t("一键导入")}<input type="file" accept=".json,application/json" onChange={(event) => { void importSettings(event.target.files?.[0]); event.target.value = ""; }} /></label></div></div>
     {settingsMessage && <p className="settings-backup-message" role="status">{settingsMessage}</p>}
-    <nav className="settings-tabs" aria-label={t("设置功能")} role="tablist">{([ ["sources", t("知识源")], ["models", t("大模型与代理")], ["network", t("全局网络与代理")], ["mcp", t("MCP 与网页搜索")], ["formats", t("内容形态")], ["security", t("数据保护")] ] as const).map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{t(label)}</button>)}</nav>
-    <div className="settings-grid settings-tab-body">{tab === "sources" && <section className="card settings-card"><div className="section-title"><h2>{t("本地知识源")}</h2><span>{t("只读，不修改源文件")}</span></div><form onSubmit={addSource}><label>{t("上传 Wiki ZIP（支持服务器版）")}<input type="file" accept=".zip" disabled={busy} onChange={(e) => { void uploadWiki(e.target.files?.[0]); e.target.value = ""; }} /></label><label>{t("知识源名称")}<input value={sourceName} onChange={(e) => setSourceName(e.target.value)} /></label><label>{t("本地知识库文件夹路径")}<div className="folder-picker"><input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} onBlur={() => setSourcePath(cleanSourcePath(sourcePath))} onPaste={(e) => { const pasted = e.clipboardData.getData("text"); if (pasted) { e.preventDefault(); setSourcePath(cleanSourcePath(pasted)); } }} placeholder={t("例如：D:\\LLM-Wiki\\wiki")} /><button type="button" className="secondary" disabled={busy} onClick={browseSource}>{t("浏览文件夹")}</button></div></label><button className="primary" disabled={busy || !sourcePath.trim()}>{t("添加知识源")}</button></form>{sourceMessage && <div className="settings-feedback" role="status">{sourceMessage}</div>}<p className="source-help">{t("粘贴内容若含工具警告，会自动提取其中的本地目录。桌面版可选择本机文件夹；服务器版请填写服务器目录，或上传包含 _agent_context 的 Wiki ZIP。ZIP 导入 Markdown 文件，其他附件不导入；原始 ZIP 不会被修改。")}</p><p className="source-help">{t("刷新时模型先阅读 _agent_context/overview.md 和 domain-map.md；研究时按需再读 relations.md，并从原始词条获取证据。")}</p><div className="source-list">{sources.map((source) => { const job = refreshJobs[source.id]; return <div className="source-entry" key={source.id}><div className="source-entry-top"><div><strong>{source.name}</strong><small>{source.root_path}</small></div><div className="source-actions"><button className="secondary" disabled={busy || job?.status === "running"} onClick={() => refreshSource(source.id)}>{job?.status === "running" ? t("刷新中…") : t("刷新知识库")}</button><button className="text-button danger" disabled={busy || job?.status === "running"} onClick={() => removeSource(source)}>{t("移除")}</button></div></div>{job && <div className={`settings-progress ${job.status}`} role="status"><div className="settings-progress-head"><strong>{uiMessage(job.phase)}</strong><span>{job.total ? t("{0} / {1} 个词条", job.processed, job.total) : t("正在准备")}</span></div><div className="settings-progress-track"><i style={{ width: `${job.total ? Math.round(job.processed / job.total * 100) : 0}%` }} /></div><p>{uiMessage(job.detail)}</p>{job.current_path && <p>{t("当前词条：")}<code>{job.current_path}</code></p>}<p>{t("已用")} {formatSeconds(job.elapsed_seconds)} · {job.estimated_total_seconds == null ? t("预计总时长计算中") : t("预计总时长 {0}", formatSeconds(job.estimated_total_seconds))}  {t("· 已更新")} {job.indexed}  {t("· 未变更")} {job.unchanged}  {t("· 警告")} {job.warnings_count}</p>{job.agent_context && <p>{t("模型阅读：")}{job.agent_context.status === "read" ? t("成功{0}，{1}", job.agent_context.model ? `（${job.agent_context.model}）` : "", job.agent_context.summary ?? t("已理解领域图")) : job.agent_context.message ?? t("未读取")}</p>}{job.error && <p className="settings-error">{t("错误：")}{uiMessage(job.error)}</p>}{job.report?.warnings?.length ? <details><summary>{t("查看")} {job.report.warnings.length}  {t("条索引警告")}</summary>{job.report.warnings.map((warning, index) => <p key={index}>{warning.path}：{warning.error}</p>)}</details> : null}</div>}</div>; })}</div></section>}
+    <nav className="settings-tabs" aria-label={t("设置功能")} role="tablist">{([ ["sources", t("知识源")], ["models", t("大模型与代理")], ["network", t("全局网络与代理")], ["mcp", t("MCP 与网页搜索")], ["formats", t("内容形态")], ["security", t("数据保护")] ] as const).map(([id, label]) => <button key={id} role="tab" id={`settings-tab-${id}`} aria-controls="settings-panel" tabIndex={tab === id ? 0 : -1} aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)} onKeyDown={(event) => {
+      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (!keys.includes(event.key)) return;
+      event.preventDefault();
+      const tabs = Array.from(event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+      const index = tabs.indexOf(event.currentTarget);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].click(); tabs[next].focus();
+    }}>{t(label)}</button>)}</nav>
+    <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className="settings-grid settings-tab-body">{tab === "sources" && <section className="card settings-card"><div className="section-title"><div className="heading-with-info"><h2>{t("本地知识源")}</h2><InfoTip>{t("粘贴内容若含工具警告，会自动提取其中的本地目录。桌面版可选择本机文件夹；服务器版请填写服务器目录，或上传包含 _agent_context 的 Wiki ZIP。ZIP 导入 Markdown 文件，其他附件不导入；原始 ZIP 不会被修改。") + " " + t("刷新时模型先阅读 _agent_context/overview.md 和 domain-map.md；研究时按需再读 relations.md，并从原始词条获取证据。")}</InfoTip></div><span>{t("只读，不修改源文件")}</span></div><form onSubmit={addSource}><label>{t("上传 Wiki ZIP（支持服务器版）")}<input type="file" accept=".zip" disabled={busy} onChange={(e) => { void uploadWiki(e.target.files?.[0]); e.target.value = ""; }} /></label><label>{t("知识源名称")}<input value={sourceName} onChange={(e) => setSourceName(e.target.value)} /></label><label>{t("本地知识库文件夹路径")}<div className="folder-picker"><input value={sourcePath} onChange={(e) => setSourcePath(e.target.value)} onBlur={() => setSourcePath(cleanSourcePath(sourcePath))} onPaste={(e) => { const pasted = e.clipboardData.getData("text"); if (pasted) { e.preventDefault(); setSourcePath(cleanSourcePath(pasted)); } }} placeholder={t("例如：D:\\LLM-Wiki\\wiki")} /><button type="button" className="secondary" disabled={busy} onClick={browseSource}>{t("浏览文件夹")}</button></div></label><button className="primary" disabled={busy || !sourcePath.trim()}>{t("添加知识源")}</button></form>{sourceMessage && <div className="settings-feedback" role="status">{sourceMessage}</div>}<div className="source-list">{sources.map((source) => { const job = refreshJobs[source.id]; return <div className="source-entry" key={source.id}><div className="source-entry-top"><div><strong>{source.name}</strong><small>{source.root_path}</small></div><div className="source-actions"><button className="secondary" disabled={busy || job?.status === "running"} onClick={() => refreshSource(source.id)}>{job?.status === "running" ? t("刷新中…") : t("刷新知识库")}</button><button className="text-button danger" disabled={busy || job?.status === "running"} onClick={() => removeSource(source)}>{t("移除")}</button></div></div>{job && <div className={`settings-progress ${job.status}`} role="status"><div className="settings-progress-head"><strong>{uiMessage(job.phase)}</strong><span>{job.total ? t("{0} / {1} 个词条", job.processed, job.total) : t("正在准备")}</span></div><div className="settings-progress-track"><i style={{ width: `${job.total ? Math.round(job.processed / job.total * 100) : 0}%` }} /></div><p>{uiMessage(job.detail)}</p>{job.current_path && <p>{t("当前词条：")}<code>{job.current_path}</code></p>}<p>{t("已用")} {formatSeconds(job.elapsed_seconds)} · {job.estimated_total_seconds == null ? t("预计总时长计算中") : t("预计总时长 {0}", formatSeconds(job.estimated_total_seconds))}  {t("· 已更新")} {job.indexed}  {t("· 未变更")} {job.unchanged}  {t("· 警告")} {job.warnings_count}</p>{job.agent_context && <p>{t("模型阅读：")}{job.agent_context.status === "read" ? t("成功{0}，{1}", job.agent_context.model ? `（${job.agent_context.model}）` : "", job.agent_context.summary ?? t("已理解领域图")) : job.agent_context.message ?? t("未读取")}</p>}{job.error && <p className="settings-error">{t("错误：")}{uiMessage(job.error)}</p>}{job.report?.warnings?.length ? <details><summary>{t("查看")} {job.report.warnings.length}  {t("条索引警告")}</summary>{job.report.warnings.map((warning, index) => <p key={index}>{warning.path}：{warning.error}</p>)}</details> : null}</div>}</div>; })}</div></section>}
       {tab === "network" && <GlobalNetworkSettings key={settingsImportRevision} />}
     {tab === "models" && <section className="card settings-card">
-        <p className="model-default-notice">{t("当前研究与白板共创默认调用：")}{providers.find((item) => item.id === activeProviderId)?.name ?? t("未配置")} · {providers.find((item) => item.id === activeProviderId)?.model_name ?? t("无模型")}{t("。测试其他配置成功不会自动切换默认模型。")}</p>
+        <p className="model-default-notice">{t("默认模型")} · {providers.find((item) => item.id === activeProviderId)?.name ?? t("未配置")} · {providers.find((item) => item.id === activeProviderId)?.model_name ?? t("无模型")}<InfoTip>{t("测试其他配置成功不会自动切换默认模型。")}</InfoTip></p>
         <div className="section-title"><h2>{t("自定义大模型")}</h2><button className="text-button" onClick={() => applyProviderPreset("custom")}>{t("新建配置")}</button></div>
-        <div className="provider-presets"><button type="button" onClick={() => applyProviderPreset("deepseek")}><strong>DeepSeek</strong><small>{t("官方 OpenAI 兼容接口")}</small></button><button type="button" onClick={() => applyProviderPreset("aihubmix")}><strong>AIHubMix</strong><small>{t("聚合模型供应商")}</small></button><button type="button" onClick={() => applyProviderPreset("custom")}><strong>{t("其他供应商")}</strong><small>{t("任意兼容接口")}</small></button></div>
+        <div className="provider-presets"><button type="button" onClick={() => applyProviderPreset("deepseek")}><strong>DeepSeek</strong></button><button type="button" onClick={() => applyProviderPreset("aihubmix")}><strong>AIHubMix</strong></button><button type="button" onClick={() => applyProviderPreset("custom")}><strong>{t("其他供应商")}</strong></button></div>
         {providers.length > 0 && <div className="provider-selection"><label>{t("已保存的供应商与模型")}<select value={selectedProvider} onChange={(e) => { setSelectedProvider(e.target.value); setQuotaResult(""); const provider = providers.find((item) => item.id === e.target.value); if (provider) setFormFromProvider(provider); }}><option value="">{t("新建配置")}</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === activeProviderId ? t("当前调用 · ") : ""}{provider.name} · {provider.model_name} · {provider.is_external ? t("外部") : t("内部")}</option>)}</select></label><button type="button" className="secondary danger" disabled={busy || !selectedProvider} onClick={deleteSelectedProvider}>{t("删除配置")}</button></div>}
         <form onSubmit={saveProvider} className="provider-form">
           <label>{t("配置名称")}<input required maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
           <label>{t("接口协议")}<select value={form.protocol} onChange={(e) => setForm({ ...form, protocol: e.target.value })}><option value="openai_compatible">{t("OpenAI 兼容接口")}</option><option value="custom">{t("自定义兼容接口")}</option></select></label>
           <label>{t("接口基础地址")}<input value={form.base_url} onChange={(e) => { setAvailableModels([]); setForm({ ...form, base_url: e.target.value }); }} placeholder={t("例如 https://api.deepseek.com 或 https://aihubmix.com/v1")} /></label>
           <label>{t("接口密钥")}<input type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={selectedProvider ? t("留空则使用已保存密钥") : t("输入供应商 API Key")} /></label>
-          <div className="network-settings"><label>{t("网络连接方式")}<select value={form.network_mode} onChange={(e) => setForm({ ...form, network_mode: e.target.value })}><option value="inherit">{t("继承全局网络设置")}</option><option value="auto">{t("单独自动检测")}</option><option value="direct">{t("直接连接")}</option><option value="system_proxy">{t("Windows 系统代理")}</option><option value="custom_proxy">{t("企业代理手动设置")}</option></select></label>{form.network_mode === "custom_proxy" && <div className="proxy-fields"><label>{t("企业代理地址")}<input value={form.proxy_url} onChange={(e) => setForm({ ...form, proxy_url: e.target.value })} placeholder={t("例如 http://proxy.company.com:8080")} /></label><label>{t("代理用户名（可选）")}<input value={form.proxy_username} onChange={(e) => setForm({ ...form, proxy_username: e.target.value })} placeholder={t("域账号或代理账号")} /></label><label>{t("代理密码（可选）")}<input type="password" value={form.proxy_password} onChange={(e) => setForm({ ...form, proxy_password: e.target.value })} placeholder={selectedProvider ? t("留空则使用已保存密码") : t("输入代理密码")} /></label></div>}<p>{t("自动模式会优先使用有效的 Windows 系统代理，失败后再尝试直连；企业代理支持地址及账号密码，并使用 Windows 系统证书库验证 HTTPS。")}</p></div>
+          <div className="network-settings"><div className="heading-with-info"><label htmlFor="model-network">{t("网络连接方式")}</label><InfoTip>{t("自动模式会优先使用有效的 Windows 系统代理，失败后再尝试直连；企业代理支持地址及账号密码，并使用 Windows 系统证书库验证 HTTPS。")}</InfoTip></div><select id="model-network" value={form.network_mode} onChange={(e) => setForm({ ...form, network_mode: e.target.value })}><option value="inherit">{t("继承全局网络设置")}</option><option value="auto">{t("单独自动检测")}</option><option value="direct">{t("直接连接")}</option><option value="system_proxy">{t("Windows 系统代理")}</option><option value="custom_proxy">{t("企业代理手动设置")}</option></select>{form.network_mode === "custom_proxy" && <div className="proxy-fields"><label>{t("企业代理地址")}<input value={form.proxy_url} onChange={(e) => setForm({ ...form, proxy_url: e.target.value })} placeholder={t("例如 http://proxy.company.com:8080")} /></label><label>{t("代理用户名（可选）")}<input value={form.proxy_username} onChange={(e) => setForm({ ...form, proxy_username: e.target.value })} placeholder={t("域账号或代理账号")} /></label><label>{t("代理密码（可选）")}<input type="password" value={form.proxy_password} onChange={(e) => setForm({ ...form, proxy_password: e.target.value })} placeholder={selectedProvider ? t("留空则使用已保存密码") : t("输入代理密码")} /></label></div>}</div>
           <div className="model-discovery"><label>{t("当前调用模型")}<input list="provider-model-options" value={form.model_name} onChange={(e) => setForm({ ...form, model_name: e.target.value })} placeholder={t("手动输入模型 ID，或从下方选择")} /><datalist id="provider-model-options">{availableModels.map((model) => <option key={model} value={model} />)}</datalist></label><button type="button" className="secondary" disabled={busy || !form.base_url || (!form.api_key && !selectedProvider)} onClick={discoverModels}>{busy ? t("获取中…") : t("刷新模型")}</button></div>
           <div className="form-actions"><button type="button" className="secondary" disabled={!form.model_name.trim()} onClick={() => setModelOptions((items) => [...new Set([...items, form.model_name.trim()])])}>{t("将当前模型加入可调用列表")}</button></div>
           {!!modelOptions.length && <div className="model-chips" aria-label={t("可调用模型")}>{modelOptions.map((model) => <span className="model-option" key={model}><button type="button" className={form.model_name === model ? "active" : ""} onClick={() => setForm({ ...form, model_name: model })}>{model}</button><button type="button" className="text-button danger" aria-label={t("移除 {0}", model)} onClick={() => setModelOptions((items) => items.filter((item) => item !== model))}>{t("移除")}</button></span>)}</div>}
-          {!!availableModels.length && <details className="source-panel"><summary>{t("供应商返回")} {availableModels.length}  {t("个模型，点击加入可调用列表")}</summary><label>{t("筛选模型")}<input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder={t("输入模型名称筛选")} /></label><p className="context-note">{t("最多显示前 100 项，输入名称可继续筛选。")}</p><div className="model-chips">{availableModels.filter((model) => model.toLowerCase().includes(modelFilter.toLowerCase())).slice(0, 100).map((model) => <button type="button" key={model} className={modelOptions.includes(model) ? "active" : ""} onClick={() => { setModelOptions((items) => [...new Set([...items, model])]); setForm((current) => ({ ...current, model_name: model })); }}>{modelOptions.includes(model) ? t("已加入 · ") : "+ "}{model}</button>)}</div></details>}
-          <div className="config-grid"><label>{t("温度")}<input type="number" min="0" max="2" step="0.1" value={form.temperature} onChange={(e) => setForm({ ...form, temperature: Number(e.target.value) })} /></label><label>{t("最大输出 token")}<input required type="number" min="1" max="393216" step="1" value={form.max_tokens} onChange={(e) => setForm({ ...form, max_tokens: e.target.value })} /></label><label>{t("超时秒数")}<input type="number" min="5" max="300" value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label></div>
-          <details className="model-advanced" open><summary>{t("推理、测试与额度设置")}</summary><label className="checkbox-label"><input type="checkbox" checked={form.stream_output} onChange={(e) => setForm({ ...form, stream_output: e.target.checked })} />{t("启用流式接收（实验）")}</label><p>{t("默认使用完整响应模式以优先保证正文交付。流式模式可实时显示供应商推理和正文接收进度；遇到停滞时请关闭此项。")}</p><div className="advanced-grid"><label>{t("思考模式")}<select value={form.reasoning_mode} onChange={(e) => setForm({ ...form, reasoning_mode: e.target.value })}><option value="off">{t("关闭思考 / 使用供应商默认参数")}</option><option value="effort">{t("reasoning_effort 参数")}</option><option value="thinking">{t("thinking.enabled 参数")}</option></select></label>{form.reasoning_mode === "effort" && <label>{t("思考强度")}<select value={form.reasoning_effort} onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value })}><option value="low">{t("低")}</option><option value="medium">{t("中")}</option><option value="high">{t("高")}</option></select></label>}<label>{t("短文本测试模型")}<input value={form.test_model} onChange={(e) => setForm({ ...form, test_model: e.target.value })} placeholder={t("留空使用当前调用模型")} /></label><label>{t("每条线路测试超时（秒）")}<input type="number" min="5" max="30" value={form.test_timeout_seconds} onChange={(e) => setForm({ ...form, test_timeout_seconds: Number(e.target.value) })} /></label><label>{t("测试输出上限（token）")}<input type="number" min="64" max="512" value={form.test_max_tokens} onChange={(e) => setForm({ ...form, test_max_tokens: Number(e.target.value) })} /></label><label>{t("额度查询接口（可选）")}<input value={form.quota_url} onChange={(e) => setForm({ ...form, quota_url: e.target.value })} placeholder={t("供应商提供的余额或套餐接口")} /></label><label>{t("额度字段路径")}<input value={form.quota_json_path} onChange={(e) => setForm({ ...form, quota_json_path: e.target.value })} placeholder={t("如 data.balance")} /></label><label>{t("额度单位")}<input value={form.quota_unit} onChange={(e) => setForm({ ...form, quota_unit: e.target.value })} placeholder={t("元 / token / 次")} /></label></div><p>{t("DeepSeek 关闭思考时会明确发送 disabled；其他供应商默认不附加思考参数。开启思考且接口返回推理文本时，可在任务详情查看；流式模式支持实时显示。不同供应商的参数并不通用；额度查询需配置供应商接口。")}</p></details>
-          <p className="context-note">{t("最大输出可填写 1–393216 token（384K），实际输出上限以供应商和模型能力为准；数字框支持清空后重新输入。")}</p>
-          <label>{t("模型数据边界")}<select value={form.is_external ? "external" : "internal"} onChange={(e) => setForm({ ...form, is_external: e.target.value === "external" })}><option value="external">{t("外部：数据保护开启时禁止发送内部资料")}</option><option value="internal">{t("内部：数据保护开启时仍允许调用")}</option></select></label>
-          <p className="context-note">{t("仅将确实受企业控制、允许处理内部知识的模型标记为“内部”。保存当前调用模型后，可切换为默认模型。")}</p>
-          <p className="context-note">{t("先保存，再进行短文本实测或刷新额度。测试会向已保存的模型发送“请只回复 OK”；自动网络模式最多依次尝试系统代理和直连，每条线路按独立测试超时限制。")}</p>
+          {!!availableModels.length && <details className="source-panel"><summary>{t("供应商返回")} {availableModels.length}  {t("个模型，点击加入可调用列表")}</summary><label>{t("筛选模型")}<input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder={t("输入模型名称筛选")} /></label><div className="model-chips">{availableModels.filter((model) => model.toLowerCase().includes(modelFilter.toLowerCase())).slice(0, 100).map((model) => <button type="button" key={model} className={modelOptions.includes(model) ? "active" : ""} onClick={() => { setModelOptions((items) => [...new Set([...items, model])]); setForm((current) => ({ ...current, model_name: model })); }}>{modelOptions.includes(model) ? t("已加入 · ") : "+ "}{model}</button>)}</div></details>}
+          <div className="config-grid"><label>{t("温度")}<input type="number" min="0" max="2" step="0.1" value={form.temperature} onChange={(e) => setForm({ ...form, temperature: Number(e.target.value) })} /></label><div className="field-with-help"><div className="heading-with-info"><label htmlFor="provider-field-0">{t("最大输出 token")}</label><InfoTip>{t("最大输出可填写 1–393216 token（384K），实际输出上限以供应商和模型能力为准；数字框支持清空后重新输入。")}</InfoTip></div><input id="provider-field-0" required type="number" min="1" max="393216" step="1" value={form.max_tokens} onChange={(e) => setForm({ ...form, max_tokens: e.target.value })} /></div><label>{t("超时秒数")}<input type="number" min="5" max="300" value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label></div>
+          <details className="model-advanced"><summary>{t("推理、测试与额度设置")}</summary><label className="checkbox-label"><input type="checkbox" checked={form.stream_output} onChange={(e) => setForm({ ...form, stream_output: e.target.checked })} />{t("启用流式接收（实验）")}</label><InfoTip>{t("默认使用完整响应模式以优先保证正文交付。流式模式可实时显示供应商推理和正文接收进度；遇到停滞时请关闭此项。")}</InfoTip><div className="advanced-grid"><div className="field-with-help"><div className="heading-with-info"><label htmlFor="provider-field-2">{t("思考模式")}</label><InfoTip>{t("DeepSeek 关闭思考时会明确发送 disabled；其他供应商默认不附加思考参数。开启思考且接口返回推理文本时，可在任务详情查看；流式模式支持实时显示。不同供应商的参数并不通用；额度查询需配置供应商接口。")}</InfoTip></div><select id="provider-field-2" value={form.reasoning_mode} onChange={(e) => setForm({ ...form, reasoning_mode: e.target.value })}><option value="off">{t("关闭思考 / 使用供应商默认参数")}</option><option value="effort">{t("reasoning_effort 参数")}</option><option value="thinking">{t("thinking.enabled 参数")}</option></select></div>{form.reasoning_mode === "effort" && <label>{t("思考强度")}<select value={form.reasoning_effort} onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value })}><option value="low">{t("低")}</option><option value="medium">{t("中")}</option><option value="high">{t("高")}</option></select></label>}<label>{t("短文本测试模型")}<input value={form.test_model} onChange={(e) => setForm({ ...form, test_model: e.target.value })} placeholder={t("留空使用当前调用模型")} /></label><label>{t("每条线路测试超时（秒）")}<input type="number" min="5" max="30" value={form.test_timeout_seconds} onChange={(e) => setForm({ ...form, test_timeout_seconds: Number(e.target.value) })} /></label><label>{t("测试输出上限（token）")}<input type="number" min="64" max="512" value={form.test_max_tokens} onChange={(e) => setForm({ ...form, test_max_tokens: Number(e.target.value) })} /></label><label>{t("额度查询接口（可选）")}<input value={form.quota_url} onChange={(e) => setForm({ ...form, quota_url: e.target.value })} placeholder={t("供应商提供的余额或套餐接口")} /></label><label>{t("额度字段路径")}<input value={form.quota_json_path} onChange={(e) => setForm({ ...form, quota_json_path: e.target.value })} placeholder={t("如 data.balance")} /></label><label>{t("额度单位")}<input value={form.quota_unit} onChange={(e) => setForm({ ...form, quota_unit: e.target.value })} placeholder={t("元 / token / 次")} /></label></div></details>
+
+          <div className="field-with-help"><div className="heading-with-info"><label htmlFor="provider-field-1">{t("模型数据边界")}</label><InfoTip>{t("仅将确实受企业控制、允许处理内部知识的模型标记为“内部”。保存当前调用模型后，可切换为默认模型。")}</InfoTip></div><select id="provider-field-1" value={form.is_external ? "external" : "internal"} onChange={(e) => setForm({ ...form, is_external: e.target.value === "external" })}><option value="external">{t("外部：数据保护开启时禁止发送内部资料")}</option><option value="internal">{t("内部：数据保护开启时仍允许调用")}</option></select></div>
+
+
           <div className="form-actions"><button className="secondary" disabled={busy || !form.name.trim() || !form.base_url || !form.model_name}>{t("保存配置")}</button><button type="button" className="primary" disabled={busy || !form.name.trim() || !form.base_url || !form.model_name || !form.enabled} onClick={() => void saveProvider(undefined, true)}>{t("保存并设为默认")}</button><button type="button" className="secondary" disabled={busy || !selectedProvider} onClick={testProvider}>{t("短文本实测")}</button><button type="button" className="secondary" disabled={busy || !selectedProvider || !form.quota_url || !form.quota_json_path} onClick={queryQuota}>{t("刷新额度")}</button><button type="button" className="secondary" disabled={busy || !selectedProvider || selectedProvider === activeProviderId} onClick={activateModel}>{t("设为默认调用模型")}</button></div>
         </form>
         {quotaResult && <p className="settings-feedback" role="status">{quotaResult}</p>}
@@ -478,7 +518,7 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
           {modelActivity.error && <p className="settings-error">{uiMessage(modelActivity.error)}</p>}
         </div>}
       </section>}
-      {tab === "mcp" && <><section className="card settings-card"><div className="section-title"><div><h2>{t("搜索 MCP")}</h2><p>{t("通过 Streamable HTTP 连接 Tavily 或其他搜索 MCP；洞察、质疑、创意模式和笔记节点可综合网络与 Wiki 资料。")}</p></div></div>
+      {tab === "mcp" && <><section className="card settings-card"><div className="section-title"><div className="heading-with-info"><h2>{t("搜索 MCP")}</h2><InfoTip>{t("通过 Streamable HTTP 连接 Tavily 或其他搜索 MCP；洞察、质疑、创意模式和笔记节点可综合网络与 Wiki 资料。")}</InfoTip></div></div>
         <label>{t("服务名称")}<input value={mcp.name} onChange={(e) => setMcp({ ...mcp, name: e.target.value })} /></label>
         <label>{t("MCP 服务地址")}<input value={mcp.url} onChange={(e) => setMcp({ ...mcp, url: e.target.value })} placeholder="https://mcp.tavily.com/mcp/" /></label>
         <label>{t("搜索工具名称")}<input value={mcp.tool_name} onChange={(e) => setMcp({ ...mcp, tool_name: e.target.value })} placeholder="tavily_search" /></label>
@@ -486,14 +526,14 @@ function SettingsView({ sources, setSources, setStatus }: { sources: Source[]; s
         <label>{t("网络连接方式")}<select value={mcp.network_mode} onChange={(e) => setMcp({ ...mcp, network_mode: e.target.value as McpSearchConfig["network_mode"] })}><option value="inherit">{t("继承全局网络设置")}</option><option value="auto">{t("单独自动检测")}</option><option value="direct">{t("直接连接")}</option><option value="system_proxy">{t("Windows 系统代理")}</option><option value="custom_proxy">{t("企业代理手动设置")}</option></select></label>
         {mcp.network_mode === "custom_proxy" && <div className="proxy-fields"><label>{t("企业代理地址")}<input value={mcp.proxy_url} onChange={(e) => setMcp({ ...mcp, proxy_url: e.target.value })} placeholder="http://proxy.company.com:8080" /></label><label>{t("代理用户名")}<input value={mcp.proxy_username} onChange={(e) => setMcp({ ...mcp, proxy_username: e.target.value })} /></label><label>{t("代理密码")}<input type="password" value={mcp.proxy_password || ""} onChange={(e) => setMcp({ ...mcp, proxy_password: e.target.value })} placeholder={mcp.has_proxy_password ? t("已保存代理密码；留空沿用") : t("可选")} /></label></div>}
         <label className="check"><input type="checkbox" checked={mcp.enabled} onChange={(e) => setMcp({ ...mcp, enabled: e.target.checked })} />{t("启用搜索 MCP")}</label>
-        <p className="context-note">{t("先保存，再测试连接与工具列表。密钥独立保存在本地密钥文件；网络访问使用系统代理设置。")}</p>
+
         <div className="form-actions"><button className="primary" disabled={mcpBusy || !mcp.url.trim() || !mcp.tool_name.trim()} onClick={saveMcp}>{t("保存 MCP")}</button><button className="secondary" disabled={mcpBusy || !mcp.enabled} onClick={testMcp}>{t("测试连接")}</button></div>
         {mcpActivity && <div className={`settings-progress ${mcpActivity.error ? "failed" : ""}`} role="status"><div className="settings-progress-head"><strong>{uiMessage(mcpActivity.phase)}</strong><span>{t("已用")} {formatSeconds(Math.floor((Date.now() - mcpActivity.started) / 1000))}</span></div><p>{t("服务：")}{mcp.name}  {t("· 地址：")}{String(mcpActivity.result?.endpoint ?? mcp.url)}  {t("· 网络：")}{String(mcpActivity.result?.network_mode ?? mcp.network_mode)}</p>{mcpActivity.result && <p>{uiMessage(String(mcpActivity.result.message ?? ""))}  {t("· 耗时")} {String(mcpActivity.result.latency_ms ?? t("待测"))}  {t("ms · 搜索工具")} {String(mcpActivity.result.search_tool ?? mcp.tool_name)}  {t("· 可用性")} {mcpActivity.result.search_tool_available === true ? t("通过") : t("待确认/未找到")}</p>}{Array.isArray(mcpActivity.result?.tools) && <p>{t("发现工具：")}{(mcpActivity.result.tools as string[]).join("、") || t("无")}</p>}{mcpActivity.error && <p className="settings-error">{uiMessage(mcpActivity.error)}{t("。请检查 MCP 地址、密钥、代理与工具名称。")}</p>}</div>}
       </section><DeepSeekWebSettings key={settingsImportRevision} revision={mcpRevision} /></>}
-      {tab === "formats" && <section className="card settings-card format-settings"><div className="section-title"><div><h2>{t("内容输出形态与 Prompt")}</h2><p>{t("这些要求会自动用于白板 AI 共创和内容工坊；节点中仍可填写本次特有的正向与负向 Prompt。")}</p></div><button className="secondary" disabled={busy || formats.length >= 20} onClick={() => setFormats([...formats, { id: `custom_${Date.now().toString(36)}`, name: t("新内容形态"), positive_prompt: "", negative_prompt: "" }])}>{t("添加形态")}</button></div>
+      {tab === "formats" && <section className="card settings-card format-settings"><div className="section-title"><div className="heading-with-info"><h2>{t("内容输出形态与 Prompt")}</h2><InfoTip>{t("这些要求会自动用于白板 AI 共创和内容工坊；节点中仍可填写本次特有的正向与负向 Prompt。")}</InfoTip></div><button className="secondary" disabled={busy || formats.length >= 20} onClick={() => setFormats([...formats, { id: `custom_${Date.now().toString(36)}`, name: t("新内容形态"), positive_prompt: "", negative_prompt: "" }])}>{t("添加形态")}</button></div>
         {formats.map((item) => <div className="format-setting-item" key={item.id}><div><label>{t("形态标识")}<input value={item.id} disabled title={t("保存后的形态标识不可更改")} /></label><label>{t("显示名称")}<input value={item.name} maxLength={60} onChange={(event) => changeFormat(item.id, { name: event.target.value })} /></label><button className="text-button danger" disabled={busy || formats.length === 1} onClick={() => setFormats(formats.filter((format) => format.id !== item.id))}>{t("移除")}</button></div><div className="format-prompts"><label>{t("默认正向 Prompt")}<textarea value={item.positive_prompt} maxLength={3000} onChange={(event) => changeFormat(item.id, { positive_prompt: event.target.value })} /></label><label>{t("默认负向 Prompt")}<textarea value={item.negative_prompt} maxLength={3000} onChange={(event) => changeFormat(item.id, { negative_prompt: event.target.value })} /></label></div></div>)}
         <div className="form-actions"><button className="primary" disabled={busy || !formats.length || formats.some((item) => !item.name.trim())} onClick={saveFormats}>{t("保存内容形态")}</button></div>
       </section>}
-      {tab === "security" && <section className="card settings-card security-card"><div><h2>{t("内部数据保护")}</h2><p>{t("开启时，内部知识库、研究发现和白板内容不会发送给标记为“外部”的模型。模型操作会明确报错，不再悄悄生成本地模板。")}</p></div><label className="big-switch"><input type="checkbox" checked={protect} onChange={(e) => saveProtect(e.target.checked)} /><span>{protect ? t("已开启") : t("已关闭")}</span></label></section>}
+      {tab === "security" && <section className="card settings-card security-card"><div><h2>{t("内部数据保护")}</h2><p>{t("开启后，禁止向外部模型发送内部资料；标记为内部的模型仍可调用。")}</p></div><label className="big-switch"><input type="checkbox" checked={protect} onChange={(e) => saveProtect(e.target.checked)} /><span>{protect ? t("已开启") : t("已关闭")}</span></label></section>}
     </div></>;
 }
