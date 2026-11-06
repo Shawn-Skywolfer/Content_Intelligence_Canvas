@@ -3,11 +3,12 @@ name: 发布 Windows 绿色版
 on:
   push:
     branches:
-      - release/v0.3.28
+      - release/v0.3.32
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build-and-release:
@@ -15,24 +16,55 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: "3.12.10"
-      RELEASE_TAG: "v0.3.28"
+      RELEASE_TAG: "v0.3.32"
     steps:
+      - name: 取消该发布分支的过时构建
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runs = gh api "repos/${{ github.repository }}/actions/workflows/release-windows.yml/runs?branch=${{ github.ref_name }}&per_page=10" | ConvertFrom-Json
+          foreach ($run in $runs.workflow_runs) {
+            if ($run.id -ne [long]"${{ github.run_id }}" -and $run.status -ne "completed") {
+              gh api --method POST "repos/${{ github.repository }}/actions/runs/$($run.id)/cancel"
+            }
+          }
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: 准备 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: 构建中文前端
+      - name: 构建中英双语前端
         working-directory: apps/web
         run: |
+          python ../../scripts/prepare_public_ci_lock.py
           npm ci
           npm run test
           npm run build
+
+      - name: Chromium 验证中英切换与英文页面
+        run: |
+          cd apps/web
+          npx playwright install chromium
+          cd ../..
+          node scripts/check_bilingual.cjs
+          if ($LASTEXITCODE -ne 0) { throw "双语验收失败" }
+          node scripts/check_edge_tabs.cjs
+          if ($LASTEXITCODE -ne 0) { throw "双语浏览器验收失败" }
+
+      - name: 保存双语界面验收截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilingual-ui-screenshots
+          path: bilingual-screenshots
+          if-no-files-found: ignore
 
       - name: 准备 Windows Python 运行时和后端依赖
         shell: pwsh
@@ -49,7 +81,7 @@ jobs:
 
           Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile (Join-Path $env:RUNNER_TEMP "get-pip.py")
           & (Join-Path $runtime "python.exe") (Join-Path $env:RUNNER_TEMP "get-pip.py") --disable-pip-version-check
-          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target (Join-Path $runtime "Lib\site-packages") "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2.10,<3" "lancedb>=0.20,<1" "numpy>=2,<3" "httpx>=0.28,<1" "psutil>=7,<8" "truststore>=0.10,<1"
+          & (Join-Path $runtime "python.exe") -m pip install --disable-pip-version-check --no-cache-dir --target (Join-Path $runtime "Lib\site-packages") "fastapi>=0.115,<1" "uvicorn[standard]>=0.32,<1" "pydantic>=2.10,<3" "pydantic-settings>=2.7,<3" "lancedb>=0.20,<1" "numpy>=2,<3" "httpx>=0.28,<1" "psutil>=7,<8" "truststore>=0.10,<1"
 
           Copy-Item -Recurse -Force apps/api/app (Join-Path $runtime "apps\api\app")
           Copy-Item -Force apps/api/standalone_entry.py $runtime
@@ -93,10 +125,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.28_payload.zip"
+          $payload = Join-Path $env:RUNNER_TEMP "Content_Intelligence_Canvas_v0.3.32_payload.zip"
           & python -c "import shutil; shutil.make_archive(r'$($payload -replace '\.zip$','')', 'zip', root_dir=r'portable-runtime\runtime')"
-          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.28.exe
-          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.28.exe -Algorithm SHA256 | Format-List
+          & python scripts/build_windows_portable.py portable-launcher.exe $payload Content_Intelligence_Canvas_Portable_v0.3.32.exe
+          Get-FileHash Content_Intelligence_Canvas_Portable_v0.3.32.exe -Algorithm SHA256 | Format-List
 
       - name: 验证 EXE 启动、接口和旧进程替换
         shell: pwsh
@@ -105,7 +137,7 @@ jobs:
           $testFolder = Join-Path $env:RUNNER_TEMP "工作台 O'Brien 启动测试"
           New-Item -ItemType Directory -Force -Path $testFolder | Out-Null
           $exe = Join-Path $testFolder "内容智能工作台.exe"
-          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.28.exe") $exe
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE "Content_Intelligence_Canvas_Portable_v0.3.32.exe") $exe
           $env:LOCALAPPDATA = Join-Path $testFolder "用户 O'Brien 本地缓存"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $env:CIC_NO_BROWSER = "1"
@@ -122,18 +154,29 @@ jobs:
               if (Test-Path -LiteralPath $diagnostic) { Write-Host "启动诊断 $file"; Get-Content -LiteralPath $diagnostic -Encoding utf8 -Tail 100 }
             }
           }
-          function Wait-For-App([int]$previousPid) {
+          function Read-App-Identity { return Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json }
+          function Assert-Instance-Exited($identity) {
+            $previous = Get-CimInstance Win32_Process -Filter "ProcessId=$($identity.pid)" -ErrorAction SilentlyContinue
+            if (-not $previous) { return }
+            $created = ([DateTimeOffset]::new($previous.CreationDate.ToUniversalTime())).ToUnixTimeMilliseconds() / 1000.0
+            if ($previous.ExecutablePath -eq $identity.executable -and [Math]::Abs($created - [double]$identity.create_time) -lt 1) {
+              throw "旧应用实例仍在运行：PID=$($identity.pid)，创建时间=$created"
+            }
+            Write-Host "旧实例已退出；PID $($identity.pid) 已由其他进程使用。"
+          }
+          function Wait-For-App($previousIdentity) {
             for ($attempt = 0; $attempt -lt 180; $attempt++) {
               Start-Sleep -Seconds 1
               if (-not (Test-Path $pidFile)) { continue }
               try {
-                $appPid = [int](Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json).pid
-                if ($appPid -eq $previousPid) { continue }
+                $identity = Read-App-Identity
+                $appPid = [int]$identity.pid
+                if ($previousIdentity -and $appPid -eq [int]$previousIdentity.pid -and [Math]::Abs([double]$identity.create_time - [double]$previousIdentity.create_time) -lt .001) { continue }
                 $connections = Get-NetTCPConnection -State Listen -OwningProcess $appPid -ErrorAction SilentlyContinue |
                   Where-Object { $_.LocalAddress -eq '127.0.0.1' }
                 foreach ($connection in $connections) {
                   $health = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($connection.LocalPort)/api/health" -TimeoutSec 2 -ErrorAction Stop
-                  if ($health.status -eq 'ok') { return $appPid }
+                  if ($health.status -eq 'ok') { Write-Host "实例已就绪 PID=$appPid，创建时间=$($identity.create_time)"; return $appPid }
                 }
               } catch { }
             }
@@ -143,8 +186,9 @@ jobs:
           try {
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：冷启动"
-            $firstPid = Wait-For-App 0
-            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.28"
+            $firstPid = Wait-For-App $null
+            $firstIdentity = Read-App-Identity
+            $newRuntime = Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\runtime-v0.3.32"
             if (-not (Test-Path (Join-Path $newRuntime "standalone_entry.py"))) {
               throw "新版 EXE 错误复用了旧版运行时缓存。"
             }
@@ -168,24 +212,30 @@ jobs:
             if ($after.nodes.Count -ne $canvas.nodes.Count) { throw "模型失败后不应生成模板节点" }
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：热启动和旧进程替换"
-            $secondPid = Wait-For-App $firstPid
-            if (Get-Process -Id $firstPid -ErrorAction SilentlyContinue) { throw "旧实例仍在运行。" }
+            $secondPid = Wait-For-App $firstIdentity
+            $secondIdentity = Read-App-Identity
+            Assert-Instance-Exited $firstIdentity
             $readyNode = Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$((Get-NetTCPConnection -State Listen -OwningProcess $secondPid | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1).LocalPort)/api/projects/$($project.id)/canvas"
             if (-not $readyNode.nodes) { throw "重新启动后项目内容丢失" }
             Remove-Item -LiteralPath (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py") -Force
+            $env:CIC_EXTRACTOR = "dotnet"
             Start-Process -FilePath $exe | Out-Null
             Write-Host "开始验证：损坏缓存修复"
-            $thirdPid = Wait-For-App $secondPid
+            $thirdPid = Wait-For-App $secondIdentity
+            $thirdIdentity = Read-App-Identity
+            Remove-Item Env:\CIC_EXTRACTOR
             if (-not (Test-Path (Join-Path $newRuntime "Lib\site-packages\fastapi\__init__.py"))) { throw "缺损缓存未自动修复" }
-            if (Get-Process -Id $secondPid -ErrorAction SilentlyContinue) { throw "修复缓存后旧进程仍在运行" }
+            Assert-Instance-Exited $secondIdentity
             $clickA = Start-Process -FilePath $exe -PassThru
             $clickB = Start-Process -FilePath $exe -PassThru
             $clickA.WaitForExit(120000) | Out-Null
             $clickB.WaitForExit(120000) | Out-Null
             if (-not $clickA.HasExited -or -not $clickB.HasExited -or $clickA.ExitCode -ne 0 -or $clickB.ExitCode -ne 0) { throw "连续双击启动未完成" }
             Write-Host "开始验证：连续双击后进程检查"
-            $finalPid = Wait-For-App $thirdPid
-            $owned = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*standalone_entry.py*' -and $_.ExecutablePath -like "$newRuntime*" })
+            $finalPid = Wait-For-App $thirdIdentity
+            Assert-Instance-Exited $thirdIdentity
+            $runtimeRoot = Split-Path $newRuntime -Parent
+            $owned = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*standalone_entry.py*' -and $_.ExecutablePath -like "$runtimeRoot\runtime-*" })
             if ($owned.Count -ne 1) { throw "连续启动后应用进程数异常：$($owned.Count)" }
             $status = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA "ContentIntelligenceCanvas\startup-status.json") -Raw | ConvertFrom-Json
             if ($status.phase -ne '服务已就绪') { throw "启动诊断未记录服务就绪" }
@@ -212,8 +262,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
-          git push --force origin "refs/tags/$env:RELEASE_TAG"
+          git tag $env:RELEASE_TAG $env:GITHUB_SHA
+          git push origin "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0) { throw "发布标签更新失败：$LASTEXITCODE" }
 
       - name: 发布 GitHub Release
@@ -221,14 +271,18 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Content Intelligence Canvas v0.3.28
+          name: Content Intelligence Canvas v0.3.32
           body: |
-            Windows portable public test build.
+            Windows portable v0.3.32 / 中英双语绿色版。
 
-            大模型现在先理解问题并规划 Wiki 检索，再阅读原文、回答并验证引用。快速研究生成带证据的白板节点；模型不可用时明确失败，不再用本地模板冒充 AI 结果。
+            修复 Wiki 检索规划长时间停滞：首轮总览与领域图仍完整阅读；可选关系规划只发送关系资料和已完成计划，60 秒超时后沿用首轮计划继续。规划调用使用独立输出预算和总时限，不改变最终写作配置。
 
-            v0.3.28 将模型网络读取、日志写入与任务监督分离：连续无内容最多等待 60 秒，即使连接关闭阻塞也能结束等待；完整结果不再等待 TLS 关闭。关系规划停滞时保留已完成的首轮模型检索计划，继续查阅 Wiki 原文。中断日志包含线程代码位置，保留 Prompt 历史。
+            非流式接收在关闭 TLS 连接前交付已收到的正文；网络读取、JSON 解析受统一时限监督，日志写入不会阻塞正文交付。LOG 新增应用版本、调用 ID、阶段、输入字符数、预算和线程诊断。白板任务连续 180 秒无活动会停止并保留草稿，避免无限等待。中文路径解包改用 ASCII 相对参数与 .NET 后备方式；旧实例退出使用进程身份核验并确认终止完成。
 
-            这是公开测试版，不包含用户私有 Wiki、数据库或 API Key。首次启动后，请在“设置”中添加本地 Wiki 路径并配置模型。
-          files: Content_Intelligence_Canvas_Portable_v0.3.28.exe
+            清理项目、研究、白板、内容资产和设置页面的冗余说明，统一对齐；必要帮助改为支持键盘的提示，高级模型配置默认收起。保留中英双语、实际进度、错误详情、危险操作后果提示和 v0.3.31 白板连线修复。
+
+            Bounded Wiki planning, recoverable relation refinement, and complete-response delivery before TLS cleanup. Logging cannot hold up a received answer. Cleaner bilingual pages, accessible help, aligned forms, and keyboard navigation for settings tabs.
+
+            Portable Windows EXE. Existing data stays in the current data directory. No private Wiki, logs or API keys are included in this public release. Back up your data before upgrading.
+          files: Content_Intelligence_Canvas_Portable_v0.3.32.exe
           generate_release_notes: true

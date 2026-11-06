@@ -1,0 +1,55 @@
+name: 发布规范 Linux 云端源码包
+on:
+  push:
+    branches: [release/cloud-v0.3.29]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: cloud-linux-release
+  cancel-in-progress: true
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+      - name: 校验内部锁文件并构建带前缀的前端
+        working-directory: apps/web
+        env:
+          VITE_API_BASE: /ContentWorkbench
+        run: |
+          python -c "from pathlib import Path; s=Path('package-lock.json').read_text(); assert 'registry.npmjs.org' not in s and 'registry.npmmirror.com' not in s"
+          python ../../scripts/prepare_public_ci_lock.py
+          npm ci
+          npm run test
+          npm run build
+      - name: 安装精确锁定的运行依赖并测试
+        working-directory: apps/api
+        run: |
+          python -m pip install -r ../../packaging/cloud/requirements.txt
+          python -m pip install 'pytest>=8,<10' 'pytest-asyncio>=0.25,<2'
+          python -m pytest tests
+      - name: 浏览器验证子路径资源和白板
+        run: |
+          cd apps/web
+          npx playwright install --with-deps chromium
+          cd ../..
+          node scripts/check_cloud_prefix.cjs
+      - name: 构建不可变外层包并解包验证
+        run: |
+          python scripts/build_cloud_release.py --output release-artifacts
+          PACKAGE=$(find release-artifacts -maxdepth 1 -name 'ContentWorkbench-*.zip')
+          python scripts/verify_cloud_release.py "$PACKAGE"
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          sha256sum "$PACKAGE"
+      - name: 发布全新云端发行版
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.3.29-cloud.1 "$PACKAGE" --target "$GITHUB_SHA" --title '内容智能工作台 Linux/K8s 规范源码版' --notes-file packaging/cloud/DEPLOYMENT.md

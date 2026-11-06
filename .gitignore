@@ -10,3 +10,6 @@ fixtures/wiki-cases.json
 docs/retrieval-evaluation.json
 *.pyc
 .env
+
+*.tsbuildinfo
+bilingual-screenshots/

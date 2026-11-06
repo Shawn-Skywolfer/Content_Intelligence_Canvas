@@ -7,7 +7,7 @@ import ssl
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlsplit
 from urllib.request import getproxies, proxy_bypass
@@ -21,6 +21,20 @@ from app.services.ai.secret_store import LocalSecretStore
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _task_provider: ContextVar[dict[str, Any] | None] = ContextVar("task_provider", default=None)
+_completion_policy: ContextVar[dict[str, Any]] = ContextVar("completion_policy", default={})
+
+
+class ModelRequestTimeout(RuntimeError):
+    """A bounded call failed; the parent task may recover using completed work."""
+
+
+@contextmanager
+def completion_scope(stage: str, *, timeout: float = 75, max_tokens: int = 2048):
+    marker = _completion_policy.set({"stage": stage, "timeout": timeout, "max_tokens": max_tokens})
+    try:
+        yield
+    finally:
+        _completion_policy.reset(marker)
 
 
 @contextmanager
@@ -199,11 +213,16 @@ class AIProviderGateway:
         errors: list[str] = []
         token = current_token()
         routes = cls._network_routes(url, network_mode, proxy_url, proxy_username, proxy_password)
-        request_timeout = httpx.Timeout(float(timeout), connect=min(float(timeout), 12.0))
+        policy = _completion_policy.get()
+        route_timeout = min(float(timeout), policy["timeout"] / len(routes)) if policy else float(timeout)
+        request_timeout = httpx.Timeout(route_timeout, connect=min(route_timeout, 12.0))
         for index, (label, proxy) in enumerate(routes):
             check_cancelled()
             if token and token.on_network:
                 token.on_network(f"正在通过{label}连接模型接口：{url}")
+            if token and token.on_telemetry:
+                token.on_telemetry(f"连接线路：{label}", {"route": label, "route_timeout_seconds": route_timeout,
+                                   "route_index": index + 1, "route_count": len(routes)}, "info")
             if progress:
                 progress(f"正在通过{label}连接并等待模型响应（第 {index + 1}/{len(routes)} 条线路）")
             try:
@@ -218,6 +237,10 @@ class AIProviderGateway:
                         token.bind(client)
                     try:
                         response = client.request(method, url, headers=headers, json=json_payload)
+                        # Publish a fully received body before TLS/client teardown, which
+                        # can itself stall on Windows. Parsing remains supervised.
+                        if token and token.on_response and (response.status_code not in {407, 502, 503, 504} or index + 1 == len(routes)):
+                            token.on_response(response)
                     finally:
                         if token:
                             token.unbind(client)
@@ -356,7 +379,7 @@ class AIProviderGateway:
                 "response_excerpt": content[:200] if content else "",
                 "sent_prompt": "请只回复 OK",
                 "test_max_tokens": test_tokens,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": detail,
             }
         except httpx.HTTPStatusError as exc:
@@ -371,7 +394,7 @@ class AIProviderGateway:
                 "tested_model": test_model,
                 "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": self._http_error_message("模型调用失败", exc.response),
             }
         except Exception as exc:  # Provider error must not crash the workspace.
@@ -384,7 +407,7 @@ class AIProviderGateway:
                 "tested_model": test_model,
                 "endpoint": endpoint,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"连接失败：{exc}",
             }
 
@@ -435,6 +458,11 @@ class AIProviderGateway:
             raise RuntimeError("尚未配置可用的大模型")
         if self.repository.get_setting("protect_internal_data", True) and provider.get("is_external"):
             raise PermissionError("数据保护已开启，不能把内部知识发送给外部模型")
+        policy = _completion_policy.get()
+        if policy:
+            provider = {**provider, "timeout_seconds": min(float(provider.get("timeout_seconds", 60)), policy["timeout"]),
+                        "max_tokens": policy["max_tokens"],
+                        "extra": {**(provider.get("extra") or {}), "reasoning_mode": "off", "stream_output": False}}
         network_mode, proxy_url, proxy_username, proxy_password = self._network_settings(provider)
         payload = {
             "model": provider["model_name"],
@@ -444,7 +472,7 @@ class AIProviderGateway:
             **self._reasoning_payload(provider),
         }
         token = current_token()
-        if token and token.on_telemetry:
+        if token and token.on_telemetry and (provider.get("extra") or {}).get("stream_output", False):
             from app.services.ai.streaming import request_stream, StreamUnsupported
             try:
                 response_payload = request_stream(
@@ -471,35 +499,133 @@ class AIProviderGateway:
     def _complete_response(self, provider: dict[str, Any], payload: dict[str, Any], network_mode: str,
                            proxy_url: str | None, username: str | None, password: str | None) -> dict[str, Any]:
         from threading import Event, Thread
-        token = current_token()
+        from contextvars import copy_context
+        from queue import Queue, Empty, Full
+        import sys
+        import traceback
+        import uuid
+        from app.services.ai.cancellation import CancellationToken, cancellation_scope
+        parent = current_token()
+        token = CancellationToken()
         stop = Event()
         started = time.monotonic()
+        policy = _completion_policy.get()
+        deadline = policy.get("timeout", max(30, min(600, float(provider.get("timeout_seconds", 60)) * 2 + 15)))
+        call_id = uuid.uuid4().hex[:12]
+        state = {"call_id": call_id, "app_version": "0.3.32", "call_stage": policy.get("stage", "generation"),
+                 "deadline_seconds": deadline, "model": payload["model"], "max_tokens": payload["max_tokens"],
+                 "input_chars": sum(len(message["content"]) for message in payload["messages"]), "stage": "connecting"}
+        logs: Queue = Queue(maxsize=128)
+        drained = Event()
+        def emit(detail: str, metrics: dict[str, Any], level: str = "info") -> None:
+            if not stop.is_set():
+                try:
+                    logs.put_nowait((detail, {**state, "elapsed_seconds": round(time.monotonic() - started, 1), **metrics}, level))
+                except Full:
+                    pass  # A slow diagnostic store must never block receiving a response.
+        def persist() -> None:
+            try:
+                while not stop.is_set():
+                    try:
+                        item = logs.get(timeout=.1)
+                    except Empty:
+                        continue
+                    if item is None:
+                        return
+                    if parent and parent.on_telemetry and not parent.event.is_set():
+                        try:
+                            parent.on_telemetry(*item)
+                        except Exception:
+                            pass
+            finally:
+                drained.set()
+        token.on_network = lambda detail: emit(detail, {})
+        token.on_telemetry = emit
         def waiting() -> None:
             while not stop.wait(5):
-                if token and token.on_telemetry and not token.event.is_set():
-                    try:
-                        token.on_telemetry("等待非流式模型返回完整结果", {"stage": "waiting", "elapsed_seconds": round(time.monotonic() - started, 1)}, "info")
-                    except RuntimeError:
-                        return
-        if token and token.on_telemetry:
-            Thread(target=waiting, name="ai-nonstream-progress", daemon=True).start()
+                emit(f"等待模型完整结果 · 已用 {int(time.monotonic() - started)} 秒 · 本次时限 {int(deadline)} 秒", {"stage": "waiting"})
+        writer = Thread(target=persist, name="ai-nonstream-log", daemon=True)
+        writer.start()
+        Thread(target=waiting, name="ai-nonstream-progress", daemon=True).start()
+        emit("开始模型调用", {})
         try:
-            response = self._request("POST", self._chat_url(provider["base_url"]), headers=self._headers(provider),
-                                     json_payload=payload, timeout=provider.get("timeout_seconds", 60),
-                                     network_mode=network_mode, proxy_url=proxy_url,
-                                     proxy_username=username, proxy_password=password)
-            if response.status_code >= 400:
-                raise RuntimeError(self._http_error_message("模型请求失败", response))
-            result = response.json()
-            if token and token.on_telemetry:
-                token.on_telemetry("已接收非流式模型完整结果", {"stage": "complete", "http_status": response.status_code,
-                    "elapsed_seconds": round(time.monotonic() - started, 1), "content_chars": len(self._extract_content(result)),
-                    "usage": result.get("usage"),
-                    "provider_reasoning": str(((result.get("choices") or [{}])[0].get("message") or {}).get("reasoning_content") or ""),
-                    "reasoning_source": "供应商 API 的 reasoning_content 字段"}, "info")
-            return result
+            outcome: Queue = Queue(maxsize=1)
+            captured = Event()
+            def deliver(ok: bool, value: Any) -> None:
+                if not stop.is_set():
+                    try:
+                        outcome.put_nowait((ok, value))
+                    except Full:
+                        pass
+            def capture(response: httpx.Response) -> None:
+                if captured.is_set() or stop.is_set():
+                    return
+                captured.set()
+                state.update(stage="parsing", http_status=response.status_code)
+                if response.status_code >= 400:
+                    raise RuntimeError(self._http_error_message("模型请求失败", response))
+                result = response.json()
+                if not isinstance(result, dict):
+                    raise RuntimeError("模型返回了无效的 JSON 对象")
+                state["stage"] = "complete"
+                emit("已接收非流式模型完整结果", {"stage": "complete", "content_chars": len(self._extract_content(result)),
+                     "usage": result.get("usage"),
+                     "provider_reasoning": str(((result.get("choices") or [{}])[0].get("message") or {}).get("reasoning_content") or ""),
+                     "reasoning_source": "供应商 API 的 reasoning_content 字段"})
+                deliver(True, result)
+            def publish(response: httpx.Response) -> None:
+                try:
+                    capture(response)
+                except BaseException as exc:
+                    deliver(False, exc)
+            token.on_response = publish
+            def receive() -> None:
+                try:
+                    with cancellation_scope(token):
+                        response = self._request("POST", self._chat_url(provider["base_url"]), headers=self._headers(provider),
+                                                 json_payload=payload, timeout=provider.get("timeout_seconds", 60),
+                                                 network_mode=network_mode, proxy_url=proxy_url,
+                                                 proxy_username=username, proxy_password=password)
+                        if outcome.empty() and not stop.is_set():
+                            capture(response)  # Also supports injected/custom transports.
+                except BaseException as exc:
+                    deliver(False, exc)
+                finally:
+                    try:
+                        logs.put_nowait(None)
+                    except Full:
+                        pass
+            context = copy_context()
+            reader = Thread(target=lambda: context.run(receive), name="ai-complete-response", daemon=True)
+            reader.start()
+            while True:
+                check_cancelled()
+                try:
+                    ok, response = outcome.get(timeout=.2)
+                    break
+                except Empty:
+                    if time.monotonic() - started >= deadline:
+                        frames = sys._current_frames()
+                        locations = []
+                        for thread in (reader, writer):
+                            stack = traceback.extract_stack(frames[thread.ident])[-5:] if thread.ident in frames else []
+                            locations.append(thread.name + ": " + " > ".join(f"{entry.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{entry.lineno}({entry.name})" for entry in stack))
+                        message = f"模型调用 {call_id}（{state['call_stage']}）超过 {int(deadline)} 秒总时限，已结束等待；线程诊断：" + "；".join(locations)
+                        emit(message, {"stage": "timeout"}, "error")
+                        raise ModelRequestTimeout(message)
+            check_cancelled()
+            if not ok:
+                raise response
+            return response
         finally:
+            # Flush normally, but never let SQLite/log persistence hold the task.
+            try:
+                logs.put_nowait(None)
+            except Full:
+                pass
+            drained.wait(.25)
             stop.set()
+            token.cancel()
 
     def complete_json(self, system: str, user: str) -> tuple[Any, dict[str, str]]:
         content, trace = self.complete(system, user)

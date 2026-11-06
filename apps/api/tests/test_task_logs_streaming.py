@@ -76,7 +76,7 @@ def test_logs_survive_restart_export_all_and_stopped_only_deletion_retains_nodes
 
 def setup_gateway(tmp_path, monkeypatch, handler):
     repo = WorkspaceRepository(tmp_path / "app.db")
-    provider = repo.upsert_provider({"name": "流式模型", "model_name": "m", "base_url": "https://model.example/v1", "is_external": False, "max_tokens": 393216, "extra": {"network_mode": "direct"}})
+    provider = repo.upsert_provider({"name": "流式模型", "model_name": "m", "base_url": "https://model.example/v1", "is_external": False, "max_tokens": 393216, "extra": {"network_mode": "direct", "stream_output": True}})
     gateway = AIProviderGateway(repo, LocalSecretStore(tmp_path / "secret.json"))
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
@@ -240,3 +240,14 @@ def test_completed_answer_returns_even_if_tls_teardown_blocks(tmp_path, monkeypa
         assert events[-1]["metrics"]["stage"] == "complete"
     finally:
         released.set()
+
+
+def test_existing_provider_uses_complete_response_by_default(tmp_path, monkeypatch):
+    def handler(request):
+        assert "stream" not in json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "完整正文"}, "finish_reason": "stop"}]})
+    gateway, provider, token, events = setup_gateway(tmp_path, monkeypatch, handler)
+    provider["extra"].pop("stream_output")
+    with cancellation_scope(token):
+        assert gateway.complete("系统", "问题", provider=provider)[0] == "完整正文"
+    assert events[-1]["metrics"]["stage"] == "complete"

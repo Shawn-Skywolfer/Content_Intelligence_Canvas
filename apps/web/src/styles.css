@@ -560,3 +560,81 @@ summary { cursor: pointer; font-weight: 750; }
 .provider-reasoning-panel > summary { font-weight: 650; cursor: pointer; }
 .provider-reasoning-text { max-height: 240px; overflow: auto; }
 .provider-reasoning-text pre { display: inline; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.7; }
+
+/* 英文文案较长，工具与表单允许换行，不压缩正文编辑区域。 */
+.sidebar-tools { gap: 8px; align-items: center; }
+.language-switch { display:flex; align-items:center; gap:6px; min-width:0; margin-right:auto; }
+.language-switch select { width:112px; min-height:32px; padding:4px 6px; font-size:12px; }
+.sidebar-collapsed .language-switch { display:none; }
+html[lang="en"] .brand strong { font-size:19px; line-height:1.2; }
+html[lang="en"] .brand small { line-height:1.45; }
+html[lang="en"] button { white-space:normal; overflow-wrap:break-word; }
+html[lang="en"] .settings-tabs { flex-wrap:wrap; }
+html[lang="en"] .task-manager-toolbar { flex-wrap:wrap; }
+html[lang="en"] .tool-tooltip { max-width:230px; white-space:normal; }
+
+html[lang="en"] .brand > div { min-width:0; flex:1; }
+html[lang="en"] .brand strong, html[lang="en"] .brand small { white-space:normal; overflow-wrap:anywhere; }
+html[lang="en"] .brand strong { font-size:16px; line-height:1.3; }
+html[lang="en"] .brand small { font-size:10px; }
+.canvas-toolbox.layout-horizontal { width:max-content; }
+html[lang="en"] .settings-backup-bar > div:first-child { min-width:0; flex:1; }
+html[lang="en"] .settings-backup-bar .form-actions { flex-shrink:0; }
+html[lang="en"] .provider-extra label:has(input[type="checkbox"]) { display:flex; align-items:center; gap:8px; }
+/* Shared, quiet page structure. Status/error feedback remains in its own panel. */
+.info-tip { display: inline-flex; position: relative; flex: 0 0 auto; vertical-align: middle; }
+.info-tip-trigger { min-height: 28px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 4px; border: 0; border-radius: 7px; color: #64748b; background: transparent; cursor: help; }
+.info-tip-trigger:hover, .info-tip-trigger:focus-visible { color: #a90016; background: #fff0f2; }
+.info-tip-trigger:focus-visible { outline: 2px solid #b60019; outline-offset: 2px; }
+.heading-with-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.context-count { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #64748b; }
+/* Keep all non-canvas pages on the same content grid. */
+.workspace:not(.canvas-workspace) > .page-header,
+.workspace > .hero-create, .workspace > .section-block,
+.research-layout, .research-history, .settings-tabs,
+.settings-backup-bar, .settings-backup-message, .settings-tab-body { max-width: 1100px; }
+.page-header { align-items: flex-start; margin-bottom: 24px; }
+.page-header h1 { margin: 0; font-size: clamp(26px, 2.5vw, 36px); line-height: 1.25; }
+.research-layout { display: block; }
+.research-form { padding: 24px; }
+.research-form .field { margin-bottom: 20px; }
+.research-brief { margin: 20px 0; }
+.research-brief textarea { min-height: 108px; }
+.research-form .inline-fields { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 22px; }
+.research-form .inline-fields label { max-width: 220px; }
+.research-form .inline-fields .info-tip { margin-bottom: 8px; }
+.settings-tabs { gap: 4px; flex-wrap: nowrap; overflow-x: auto; }
+.settings-tabs button { flex: 0 0 auto; padding: 10px 14px; }
+.settings-backup-bar { padding: 14px 18px; }
+.settings-card > .info-tip, .provider-form > .info-tip { margin: 0 4px 10px 0; }
+.model-advanced { margin: 16px 0; }
+.model-advanced > summary { cursor: pointer; padding: 10px 0; font-weight: 650; }
+.brand strong { line-height: 1.35; }
+@media (max-width: 700px) {
+  .workspace { padding: 22px 16px 70px; }
+  .research-form { padding: 18px; }
+  .settings-backup-bar { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+  .settings-backup-bar .form-actions { width: 100%; }
+}
+
+.info-tip-popup { position: fixed; z-index: 10000; width: min(320px, calc(100vw - 32px)); max-height: min(260px, 50vh); overflow-y: auto; padding: 10px 12px; border-radius: 9px; background: #172334; color: #fff; box-shadow: 0 4px 18px #0002; font: 400 12px/1.65 system-ui, sans-serif; text-align: left; overflow-wrap: anywhere; }
+
+.field-with-help > input, .field-with-help > select { margin-top: 7px; }
+.provider-form > .field-with-help { margin-bottom: 13px; }
+
+html[lang="en"] .settings-tabs { flex-wrap: nowrap; }
+.settings-tabs button { font-size: 14px; padding: 10px 12px; }
+.config-grid > label { line-height: 28px; }
+.config-grid > label > input { line-height: normal; }
+.field-with-help .heading-with-info { min-height: 28px; }
+.file-import-button { border-radius: 9px; padding: 10px 14px; font-size: 14px; }
+.model-default-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+
+.settings-card form .heading-with-info > label { margin: 0; line-height: 28px; }
+.settings-card input, .settings-card select { font-size: 14px; font-weight: 400; }
+.research-form .field > .secondary { margin-top: 10px; }
+
+.call-diagnostics { display: grid; gap: 6px; margin: 8px 0; }
+.call-diagnostics > div { display: grid; grid-template-columns: minmax(100px, 1fr) 2fr; gap: 12px; }
+.call-diagnostics dt { color: #64748b; }
+.call-diagnostics dd { margin: 0; overflow-wrap: anywhere; }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 from pydantic import ValidationError
@@ -247,7 +247,7 @@ def export_settings() -> dict[str, Any]:
     active = container.workspace.active_provider()
     return {
         "backup_type": "content-intelligence-canvas-settings", "version": 1,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.utcnow().isoformat() + "Z",
         "includes_plaintext_secrets": True,
         "providers": providers, "active_provider_id": active["id"] if active else None,
         "knowledge_sources": [{"name": s["name"], "root_path": s["root_path"]} for s in container.manifest.list_sources()],

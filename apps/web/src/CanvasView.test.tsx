@@ -1,3 +1,6 @@
+import { beforeEach as resetTestLanguage } from "vitest";
+import { setLocale as setTestLocale } from "./i18n";
+resetTestLanguage(() => setTestLocale("zh-CN"));
 import { act, createElement, useEffect } from "react";
 import { create, ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
