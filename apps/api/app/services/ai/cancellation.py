@@ -18,6 +18,7 @@ class CancellationToken:
         self.on_network: Any = None
         self.on_telemetry: Any = None
         self.on_draft: Any = None
+        self.on_response: Any = None
         self.completed_draft = ""
         self.failure: str | None = None
         self.partial_output = ""
